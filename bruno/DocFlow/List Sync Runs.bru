@@ -1,0 +1,17 @@
+meta {
+  name: List user sync runs
+  type: http
+  seq: 3
+}
+
+get {
+  url: http://localhost:8080/api/v1/sync/runs
+  body: none
+  auth: none
+}
+
+headers {
+  X-Auth-Request-User: bruno-viewer
+  X-Auth-Request-Role: VIEWER
+}
+

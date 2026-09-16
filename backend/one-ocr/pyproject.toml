@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "win-ocr"
+version = "0.2.0"
+description = "OneOCR cross-platform — Windows DLL extracted to 11 ONNX, runs on Windows/Linux/WSL without Wine"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "win-ocr contributors" }]
+keywords = ["ocr", "oneocr", "onnx", "thai", "windows", "linux"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+  "onnxruntime>=1.16.0",
+  "onnx>=1.14.0",
+  "numpy>=1.20.0",
+  "Pillow>=9.0.0",
+  "requests>=2.28.0",
+  "packaging>=23.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "black"]
+
+[project.scripts]
+oneocr = "oneocr.__main__:main"
+win-ocr = "oneocr.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/panupongkongkate/win-ocr"
+
+[tool.hatch.build.targets.wheel]
+packages = ["oneocr"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

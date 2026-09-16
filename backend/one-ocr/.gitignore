@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+models/
+bin/
+vocab_buffers/
+raw_decrypted/
+output/
+models_linux.zip
+oneocr_py.zip
+.DS_Store
+.env

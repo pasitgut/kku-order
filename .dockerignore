@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+tmp
+backend/.venv
+backend/one-ocr/.venv
+backend/storage
+.env*
+!.env.example

@@ -1,26 +1,78 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --canvas: #f6f8fb;
+  --surface: #ffffff;
+  --ink: #212529;
+  --muted: #6c757d;
+  --line: #dee2e6;
+  --navy: #063b6f;
+  --navy-soft: #0b568e;
+  --accent: #087bb5;
+  --accent-strong: #056394;
+  --accent-soft: #e8f4fa;
+  --brand-blue-light: #9bd8f5;
+  --brand-blue-pale: #edf8fd;
+  --brand-blue-text: #c4e4f3;
+  --brand-gold: #f2c343;
+  --success: #21855b;
+  --success-soft: #e8f6ef;
+  --warning: #b7791f;
+  --warning-soft: #fff4df;
+  --danger: #b84848;
+  --danger-soft: #faeaea;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+* { box-sizing: border-box; }
+html { min-width: 320px; background: var(--canvas); }
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: "Noto Sans Thai", "Leelawadee UI", "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+}
+button, input, select, textarea { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+::selection { background: #cfeafb; color: var(--ink); }
+
+.shell-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
+.shell-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: #b8c9d5; }
+.shell-scrollbar::-webkit-scrollbar-track { background: transparent; }
+
+.data-grid th {
+  white-space: nowrap;
+  color: #6c757d;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.data-grid td { border-top: 1px solid var(--line); vertical-align: middle; }
+
+.document-paper {
+  background:
+    linear-gradient(90deg, rgba(232, 237, 242, 0.55) 1px, transparent 1px) 0 0 / 22px 22px,
+    linear-gradient(rgba(232, 237, 242, 0.55) 1px, transparent 1px) 0 0 / 22px 22px,
+    #fff;
+}
+.focus-ring:focus-visible { outline: 3px solid rgba(31, 122, 140, 0.28); outline-offset: 2px; }
+.skeleton { position: relative; overflow: hidden; border-radius: 0.375rem; background: #edf2f5; }
+.skeleton::after { position: absolute; inset: 0; content: ""; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent); animation: skeleton-shimmer 1.5s infinite; }
+@keyframes skeleton-shimmer { to { transform: translateX(100%); } }
+
+@media print {
+  aside, header, button, form, .focus-ring { display: none !important; }
+  main { overflow: visible !important; padding: 0 !important; }
+  body, html { background: white !important; }
+  section { border-color: #d9d9d9 !important; box-shadow: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

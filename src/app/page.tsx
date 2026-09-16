@@ -1,69 +1,35 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
-  return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
-  );
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { ArrowUpRight, CheckCircle, Clock, FilePdf, MagnifyingGlass, WarningCircle } from "@phosphor-icons/react";
+import { AppShell, SectionTitle, StatusBadge } from "@/components/app-shell";
+import { ApiDocument, Dashboard, ExpiryNotification, formatFileSize, formatThaiDate, getDashboard, getDocuments, getExpiryNotifications, statusLabel } from "@/lib/api";
+
+const emptyDashboard: Dashboard = { total: 0, processing: 0, review: 0, confirmed: 0, needsReview: 0, expiring: 0 };
+
+export default function HomePage() {
+  const [dashboard, setDashboard] = useState(emptyDashboard);
+  const [reviewDocuments, setReviewDocuments] = useState<ApiDocument[]>([]);
+  const [notifications, setNotifications] = useState<ExpiryNotification[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    Promise.all([getDashboard(), getDocuments({ status: "REVIEW", limit: 5 }), getExpiryNotifications()]).then(([summary, documents, expiry]) => { setDashboard(summary.data); setReviewDocuments(documents.data); setNotifications(expiry.data); }).catch((reason: Error) => setError(reason.message));
+  }, []);
+
+  const stats = [
+    ["เอกสารทั้งหมด", dashboard.total, "คลังเอกสารใน MySQL", FilePdf, "text-[var(--accent)]", "bg-[var(--accent-soft)]"],
+    ["รอตรวจสอบ", dashboard.review + dashboard.needsReview, "ต้องดำเนินการ", Clock, "text-[var(--warning)]", "bg-[var(--warning-soft)]"],
+    ["ยืนยันแล้ว", dashboard.confirmed, "ผ่านการตรวจสอบ", CheckCircle, "text-[var(--success)]", "bg-[var(--success-soft)]"],
+    ["ใกล้หมดวาระ", dashboard.expiring, "ภายใน 3 เดือน", WarningCircle, "text-[var(--danger)]", "bg-[var(--danger-soft)]"],
+  ] as const;
+
+  return <AppShell><div className="space-y-8"><div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><SectionTitle eyebrow="ภาพรวมระบบ" title="ศูนย์กลางเอกสารคำสั่งแต่งตั้ง" description="ติดตามคิวสกัดข้อมูล ตรวจสอบผลลัพธ์ และค้นหาประวัติการแต่งตั้งจากฐานข้อมูลจริง" /><Link href="/upload" className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-[var(--accent)] px-5 text-sm font-semibold text-white transition hover:bg-[var(--accent-strong)]">นำเข้าเอกสาร<ArrowUpRight size={17} weight="bold" /></Link></div>
+    {error && <div className="rounded-lg border border-[var(--danger-soft)] bg-[var(--danger-soft)] p-4 text-sm font-medium text-[var(--danger)]">{error}</div>}
+    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">{stats.map(([label, value, trend, Icon, iconTone, background]) => <div key={label} className="rounded-xl border border-[var(--line)] bg-white p-5"><div className="flex items-start justify-between"><div><p className="text-sm font-semibold text-[var(--muted)]">{label}</p><p className="mt-3 text-3xl font-bold tracking-tight text-[var(--ink)]">{value.toLocaleString("th-TH")}</p></div><span className={`flex h-10 w-10 items-center justify-center rounded-lg ${background} ${iconTone}`}><Icon size={21} weight="duotone" /></span></div><p className="mt-4 text-xs font-semibold text-[var(--muted)]">{trend}</p></div>)}</section>
+    <section className="overflow-hidden rounded-xl border border-[var(--line)] bg-white"><div className="flex flex-col gap-4 border-b border-[var(--line)] p-5 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="text-base font-bold text-[var(--ink)]">คิวตรวจสอบล่าสุด</h2><p className="mt-1 text-sm text-[var(--muted)]">เอกสารจาก one-ocr ที่รอเจ้าหน้าที่ตรวจสอบและยืนยัน</p></div><Link href="/documents" className="focus-ring inline-flex items-center gap-1 text-sm font-semibold text-[var(--accent)] hover:underline">ดูทั้งหมด <ArrowUpRight size={16} weight="bold" /></Link></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[670px] text-left text-sm"><thead><tr><th className="px-5 py-3">เอกสาร</th><th className="px-4 py-3">เลขที่คำสั่ง</th><th className="px-4 py-3">นำเข้าเมื่อ</th><th className="px-5 py-3">สถานะ</th></tr></thead><tbody>{reviewDocuments.map((document) => <tr key={document.id} className="transition hover:bg-[#f8fafc]"><td className="px-5 py-4"><Link href={`/documents/${document.id}`} className="focus-ring block rounded-md"><p className="font-semibold text-[var(--ink)]">{document.title || document.originalFilename}</p><p className="mt-1 text-xs text-[var(--muted)]">{document.pageCount || "-"} หน้า · {formatFileSize(document.fileSizeBytes)}</p></Link></td><td className="px-4 py-4 text-[var(--muted)]">{document.orderNo || "ยังไม่พบ"}</td><td className="px-4 py-4 text-[var(--muted)]">{formatThaiDate(document.createdAt)}</td><td className="px-5 py-4"><StatusBadge status={statusLabel(document.status)} /></td></tr>)}{reviewDocuments.length === 0 && <tr><td colSpan={4} className="px-5 py-12 text-center text-sm text-[var(--muted)]">ยังไม่มีเอกสารรอตรวจสอบ</td></tr>}</tbody></table></div></section>
+    {notifications.length > 0 && <section className="overflow-hidden rounded-xl border border-[#f0dfb3] bg-[#fffaf0]"><div className="flex items-center justify-between border-b border-[#f0dfb3] p-5"><div><h2 className="text-base font-bold text-[var(--ink)]">แจ้งเตือนเอกสารใกล้หมดวาระ</h2><p className="mt-1 text-sm text-[var(--muted)]">แจ้งเตือนตามเกณฑ์ 3, 2 และ 1 เดือนจากฐานข้อมูลจริง</p></div><WarningCircle size={24} weight="duotone" className="text-[var(--warning)]" /></div><div className="divide-y divide-[#f0dfb3]">{notifications.map((notification) => <Link key={notification.id} href={`/documents/${notification.documentId}`} className="flex items-center justify-between gap-4 px-5 py-4 text-sm hover:bg-[#fff5dc]"><span className="font-semibold text-[var(--ink)]">เอกสาร #{notification.documentId}</span><span className="text-xs font-semibold text-[var(--warning)]">ครบกำหนด {formatThaiDate(notification.dueAt)} · {notification.noticeType}</span></Link>)}</div></section>}
+    <section className="grid gap-4 md:grid-cols-3"><Link href="/upload" className="group rounded-xl bg-[var(--navy)] p-5 text-white transition hover:bg-[var(--navy-soft)]"><FilePdf size={25} weight="duotone" className="mb-10 text-[var(--brand-blue-light)]" /><p className="text-sm font-semibold text-[var(--brand-blue-text)]">งานที่ต้องทำ</p><h2 className="mt-2 text-xl font-bold">นำเข้าเอกสารชุดใหม่</h2><p className="mt-2 text-sm leading-6 text-[#c4d9e8]">ไฟล์จะเข้า MySQL และคิว one-ocr อัตโนมัติ</p></Link><Link href="/search" className="group rounded-xl border border-[var(--line)] bg-white p-5 transition hover:border-[var(--accent)]"><MagnifyingGlass size={25} weight="duotone" className="mb-10 text-[var(--accent)]" /><p className="text-sm font-semibold text-[var(--muted)]">การค้นหา</p><h2 className="mt-2 text-xl font-bold text-[var(--ink)]">ค้นหาประวัติการแต่งตั้ง</h2><p className="mt-2 text-sm leading-6 text-[var(--muted)]">ค้นหาชื่อบุคคล ตำแหน่ง เลขที่คำสั่ง หรือข้อความ OCR</p></Link><div className="rounded-xl border border-[#cfe6f4] bg-[var(--brand-blue-pale)] p-5"><CheckCircle size={25} weight="duotone" className="mb-10 text-[var(--accent)]" /><p className="text-sm font-semibold text-[#236b91]">การควบคุมตาม TOR</p><h2 className="mt-2 text-xl font-bold text-[var(--ink)]">ต้องยืนยันก่อนสมบูรณ์</h2><p className="mt-2 text-sm leading-6 text-[#47758e]">ข้อมูล OCR ที่ยังไม่ผ่านการตรวจจะอยู่สถานะรอตรวจสอบ</p></div></section>
+  </div></AppShell>;
 }

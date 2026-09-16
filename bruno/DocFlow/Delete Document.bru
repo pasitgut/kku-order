@@ -1,0 +1,16 @@
+meta {
+  name: Delete document for development
+  type: http
+  seq: 4
+}
+
+delete {
+  url: http://localhost:8080/api/v1/documents/1
+  body: none
+  auth: none
+}
+
+headers {
+  X-Auth-Request-User: bruno-developer
+  X-Auth-Request-Role: DEVELOPER
+}
