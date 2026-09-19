@@ -34,6 +34,8 @@ npm run dev
 
 ## เริ่มฐานข้อมูลและ API ด้วย Docker
 
+ขั้นตอน build image ด้วย Docker, ส่งไฟล์ `.tar` ผ่าน SCP และ deploy บน server ด้วย Podman พร้อม Cloudflared `proxy-net` อยู่ที่ [DEPLOY_PODMAN.md](DEPLOY_PODMAN.md)
+
 ต้องมี Docker Desktop หรือ Docker Engine บนเครื่องที่จะรันคำสั่ง
 
 ```powershell

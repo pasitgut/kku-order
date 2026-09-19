@@ -1,0 +1,82 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: docflow-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-docflow}
+      MYSQL_USER: ${MYSQL_USER:-docflow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    volumes:
+      - docflow_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u${MYSQL_USER:-docflow}", "-p${MYSQL_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - docflow-internal
+
+  api:
+    image: docflow-api:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: docflow-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_DSN: ${DB_DSN:?DB_DSN is required}
+      UPLOAD_DIR: /app/storage
+      IMPORT_DIR: /app/incoming
+      PORT: 8080
+      GIN_MODE: release
+      WEB_ORIGIN: ${WEB_ORIGIN:?WEB_ORIGIN is required}
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+      AUTH_USER_HEADER: ${AUTH_USER_HEADER:-X-Auth-Request-User}
+      AUTH_ROLE_HEADER: ${AUTH_ROLE_HEADER:-X-Auth-Request-Role}
+      EXTERNAL_USERS_URL: ${EXTERNAL_USERS_URL:-https://fs.computing.kku.ac.th/api/ext/v1/users}
+      USER_SYNC_CRON: ${USER_SYNC_CRON:-0 5 * * *}
+      USER_SYNC_TZ: ${USER_SYNC_TZ:-Asia/Bangkok}
+      EXPIRY_CRON: ${EXPIRY_CRON:-10 5 * * *}
+      IMPORT_CRON: ${IMPORT_CRON:-*/5 * * * *}
+      OCR_LANGUAGE: ${OCR_LANGUAGE:-thai}
+      OCR_DPI: ${OCR_DPI:-200}
+      OCR_MAX_SIDE: ${OCR_MAX_SIDE:-1536}
+      OCR_PREPROCESS: ${OCR_PREPROCESS:-none}
+    volumes:
+      - docflow_uploads:/app/storage
+      - ./incoming:/app/incoming
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    depends_on:
+      - mysql
+    networks:
+      - docflow-internal
+
+  web:
+    image: docflow-web:${IMAGE_TAG:?IMAGE_TAG is required}
+    container_name: docflow-web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: /backend
+      BACKEND_INTERNAL_URL: http://api:8080
+    depends_on:
+      - api
+    networks:
+      docflow-internal:
+      proxy-net:
+        aliases:
+          - docflow-web
+
+volumes:
+  docflow_mysql_data:
+  docflow_uploads:
+
+networks:
+  docflow-internal:
+    name: docflow-internal
+  proxy-net:
+    external: true
