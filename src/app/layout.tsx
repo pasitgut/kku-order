@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Prompt } from "next/font/google";
+import { MeProvider } from "@/components/me-context";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
@@ -19,7 +20,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="th" className={prompt.variable}>
       <body>
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider><MeProvider>{children}</MeProvider></ToastProvider>
       </body>
     </html>
   );

@@ -4,7 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Bell, CaretDown, ChartLineUp, FileArrowUp, Files, GearSix, MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowLeft, Bell, CaretDown, ChartLineUp, FileArrowUp, Files, GearSix, MagnifyingGlass, SignOut, UserCircle } from "@phosphor-icons/react";
+import { Avatar, useMe } from "@/components/me-context";
+import { can, roleLabel } from "@/lib/permissions";
 import { ExpiryNotification, formatThaiDate, getExpiryNotifications } from "@/lib/api";
 
 const navigation = [
@@ -12,7 +14,7 @@ const navigation = [
   { href: "/upload", label: "นำเข้าเอกสาร", shortLabel: "นำเข้า", icon: FileArrowUp },
   { href: "/documents", label: "เอกสารทั้งหมด", shortLabel: "เอกสาร", icon: Files },
   { href: "/search", label: "ค้นหาข้อมูล", shortLabel: "ค้นหา", icon: MagnifyingGlass },
-  { href: "/settings", label: "ผู้ใช้งานและสิทธิ์", shortLabel: "ตั้งค่า", icon: GearSix },
+  { href: "/settings", label: "ตั้งค่า", shortLabel: "ตั้งค่า", icon: GearSix },
 ];
 
 type AppShellProps = {
@@ -54,11 +56,7 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
         </nav>
         <div className="ml-auto flex items-center gap-2 lg:ml-0">
           <NotificationBell />
-          <button type="button" className="focus-ring flex h-11 items-center gap-2.5 rounded-[5px] px-1.5 text-left text-white hover:bg-[var(--bar-hover)]">
-            <span className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--accent)] text-[13px] font-semibold">กว</span>
-            <span className="hidden xl:block"><span className="block text-[13px] font-medium leading-tight">กฤตยชญ์ มัตกิจ</span><span className="block text-[11px] font-light leading-tight text-[var(--bar-muted)]">ผู้ดูแลระบบเอกสาร</span></span>
-            <CaretDown size={14} className="hidden text-[var(--bar-muted)] xl:block" />
-          </button>
+          <UserMenu />
         </div>
       </header>
 
@@ -78,9 +76,8 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
 
       <main className="flex-1 px-5 pb-28 pt-6 sm:px-8 lg:px-12 lg:pb-12 lg:pt-8 xl:px-16">{children}</main>
 
-      <footer className="shrink-0 pb-[72px] lg:pb-0">
-        <div className="flex flex-col gap-1 bg-[var(--bar)] px-5 py-4 text-[13px] font-light text-[var(--bar-muted)] sm:flex-row sm:justify-between sm:px-8 lg:px-12 xl:px-16"><span>DocFlow · ระบบจัดการเอกสารคำสั่งแต่งตั้ง</span><span>123 ถ.มิตรภาพ ต.ในเมือง อ.เมือง จ.ขอนแก่น 40002</span></div>
-        <div className="bg-[var(--band-strip)] px-5 py-2.5 text-center text-sm text-white">วิทยาลัยการคอมพิวเตอร์ มหาวิทยาลัยขอนแก่น</div>
+      <footer className="shrink-0 border-t-[10px] border-[var(--accent)] bg-[var(--bar)] pb-[72px] text-xs font-light text-[var(--bar-muted)] lg:pb-0">
+        <div className="flex min-h-11 flex-col justify-center gap-0.5 px-5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12 xl:px-16"><span><span className="font-medium text-white">DocFlow</span> · วิทยาลัยการคอมพิวเตอร์ มหาวิทยาลัยขอนแก่น</span><span>123 ถ.มิตรภาพ ต.ในเมือง อ.เมือง จ.ขอนแก่น 40002</span></div>
       </footer>
 
       <nav aria-label="เมนูหลัก" className="fixed inset-x-0 bottom-0 z-30 grid h-[72px] grid-cols-5 bg-[var(--bar)] px-1 lg:hidden">
@@ -92,6 +89,46 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
       </nav>
     </div>
   );
+}
+
+// oauth2-proxy (ที่ส่ง X-Auth-Request-*) ใช้ /oauth2/sign_out เป็นค่าเริ่มต้น
+const logoutUrl = process.env.NEXT_PUBLIC_LOGOUT_URL ?? "/oauth2/sign_out";
+
+function UserMenu() {
+  const { me } = useMe();
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent) => { if (!containerRef.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    window.addEventListener("mousedown", close);
+    window.addEventListener("keydown", escape);
+    return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", escape); };
+  }, [open]);
+
+  const role = me?.role ?? "";
+  return <div ref={containerRef} className="relative">
+    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label="เมนูโปรไฟล์" onClick={() => setOpen((value) => !value)} className={`focus-ring flex h-11 items-center gap-2.5 rounded-[5px] px-1.5 text-left text-white ${open ? "bg-[var(--bar-hover)]" : "hover:bg-[var(--bar-hover)]"}`}>
+      <Avatar me={me} size={34} />
+      <span className="hidden xl:block"><span className="block max-w-[160px] truncate text-[13px] font-medium leading-tight">{me?.displayName ?? "กำลังโหลด..."}</span><span className="block text-[11px] font-light leading-tight text-[var(--bar-muted)]">{role ? roleLabel(role) : ""}</span></span>
+      <CaretDown size={14} className="hidden text-[var(--bar-muted)] xl:block" />
+    </button>
+    {open && <div role="menu" aria-label="เมนูโปรไฟล์" className="absolute right-0 top-[52px] w-[300px] overflow-hidden rounded-[10px] bg-white text-[var(--ink)] shadow-[0_12px_32px_rgba(0,0,0,0.18)]">
+      <div className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-4">
+        <Avatar me={me} size={44} />
+        <div className="min-w-0"><p className="truncate font-semibold text-[var(--navy)]">{me?.displayName ?? "-"}</p><p className="truncate text-xs font-light text-[var(--muted)]">{me?.email || me?.userId || ""}</p>{role && <span className="mt-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[#155e97]">{role}</span>}</div>
+      </div>
+      <div className="p-1.5">
+        <Link role="menuitem" href="/profile" onClick={() => setOpen(false)} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><UserCircle size={18} className="text-[var(--muted)]" />โปรไฟล์ของฉัน</Link>
+        {can(role, "view") && role.toUpperCase() !== "VIEWER" && <Link role="menuitem" href="/settings" onClick={() => setOpen(false)} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><GearSix size={18} className="text-[var(--muted)]" />ตั้งค่าระบบ</Link>}
+      </div>
+      <div className="border-t border-[var(--line)] p-1.5">
+        <a role="menuitem" href={logoutUrl} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><SignOut size={18} className="text-[var(--muted)]" />ออกจากระบบ</a>
+      </div>
+    </div>}
+  </div>;
 }
 
 const noticeGroups = [
