@@ -365,6 +365,9 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
 				return err
 			}
+			if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
+				return err
+			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: "เจ้าหน้าที่แก้ไขข้อมูลก่อนยืนยัน"}).Error
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการแก้ไขได้"})
@@ -546,11 +549,7 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		if err := db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Create(&person).Error; err != nil {
-				return err
-			}
-			profile.PersonID = person.ID
-			return tx.Create(&profile).Error
+			return createDirectoryPersonWithProfile(tx, &person, &profile)
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกบุคคลใหม่ได้"})
 			return
@@ -733,6 +732,9 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 				return err
 			}
 			if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+				return err
+			}
+			if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
 				return err
 			}
 			if err := syncCoreConfirmation(tx, &updated); err != nil {

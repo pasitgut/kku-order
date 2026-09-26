@@ -9,7 +9,6 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +38,13 @@ type StoredOrderType struct {
 
 func (StoredOrderType) TableName() string { return "order_types" }
 
+type StoredUser struct {
+	ID    uint64 `gorm:"primaryKey"`
+	Email string `gorm:"size:255"`
+}
+
+func (StoredUser) TableName() string { return "users" }
+
 type StoredOrder struct {
 	ID            uint64 `gorm:"primaryKey"`
 	DocumentID    uint64 `gorm:"uniqueIndex;not null"`
@@ -54,6 +60,37 @@ type StoredOrder struct {
 }
 
 func (StoredOrder) TableName() string { return "orders" }
+
+type StoredCommittee struct {
+	ID          uint64 `gorm:"primaryKey"`
+	OrderID     uint64 `gorm:"not null"`
+	Name        string `gorm:"size:500"`
+	Description string `gorm:"type:text"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (StoredCommittee) TableName() string { return "committees" }
+
+type StoredCommitteeRole struct {
+	ID   uint64 `gorm:"primaryKey"`
+	Code string `gorm:"size:50;uniqueIndex;not null"`
+	Name string `gorm:"size:255;uniqueIndex;not null"`
+}
+
+func (StoredCommitteeRole) TableName() string { return "committee_roles" }
+
+type StoredCommitteeMember struct {
+	ID              uint64  `gorm:"primaryKey"`
+	CommitteeID     uint64  `gorm:"not null"`
+	PeopleID        *uint64 `gorm:"column:people_id"`
+	CommitteeRoleID uint64  `gorm:"not null"`
+	DisplayOrder    *int    `gorm:"column:display_order"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+func (StoredCommitteeMember) TableName() string { return "committee_members" }
 
 // createDocumentBundle reserves one document id while holding a MySQL named
 // lock, then creates the required order row before the document row. The
@@ -150,18 +187,106 @@ func syncCoreDocumentFile(tx *gorm.DB, document *Document) error {
 func syncCoreConfirmation(tx *gorm.DB, document *Document) error {
 	updates := map[string]any{"confirmed_at": document.ConfirmedAt, "confirmed_by": nil}
 	if document.ConfirmedBy != "" {
-		userID, err := strconv.ParseUint(strings.TrimSpace(document.ConfirmedBy), 10, 64)
-		if err == nil && userID > 0 {
-			var count int64
-			if err := tx.Table("users").Where("id = ?", userID).Count(&count).Error; err != nil {
-				return err
-			}
-			if count > 0 {
-				updates["confirmed_by"] = userID
-			}
+		actor := strings.TrimSpace(document.ConfirmedBy)
+		if actor == "" || len([]rune(actor)) > 255 {
+			return fmt.Errorf("confirmed user identifier must contain 1-255 characters")
 		}
+		user := StoredUser{Email: actor}
+		if err := tx.Where("email = ?", actor).FirstOrCreate(&user).Error; err != nil {
+			return fmt.Errorf("resolve confirming user: %w", err)
+		}
+		updates["confirmed_by"] = user.ID
 	}
 	return tx.Model(&StoredDocument{}).Where("id = ?", document.ID).Updates(updates).Error
+}
+
+func syncCoreCommitteeFromWorkflow(tx *gorm.DB, document *Document) error {
+	var order StoredOrder
+	if err := tx.Where("document_id = ?", document.ID).First(&order).Error; err != nil {
+		return fmt.Errorf("load committee order: %w", err)
+	}
+	var committees []StoredCommittee
+	if err := tx.Where("order_id = ?", order.ID).Order("id ASC").Find(&committees).Error; err != nil {
+		return err
+	}
+	name := truncateRunes(strings.TrimSpace(document.Committee), 500)
+	if name == "" {
+		if len(committees) > 0 {
+			committeeIDs := make([]uint64, 0, len(committees))
+			for _, committee := range committees {
+				committeeIDs = append(committeeIDs, committee.ID)
+			}
+			if err := tx.Where("committee_id IN ?", committeeIDs).Delete(&StoredCommitteeMember{}).Error; err != nil {
+				return err
+			}
+			return tx.Where("order_id = ?", order.ID).Delete(&StoredCommittee{}).Error
+		}
+		return nil
+	}
+
+	var committee StoredCommittee
+	if len(committees) > 0 {
+		committee = committees[0]
+		if err := tx.Model(&committee).Update("name", name).Error; err != nil {
+			return err
+		}
+		if len(committees) > 1 {
+			committeeIDs := make([]uint64, 0, len(committees)-1)
+			for _, extra := range committees[1:] {
+				committeeIDs = append(committeeIDs, extra.ID)
+			}
+			if err := tx.Where("committee_id IN ?", committeeIDs).Delete(&StoredCommitteeMember{}).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("id IN ?", committeeIDs).Delete(&StoredCommittee{}).Error; err != nil {
+				return err
+			}
+		}
+	} else {
+		committee = StoredCommittee{OrderID: order.ID, Name: name}
+		if err := tx.Create(&committee).Error; err != nil {
+			return err
+		}
+	}
+	if err := tx.Where("committee_id = ?", committee.ID).Delete(&StoredCommitteeMember{}).Error; err != nil {
+		return err
+	}
+
+	var appointments []Appointment
+	if err := tx.Where("document_id = ?", document.ID).Order("id ASC").Find(&appointments).Error; err != nil {
+		return err
+	}
+	seenPeople := make(map[uint64]struct{}, len(appointments))
+	for index, appointment := range appointments {
+		roleName := strings.TrimSpace(appointment.CommitteeRole)
+		if roleName == "" {
+			roleName = "ไม่ระบุบทบาท"
+		}
+		roleName = truncateRunes(roleName, 255)
+		roleHash := sha256.Sum256([]byte(strings.ToLower(roleName)))
+		role := StoredCommitteeRole{Code: "ROLE_" + hex.EncodeToString(roleHash[:20]), Name: roleName}
+		if err := tx.Where("name = ?", roleName).FirstOrCreate(&role).Error; err != nil {
+			return fmt.Errorf("resolve committee role %q: %w", roleName, err)
+		}
+		var peopleID *uint64
+		if appointment.DirectoryUserID != nil {
+			id := uint64(*appointment.DirectoryUserID)
+			if _, exists := seenPeople[id]; exists {
+				continue
+			}
+			seenPeople[id] = struct{}{}
+			peopleID = &id
+		}
+		displayOrder := index + 1
+		member := StoredCommitteeMember{
+			CommitteeID: committee.ID, PeopleID: peopleID, CommitteeRoleID: role.ID,
+			DisplayOrder: &displayOrder,
+		}
+		if err := tx.Create(&member).Error; err != nil {
+			return fmt.Errorf("create committee member: %w", err)
+		}
+	}
+	return nil
 }
 
 func truncateRunes(value string, limit int) string {

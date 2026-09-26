@@ -28,9 +28,17 @@ func loadDirectory(db *gorm.DB) ([]DirectoryUser, map[string]uint, error) {
 	}
 	aliases := make(map[string]uint, len(rows))
 	for _, row := range rows {
-		aliases[row.NormalizedName] = row.DirectoryUserID
+		aliases[row.NormalizedName] = row.DirectoryPersonID
 	}
 	return users, aliases, nil
+}
+
+func createDirectoryPersonWithProfile(tx *gorm.DB, person *DirectoryPerson, profile *DirectoryPersonProfile) error {
+	if err := tx.Create(person).Error; err != nil {
+		return err
+	}
+	profile.PersonID = person.ID
+	return tx.Create(profile).Error
 }
 
 func loadDirectoryProfiles(db *gorm.DB, people []DirectoryPerson) (map[uint]DirectoryPersonProfile, error) {

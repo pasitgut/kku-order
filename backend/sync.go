@@ -172,11 +172,7 @@ func (s *UserSyncService) upsertUser(item map[string]any) (created bool, updated
 	queryErr := s.db.Where("external_id = ?", externalID).First(&existing).Error
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
 		if err := s.db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Create(&person).Error; err != nil {
-				return err
-			}
-			profile.PersonID = person.ID
-			return tx.Create(&profile).Error
+			return createDirectoryPersonWithProfile(tx, &person, &profile)
 		}); err != nil {
 			return false, false, fmt.Errorf("create directory person %s: %w", externalIDText, err)
 		}

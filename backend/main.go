@@ -274,13 +274,13 @@ func (DirectoryPersonProfile) TableName() string { return "directory_person_prof
 // PersonNameAlias remembers that a reviewer bound a particular OCR spelling
 // to a person, so the next document carrying the same slip matches on its own.
 type PersonNameAlias struct {
-	ID              uint      `json:"id" gorm:"primaryKey"`
-	NormalizedName  string    `json:"normalizedName" gorm:"size:255;uniqueIndex;not null"`
-	DirectoryUserID uint      `json:"directoryUserId" gorm:"column:directory_person_id;index;not null"`
-	SourceText      string    `json:"sourceText" gorm:"size:500"`
-	CreatedBy       string    `json:"createdBy" gorm:"size:255"`
-	CreatedAt       time.Time `json:"createdAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	ID                uint      `json:"id" gorm:"primaryKey"`
+	NormalizedName    string    `json:"normalizedName" gorm:"size:255;uniqueIndex;not null"`
+	DirectoryPersonID uint      `json:"directoryUserId" gorm:"column:directory_person_id;index;not null"`
+	SourceText        string    `json:"sourceText" gorm:"size:500"`
+	CreatedBy         string    `json:"createdBy" gorm:"size:255"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 func (PersonNameAlias) TableName() string { return "person_name_aliases" }
@@ -606,6 +606,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 					return err
 				}
 				if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+					return err
+				}
+				if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
 					return err
 				}
 				if err := syncCoreConfirmation(tx, &updated); err != nil {
