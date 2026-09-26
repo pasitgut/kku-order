@@ -198,7 +198,7 @@ EXPIRY_CRON=10 5 * * *
 3. วาง service-account JSON ไว้ที่ `secrets/google-drive-service-account.json` และกำหนดค่าใน `.env.local`:
 
    ```env
-   GOOGLE_DRIVE_FOLDER_ID=<folder ID หรือ URL ของโฟลเดอร์>
+   GOOGLE_DRIVE_FOLDER_ID=1HAQQhmzVq9Ch0_UZKWSnhrJmY-5t1SUr
    GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-service-account.json
    GOOGLE_DRIVE_SYNC_CRON=*/5 * * * *
    ```

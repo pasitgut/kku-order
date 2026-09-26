@@ -107,7 +107,7 @@ BACKEND_INTERNAL_URL ต้องเป็น http://api:8080 เพราะ We
 หากต้องการเปิด Google Drive sync ให้สร้าง `deploy/secrets/google-drive-service-account.json` บนเครื่อง deploy แล้วตั้งค่าในไฟล์ `.env` ที่ใช้กับ compose:
 
 ~~~env
-GOOGLE_DRIVE_FOLDER_ID=<folder ID หรือ URL ของโฟลเดอร์>
+GOOGLE_DRIVE_FOLDER_ID=1HAQQhmzVq9Ch0_UZKWSnhrJmY-5t1SUr
 GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-service-account.json
 GOOGLE_DRIVE_SYNC_CRON=*/5 * * * *
 ~~~

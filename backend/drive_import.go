@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
@@ -27,7 +28,7 @@ type GoogleDriveImporter struct {
 }
 
 type driveSyncState struct {
-	Files map[string]string `json:"files"`
+	ModifiedTimeByFileID map[string]string `json:"files"`
 }
 
 // NewGoogleDriveImporter returns nil when Drive sync is not configured.
@@ -100,11 +101,11 @@ func (i *GoogleDriveImporter) Sync(ctx context.Context) (int, error) {
 				if version == "" {
 					version = "<unknown>"
 				}
-				if state.Files[file.Id] == version {
+				if state.ModifiedTimeByFileID[file.Id] == version {
 					continue
 				}
 				if file.Size > maxImportedFileSize {
-					state.Files[file.Id] = version
+					state.ModifiedTimeByFileID[file.Id] = version
 					i.logger.Printf("Google Drive file exceeds the 50 MB import limit; skipped %q", file.Name)
 					continue
 				}
@@ -115,7 +116,7 @@ func (i *GoogleDriveImporter) Sync(ctx context.Context) (int, error) {
 
 				outputName, exportMime, supported := driveOutputFile(file)
 				if !supported {
-					state.Files[file.Id] = version
+					state.ModifiedTimeByFileID[file.Id] = version
 					i.logger.Printf("Google Drive file type is unsupported; skipped %q (%s)", file.Name, file.MimeType)
 					continue
 				}
@@ -124,7 +125,7 @@ func (i *GoogleDriveImporter) Sync(ctx context.Context) (int, error) {
 					i.logger.Printf("Google Drive import failed for %q: %v", file.Name, err)
 					continue
 				}
-				state.Files[file.Id] = version
+				state.ModifiedTimeByFileID[file.Id] = version
 				if created {
 					imported++
 				}
@@ -191,7 +192,7 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 }
 
 func (i *GoogleDriveImporter) loadState() driveSyncState {
-	state := driveSyncState{Files: make(map[string]string)}
+	state := driveSyncState{ModifiedTimeByFileID: make(map[string]string)}
 	contents, err := os.ReadFile(i.statePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -199,11 +200,24 @@ func (i *GoogleDriveImporter) loadState() driveSyncState {
 		}
 		return state
 	}
-	if err := json.Unmarshal(contents, &state); err != nil || state.Files == nil {
+	if err := json.Unmarshal(contents, &state); err != nil || state.ModifiedTimeByFileID == nil {
 		i.logger.Printf("Google Drive sync state is invalid; rebuilding it")
-		return driveSyncState{Files: make(map[string]string)}
+		return driveSyncState{ModifiedTimeByFileID: make(map[string]string)}
 	}
 	return state
+}
+
+func runGoogleDriveSync(importer *GoogleDriveImporter, logger *log.Logger, phase string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	imported, err := importer.Sync(ctx)
+	if err != nil {
+		logger.Printf("%s Google Drive sync failed: %v", phase, err)
+		return
+	}
+	if imported > 0 {
+		logger.Printf("%s Google Drive sync completed: imported=%d", phase, imported)
+	}
 }
 
 func (i *GoogleDriveImporter) saveState(state driveSyncState) error {
