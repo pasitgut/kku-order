@@ -91,17 +91,33 @@ func searchDocuments(db *gorm.DB) gin.HandlerFunc {
 
 func listDirectoryUsers(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var users []DirectoryUser
-		query := db.Order("full_name ASC").Limit(100)
-		if q := strings.TrimSpace(c.Query("q")); q != "" {
-			like := "%" + q + "%"
-			query = query.Where("full_name LIKE ? OR first_name LIKE ? OR last_name LIKE ? OR username LIKE ? OR email LIKE ? OR department LIKE ?", like, like, like, like, like, like)
-		}
-		if err := query.Find(&users).Error; err != nil {
+		users, _, err := loadDirectory(db)
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดรายชื่อบุคลากรได้"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"data": users})
+		query := strings.ToLower(strings.TrimSpace(c.Query("q")))
+		filtered := make([]DirectoryUser, 0, minInt(len(users), 100))
+		for _, user := range users {
+			if query != "" {
+				values := []string{user.FullName, user.FirstName, user.LastName, user.UserID, user.ExternalID, user.Email, user.Department, user.Faculty, user.PositionTitle}
+				matched := false
+				for _, value := range values {
+					if strings.Contains(strings.ToLower(value), query) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+			filtered = append(filtered, user)
+			if len(filtered) == 100 {
+				break
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"data": filtered})
 	}
 }
 
@@ -342,6 +358,13 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					return err
 				}
 			}
+			var updated Document
+			if err := tx.First(&updated, document.ID).Error; err != nil {
+				return err
+			}
+			if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+				return err
+			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: "เจ้าหน้าที่แก้ไขข้อมูลก่อนยืนยัน"}).Error
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการแก้ไขได้"})
@@ -374,7 +397,22 @@ func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 					return err
 				}
 			}
-			return tx.Delete(&Document{}, document.ID).Error
+			if err := tx.Delete(&Document{}, document.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(&StoredDocument{}, document.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`DELETE FROM committee_members
+				WHERE committee_id IN (SELECT id FROM committees WHERE order_id IN
+					(SELECT id FROM orders WHERE document_id = ?))`, document.ID).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`DELETE FROM committees
+				WHERE order_id IN (SELECT id FROM orders WHERE document_id = ?)`, document.ID).Error; err != nil {
+				return err
+			}
+			return tx.Where("document_id = ?", document.ID).Delete(&StoredOrder{}).Error
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถลบข้อมูลเอกสารได้"})
@@ -502,24 +540,30 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 		}
 
 		createdBy := currentUserID(c)
-		user, err := newManualDirectoryUser(payload, createdBy, time.Now())
+		person, profile, err := newManualDirectoryPerson(payload, createdBy, time.Now())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมข้อมูลบุคคลใหม่ได้"})
 			return
 		}
-		if err := db.Create(&user).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&person).Error; err != nil {
+				return err
+			}
+			profile.PersonID = person.ID
+			return tx.Create(&profile).Error
+		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกบุคคลใหม่ได้"})
 			return
 		}
+		user := directoryPersonAPI(person, profile)
 		_ = db.Create(&AuditLog{UserID: createdBy, Action: "DIRECTORY_USER_CREATED", Details: user.FullName}).Error
 		c.JSON(http.StatusCreated, gin.H{"data": user})
 	}
 }
 
-// newManualDirectoryUser builds the row for somebody a reviewer entered by
-// hand. raw_payload is a JSON column, so it carries the submitted form rather
-// than an empty string, which MySQL rejects.
-func newManualDirectoryUser(payload createDirectoryUserRequest, createdBy string, now time.Time) (DirectoryUser, error) {
+// newManualDirectoryPerson stores core identity fields in directory_people;
+// optional fields absent from that schema live in its profile extension row.
+func newManualDirectoryPerson(payload createDirectoryUserRequest, createdBy string, now time.Time) (DirectoryPerson, DirectoryPersonProfile, error) {
 	firstName := strings.TrimSpace(payload.FirstName)
 	lastName := strings.TrimSpace(payload.LastName)
 	positionTitle := strings.TrimSpace(payload.PositionTitle)
@@ -530,26 +574,26 @@ func newManualDirectoryUser(payload createDirectoryUserRequest, createdBy string
 		"entered_by": createdBy,
 	})
 	if err != nil {
+		return DirectoryPerson{}, DirectoryPersonProfile{}, err
+	}
+	person := DirectoryPerson{
+		Prefix: strings.TrimSpace(payload.Prefix), FirstName: firstName, LastName: lastName,
+		Email: nonEmptySQLValue(payload.Email), Phone: nonEmptySQLValue(payload.Phone),
+		PositionTitle: positionTitle, Status: "MANUAL", CreatedAt: now, UpdatedAt: now, SyncedAt: now,
+	}
+	profile := DirectoryPersonProfile{
+		Department: strings.TrimSpace(payload.Department), Source: sourceManual,
+		CreatedBy: createdBy, RawPayload: string(raw),
+	}
+	return person, profile, nil
+}
+
+func newManualDirectoryUser(payload createDirectoryUserRequest, createdBy string, now time.Time) (DirectoryUser, error) {
+	person, profile, err := newManualDirectoryPerson(payload, createdBy, now)
+	if err != nil {
 		return DirectoryUser{}, err
 	}
-	return DirectoryUser{
-		ExternalID:    fmt.Sprintf("manual:%d", now.UnixNano()),
-		Prefix:        strings.TrimSpace(payload.Prefix),
-		FirstName:     firstName,
-		LastName:      lastName,
-		FullName:      strings.TrimSpace(strings.Join(strings.Fields(payload.Prefix+" "+firstName+" "+lastName), " ")),
-		PositionTitle: positionTitle,
-		JobTitle:      positionTitle,
-		Department:    strings.TrimSpace(payload.Department),
-		Email:         strings.TrimSpace(payload.Email),
-		Phone:         strings.TrimSpace(payload.Phone),
-		IsActive:      activeUserCode,
-		Source:        sourceManual,
-		CreatedBy:     createdBy,
-		RawPayload:    string(raw),
-		LastSeenAt:    now,
-		SyncedAt:      now,
-	}, nil
+	return directoryPersonAPI(person, profile), nil
 }
 
 // replacementFile is the new source file a reviewer uploaded over an existing
@@ -645,7 +689,12 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมพื้นที่จัดเก็บได้"})
 			return
 		}
-		storagePath := filepath.Join(storageDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), filepath.Base(header.Filename)))
+		storedFilename := safeStoredFileName(header.Filename)
+		storagePath := filepath.Join(storageDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), storedFilename))
+		if len([]rune(storagePath)) > 1000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ที่อยู่ไฟล์ยาวเกินขนาดที่ฐานข้อมูลรองรับ"})
+			return
+		}
 		if err := c.SaveUploadedFile(header, storagePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกไฟล์ได้"})
 			return
@@ -658,8 +707,8 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 		replacedBy := currentUserID(c)
 		previousPath := document.StoragePath
 		updates := replacedFileUpdates(replacementFile{
-			Title:       strings.TrimSuffix(filepath.Base(header.Filename), ext),
-			Filename:    header.Filename,
+			Title:       strings.TrimSuffix(storedFilename, filepath.Ext(storedFilename)),
+			Filename:    storedFilename,
 			StoragePath: storagePath,
 			SourceType:  strings.TrimPrefix(ext, "."),
 			MimeType:    mimeType,
@@ -674,6 +723,19 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 				}
 			}
 			if err := tx.Model(&document).Updates(updates).Error; err != nil {
+				return err
+			}
+			var updated Document
+			if err := tx.First(&updated, document.ID).Error; err != nil {
+				return err
+			}
+			if err := syncCoreDocumentFile(tx, &updated); err != nil {
+				return err
+			}
+			if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+				return err
+			}
+			if err := syncCoreConfirmation(tx, &updated); err != nil {
 				return err
 			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: replacedBy, Action: "DOCUMENT_FILE_REPLACED", Details: header.Filename}).Error

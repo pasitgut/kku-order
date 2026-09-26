@@ -78,5 +78,5 @@ func (i *FolderImporter) importFile(sourcePath string) (bool, error) {
 	}
 	storageDir := getenv("UPLOAD_DIR", "./storage")
 	filename := filepath.Base(sourcePath)
-	return storeImportedDocument(i.db, file, filename, storageDir, info.Size())
+	return storeImportedDocument(i.db, file, filename, storageDir, info.Size(), "FOLDER")
 }

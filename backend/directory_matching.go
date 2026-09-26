@@ -189,24 +189,6 @@ func (p *DocumentProcessor) applyDirectoryMatches(metadata *commandMetadata) {
 	}
 }
 
-// loadDirectory reads the people a name may resolve to, plus the spellings
-// reviewers have already bound.
-func loadDirectory(db *gorm.DB) ([]DirectoryUser, map[string]uint, error) {
-	var users []DirectoryUser
-	if err := db.Where("is_active = ?", activeUserCode).Find(&users).Error; err != nil {
-		return nil, nil, err
-	}
-	var rows []PersonNameAlias
-	if err := db.Find(&rows).Error; err != nil {
-		return nil, nil, err
-	}
-	aliases := make(map[string]uint, len(rows))
-	for _, row := range rows {
-		aliases[row.NormalizedName] = row.DirectoryUserID
-	}
-	return users, aliases, nil
-}
-
 func applyMatchToAppointment(appointment *Appointment, match directoryMatch) {
 	appointment.NameMatchMethod = match.Method
 	appointment.Candidates = match.Candidates
@@ -263,7 +245,7 @@ func rememberNameAlias(tx *gorm.DB, previous Appointment, input appointmentReque
 	}
 	alias := PersonNameAlias{NormalizedName: key}
 	return tx.Where(PersonNameAlias{NormalizedName: key}).
-		Assign(map[string]any{"directory_user_id": match.User.ID, "source_text": sourceText, "created_by": changedBy}).
+		Assign(map[string]any{"directory_person_id": match.User.ID, "source_text": sourceText, "created_by": changedBy}).
 		FirstOrCreate(&alias).Error
 }
 

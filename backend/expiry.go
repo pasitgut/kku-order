@@ -130,11 +130,11 @@ func expiryEmailContent(db *gorm.DB, notification ExpiryNotification) (string, s
 			return "", "", "", err
 		}
 		personName = appointment.FullName
-		var user DirectoryUser
-		if appointment.DirectoryUserID == nil || db.Select("email").First(&user, *appointment.DirectoryUserID).Error != nil {
+		var person DirectoryPerson
+		if appointment.DirectoryUserID == nil || db.Select("email").First(&person, *appointment.DirectoryUserID).Error != nil || person.Email == nil {
 			return "", "", "", nil
 		}
-		recipient = strings.TrimSpace(user.Email)
+		recipient = strings.TrimSpace(*person.Email)
 	}
 	if recipient == "" {
 		return "", "", "", nil

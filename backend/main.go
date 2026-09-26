@@ -25,8 +25,8 @@ import (
 type Document struct {
 	ID                   uint                `json:"id" gorm:"primaryKey"`
 	Title                string              `json:"title" gorm:"size:500;not null"`
-	OriginalFilename     string              `json:"originalFilename" gorm:"size:255;not null"`
-	StoragePath          string              `json:"-" gorm:"size:500;not null"`
+	OriginalFilename     string              `json:"originalFilename" gorm:"size:500;not null"`
+	StoragePath          string              `json:"-" gorm:"size:1000;not null"`
 	SourceType           string              `json:"sourceType" gorm:"size:20;not null"`
 	MimeType             string              `json:"mimeType" gorm:"size:150;not null"`
 	OrderType            string              `json:"orderType" gorm:"size:50;index"`
@@ -68,6 +68,10 @@ type Document struct {
 	CreatedAt            time.Time           `json:"createdAt"`
 	UpdatedAt            time.Time           `json:"updatedAt"`
 }
+
+// Document keeps the review/OCR state beside, rather than inside, the
+// user-defined documents table. Its primary key is also documents.id.
+func (Document) TableName() string { return "document_workflows" }
 
 type ExtractedField struct {
 	ID              uint       `json:"id" gorm:"primaryKey"`
@@ -124,19 +128,22 @@ type AuditLog struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+func (AuditLog) TableName() string { return "application_audit_logs" }
+
 // Appointment stores the person-level rows extracted from a command.
 // DirectoryUserID is optional because OCR may produce a name before a match exists.
 type Appointment struct {
-	ID               uint           `json:"id" gorm:"primaryKey"`
-	DocumentID       uint           `json:"documentId" gorm:"index;not null"`
-	DirectoryUserID  *uint          `json:"directoryUserId" gorm:"index"`
-	DirectoryUser    *DirectoryUser `json:"directoryUser,omitempty" gorm:"foreignKey:DirectoryUserID"`
-	FullName         string         `json:"fullName" gorm:"size:500;not null"`
-	Position         string         `json:"position" gorm:"size:255"`
-	Department       string         `json:"department" gorm:"size:500"`
-	CommitteeRole    string         `json:"committeeRole" gorm:"size:255"`
-	Responsibilities string         `json:"responsibilities" gorm:"type:text"`
-	NameMatchMethod  string         `json:"nameMatchMethod" gorm:"size:50"`
+	ID               uint             `json:"id" gorm:"primaryKey"`
+	DocumentID       uint             `json:"documentId" gorm:"index;not null"`
+	DirectoryUserID  *uint            `json:"directoryUserId" gorm:"index"`
+	DirectoryUser    *DirectoryUser   `json:"directoryUser,omitempty" gorm:"-"`
+	DirectoryPerson  *DirectoryPerson `json:"-" gorm:"foreignKey:DirectoryUserID"`
+	FullName         string           `json:"fullName" gorm:"size:500;not null"`
+	Position         string           `json:"position" gorm:"size:255"`
+	Department       string           `json:"department" gorm:"size:500"`
+	CommitteeRole    string           `json:"committeeRole" gorm:"size:255"`
+	Responsibilities string           `json:"responsibilities" gorm:"type:text"`
+	NameMatchMethod  string           `json:"nameMatchMethod" gorm:"size:50"`
 	// Candidates is computed per request, never stored: the directory
 	// changes, and a stale suggestion is worse than none.
 	Candidates      []directoryCandidate `json:"candidates" gorm:"-"`
@@ -215,17 +222,68 @@ type DirectoryUser struct {
 	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
+// DirectoryPerson is the persisted core person record. DirectoryUser remains
+// the API shape so existing clients do not have to know the storage schema.
+type DirectoryPerson struct {
+	ID            uint      `json:"id" gorm:"primaryKey"`
+	ExternalID    *int64    `json:"externalId" gorm:"column:external_id;uniqueIndex"`
+	Prefix        string    `json:"prefix" gorm:"size:50"`
+	FirstName     string    `json:"firstName" gorm:"size:255;not null"`
+	LastName      string    `json:"lastName" gorm:"size:255;not null"`
+	Email         *string   `json:"email" gorm:"size:255"`
+	Phone         *string   `json:"phone" gorm:"size:20"`
+	PositionTitle string    `json:"positionTitle" gorm:"size:255"`
+	Status        string    `json:"status" gorm:"size:50"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
+	SyncedAt      time.Time `json:"syncedAt"`
+
+	FullName   string `json:"fullName" gorm:"-"`
+	Department string `json:"department,omitempty" gorm:"-"`
+	Faculty    string `json:"faculty,omitempty" gorm:"-"`
+	Source     string `json:"source" gorm:"-"`
+	CreatedBy  string `json:"createdBy,omitempty" gorm:"-"`
+	IsActive   string `json:"isActive" gorm:"-"`
+}
+
+func (DirectoryPerson) TableName() string { return "directory_people" }
+
+func (person *DirectoryPerson) AfterFind(_ *gorm.DB) error {
+	person.FullName = strings.TrimSpace(strings.Join([]string{person.Prefix, person.FirstName, person.LastName}, " "))
+	person.Source = sourceSynced
+	if person.ExternalID == nil {
+		person.Source = sourceManual
+	}
+	person.IsActive = activeStatusCode(person.Status)
+	return nil
+}
+
+type DirectoryPersonProfile struct {
+	PersonID        uint   `json:"-" gorm:"column:person_id;primaryKey"`
+	Department      string `json:"department" gorm:"size:255"`
+	Faculty         string `json:"faculty" gorm:"size:255"`
+	Source          string `json:"source" gorm:"size:20;not null;default:SYNCED"`
+	CreatedBy       string `json:"createdBy" gorm:"size:255"`
+	SourceUpdatedAt string `json:"sourceUpdatedAt" gorm:"size:50"`
+	RawPayload      string `json:"-" gorm:"type:json"`
+	Fingerprint     string `json:"-" gorm:"size:64"`
+}
+
+func (DirectoryPersonProfile) TableName() string { return "directory_person_profiles" }
+
 // PersonNameAlias remembers that a reviewer bound a particular OCR spelling
 // to a person, so the next document carrying the same slip matches on its own.
 type PersonNameAlias struct {
 	ID              uint      `json:"id" gorm:"primaryKey"`
 	NormalizedName  string    `json:"normalizedName" gorm:"size:255;uniqueIndex;not null"`
-	DirectoryUserID uint      `json:"directoryUserId" gorm:"index;not null"`
+	DirectoryUserID uint      `json:"directoryUserId" gorm:"column:directory_person_id;index;not null"`
 	SourceText      string    `json:"sourceText" gorm:"size:500"`
 	CreatedBy       string    `json:"createdBy" gorm:"size:255"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
+
+func (PersonNameAlias) TableName() string { return "person_name_aliases" }
 
 type UserSyncRun struct {
 	ID           uint       `json:"id" gorm:"primaryKey"`
@@ -240,6 +298,8 @@ type UserSyncRun struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 	UpdatedAt    time.Time  `json:"updatedAt"`
 }
+
+func (UserSyncRun) TableName() string { return "user_sync_runs" }
 
 type ExpiryNotification struct {
 	ID            uint       `json:"id" gorm:"primaryKey"`
@@ -410,12 +470,16 @@ func listDocuments(db *gorm.DB) gin.HandlerFunc {
 func getDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var document Document
-		if err := db.Preload("Fields").Preload("Appointments").Preload("Appointments.DirectoryUser").Preload("References").Preload("OCRPages.Lines").First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Preload("Fields").Preload("Appointments").Preload("Appointments.DirectoryPerson").Preload("References").Preload("OCRPages.Lines").First(&document, c.Param("id")).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
+			return
+		}
+		if err := enrichAppointmentDirectoryPeople(db, &document); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดข้อมูลบุคลากรที่ผูกไว้ได้"})
 			return
 		}
 		attachAppointmentCandidates(db, &document)
@@ -497,22 +561,27 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมพื้นที่จัดเก็บได้"})
 			return
 		}
-		safeName := fmt.Sprintf("%d-%s", time.Now().UnixNano(), filepath.Base(header.Filename))
+		storedFilename := safeStoredFileName(header.Filename)
+		safeName := fmt.Sprintf("%d-%s", time.Now().UnixNano(), storedFilename)
 		storagePath := filepath.Join(storageDir, safeName)
+		if len([]rune(storagePath)) > 1000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ที่อยู่ไฟล์ยาวเกินขนาดที่ฐานข้อมูลรองรับ"})
+			return
+		}
 		if err := c.SaveUploadedFile(header, storagePath); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกไฟล์ได้"})
 			return
 		}
 
 		retentionUntil := time.Now().AddDate(10, 0, 0)
-		document := Document{Title: strings.TrimSuffix(filepath.Base(header.Filename), ext), OriginalFilename: header.Filename, StoragePath: storagePath, SourceType: strings.TrimPrefix(ext, "."), MimeType: header.Header.Get("Content-Type"), Status: "PROCESSING", ProcessingStage: "QUEUED", FileSizeBytes: header.Size, FileHash: fileHash, RetentionUntil: &retentionUntil, ImportSource: "UPLOAD", ImportedBy: currentUserID(c), QualityProfile: "STANDARD"}
+		document := Document{Title: strings.TrimSuffix(storedFilename, filepath.Ext(storedFilename)), OriginalFilename: storedFilename, StoragePath: storagePath, SourceType: strings.TrimPrefix(ext, "."), MimeType: header.Header.Get("Content-Type"), Status: "PROCESSING", ProcessingStage: "QUEUED", FileSizeBytes: header.Size, FileHash: fileHash, RetentionUntil: &retentionUntil, ImportSource: "UPLOAD", ImportedBy: currentUserID(c), QualityProfile: "STANDARD"}
 		if document.MimeType == "" {
 			document.MimeType = "application/octet-stream"
 		}
 		if duplicate.ID != 0 {
 			retentionUntil := time.Now().AddDate(10, 0, 0)
 			updates := map[string]any{
-				"title": strings.TrimSuffix(filepath.Base(header.Filename), ext), "original_filename": header.Filename,
+				"title": document.Title, "original_filename": storedFilename,
 				"storage_path": storagePath, "source_type": strings.TrimPrefix(ext, "."), "mime_type": document.MimeType,
 				"status": "PROCESSING", "processing_stage": "QUEUED", "file_size_bytes": header.Size, "file_hash": fileHash,
 				"retention_until": retentionUntil, "import_source": "UPLOAD", "imported_by": currentUserID(c),
@@ -527,6 +596,19 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 					}
 				}
 				if err := tx.Model(&duplicate).Updates(updates).Error; err != nil {
+					return err
+				}
+				var updated Document
+				if err := tx.First(&updated, duplicate.ID).Error; err != nil {
+					return err
+				}
+				if err := syncCoreDocumentFile(tx, &updated); err != nil {
+					return err
+				}
+				if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+					return err
+				}
+				if err := syncCoreConfirmation(tx, &updated); err != nil {
 					return err
 				}
 				return tx.Create(&AuditLog{DocumentID: &duplicate.ID, UserID: currentUserID(c), Action: "DOCUMENT_OVERWRITTEN", Details: header.Filename}).Error
@@ -544,7 +626,12 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"data": duplicate, "overwritten": true})
 			return
 		}
-		if err := db.Create(&document).Error; err != nil {
+		core := StoredDocument{
+			FileName: document.OriginalFilename, StoragePath: document.StoragePath,
+			FileType: document.SourceType, FileHash: document.FileHash,
+			CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt,
+		}
+		if err := createDocumentBundle(db, &core, &document); err != nil {
 			_ = os.Remove(storagePath)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกข้อมูลเอกสารได้"})
 			return
@@ -595,15 +682,21 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 		}
 		now := time.Now()
 		confirmedBy := currentUserID(c)
-		updates := map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}
-		if err := db.Model(&document).Updates(updates).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&document).Updates(map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}).Error; err != nil {
+				return err
+			}
+			document.Status = "CONFIRMED"
+			document.ConfirmedBy = confirmedBy
+			document.ConfirmedAt = &now
+			if err := syncCoreConfirmation(tx, &document); err != nil {
+				return err
+			}
+			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: confirmedBy, Action: "DOCUMENT_CONFIRMED", Details: "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล"}).Error
+		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถยืนยันเอกสารได้"})
 			return
 		}
-		_ = db.Create(&AuditLog{DocumentID: &document.ID, UserID: confirmedBy, Action: "DOCUMENT_CONFIRMED", Details: "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล"}).Error
-		document.Status = "CONFIRMED"
-		document.ConfirmedBy = confirmedBy
-		document.ConfirmedAt = &now
 		c.JSON(http.StatusOK, gin.H{"message": "ยืนยันข้อมูลเรียบร้อยแล้ว", "data": document})
 	}
 }

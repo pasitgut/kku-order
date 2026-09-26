@@ -188,7 +188,7 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 		return false, err
 	}
 	defer temporary.Close()
-	return storeImportedDocument(i.db, temporary, fileName, storageDir, bytesWritten)
+	return storeImportedDocument(i.db, temporary, fileName, storageDir, bytesWritten, "GOOGLE_DRIVE")
 }
 
 func (i *GoogleDriveImporter) loadState() driveSyncState {

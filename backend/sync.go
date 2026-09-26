@@ -133,51 +133,102 @@ func (s *UserSyncService) upsertUser(item map[string]any) (created bool, updated
 	if err != nil {
 		return false, false, fmt.Errorf("marshal user payload: %w", err)
 	}
-	externalID := firstString(item, "user_id", "userId", "id", "uuid", "employee_id", "employeeId", "cp_web_id", "username", "email")
-	if externalID == "" {
-		hash := sha256.Sum256(raw)
-		externalID = "payload:" + hex.EncodeToString(hash[:])
+	externalIDText := firstString(item, "user_id", "userId", "id", "employee_id", "employeeId", "external_id", "externalId")
+	if externalIDText == "" {
+		return false, false, errors.New("users API item is missing a numeric id required by directory_people.external_id")
 	}
 	fingerprintHash := sha256.Sum256(raw)
 	fingerprint := hex.EncodeToString(fingerprintHash[:])
+	externalID, err := strconv.ParseInt(externalIDText, 10, 64)
+	if err != nil || externalID <= 0 {
+		return false, false, fmt.Errorf("external user id %q cannot be stored in directory_people.external_id (BIGINT)", externalIDText)
+	}
 
-	user := directoryUserFromPayload(item, externalID, string(raw), fingerprint, now)
+	user := directoryUserFromPayload(item, externalIDText, string(raw), fingerprint, now)
+	if user.FirstName == "" || user.LastName == "" {
+		parts := strings.Fields(stripThaiNamePrefixes(user.FullName))
+		if len(parts) >= 2 {
+			if user.FirstName == "" {
+				user.FirstName = strings.Join(parts[:len(parts)-1], " ")
+			}
+			if user.LastName == "" {
+				user.LastName = parts[len(parts)-1]
+			}
+		}
+	}
+	if strings.TrimSpace(user.FirstName) == "" || strings.TrimSpace(user.LastName) == "" {
+		return false, false, fmt.Errorf("external user %s has no first/last name required by directory_people", externalIDText)
+	}
+	person := DirectoryPerson{
+		ExternalID: &externalID, Prefix: strings.TrimSpace(user.Prefix),
+		FirstName: strings.TrimSpace(user.FirstName), LastName: strings.TrimSpace(user.LastName),
+		Email: nonEmptySQLValue(user.Email), Phone: nonEmptySQLValue(user.Phone),
+		PositionTitle: strings.TrimSpace(user.PositionTitle), Status: normalizePersonStatus(user.IsActive),
+		CreatedAt: now, UpdatedAt: now, SyncedAt: now,
+	}
+	profile := directoryPersonProfileFromPayload(item, sourceSynced, "", fingerprint, string(raw))
 
-	var existing DirectoryUser
-	queryErr := s.db.Where("external_id = ? AND source = ?", externalID, sourceSynced).First(&existing).Error
+	var existing DirectoryPerson
+	queryErr := s.db.Where("external_id = ?", externalID).First(&existing).Error
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
-		if err := s.db.Create(&user).Error; err != nil {
-			return false, false, fmt.Errorf("create directory user %s: %w", externalID, err)
+		if err := s.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(&person).Error; err != nil {
+				return err
+			}
+			profile.PersonID = person.ID
+			return tx.Create(&profile).Error
+		}); err != nil {
+			return false, false, fmt.Errorf("create directory person %s: %w", externalIDText, err)
 		}
 		return true, false, nil
 	}
 	if queryErr != nil {
-		return false, false, fmt.Errorf("find directory user %s: %w", externalID, queryErr)
+		return false, false, fmt.Errorf("find directory person %s: %w", externalIDText, queryErr)
 	}
-	if existing.Fingerprint == fingerprint {
-		if err := s.db.Model(&existing).Updates(directoryUserUpdates(user)).Error; err != nil {
-			return false, false, fmt.Errorf("refresh directory user %s: %w", externalID, err)
+	var existingProfile DirectoryPersonProfile
+	profileErr := s.db.First(&existingProfile, "person_id = ?", existing.ID).Error
+	if profileErr != nil && !errors.Is(profileErr, gorm.ErrRecordNotFound) {
+		return false, false, fmt.Errorf("find directory person profile %s: %w", externalIDText, profileErr)
+	}
+	person.ID = existing.ID
+	person.CreatedAt = existing.CreatedAt
+	unchanged := sameOptionalString(existing.Email, person.Email) && sameOptionalString(existing.Phone, person.Phone) &&
+		existing.Prefix == person.Prefix && existing.FirstName == person.FirstName && existing.LastName == person.LastName &&
+		existing.PositionTitle == person.PositionTitle && existing.Status == person.Status &&
+		existingProfile.Department == profile.Department && existingProfile.Faculty == profile.Faculty
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		personUpdates := map[string]any{
+			"prefix": person.Prefix, "first_name": person.FirstName, "last_name": person.LastName,
+			"email": person.Email, "phone": person.Phone, "position_title": person.PositionTitle,
+			"status": person.Status, "synced_at": now,
 		}
-		return false, false, nil
+		if !unchanged {
+			personUpdates["updated_at"] = now
+		}
+		if err := tx.Model(&DirectoryPerson{}).Where("id = ?", person.ID).Updates(personUpdates).Error; err != nil {
+			return err
+		}
+		profile.PersonID = person.ID
+		profileUpdates := map[string]any{
+			"department": profile.Department, "faculty": profile.Faculty, "source": sourceSynced,
+			"source_updated_at": profile.SourceUpdatedAt, "raw_payload": profile.RawPayload,
+			"fingerprint": profile.Fingerprint,
+		}
+		if errors.Is(profileErr, gorm.ErrRecordNotFound) {
+			return tx.Create(&profile).Error
+		}
+		return tx.Model(&DirectoryPersonProfile{}).Where("person_id = ?", person.ID).Updates(profileUpdates).Error
+	}); err != nil {
+		return false, false, fmt.Errorf("update directory person %s: %w", externalIDText, err)
 	}
-	if err := s.db.Model(&existing).Updates(directoryUserUpdates(user)).Error; err != nil {
-		return false, false, fmt.Errorf("update directory user %s: %w", externalID, err)
-	}
-	return false, true, nil
+	return false, !unchanged, nil
 }
 
-func directoryUserUpdates(user DirectoryUser) map[string]any {
-	return map[string]any{
-		"user_id": user.UserID, "prefix": user.Prefix, "username": user.Username, "full_name": user.FullName,
-		"first_name": user.FirstName, "last_name": user.LastName, "gender": user.Gender, "email": user.Email,
-		"phone": user.Phone, "tel_format": user.PhoneFormatted, "department": user.Department, "faculty": user.Faculty,
-		"position_title": user.PositionTitle, "job_title": user.JobTitle, "position_en": user.PositionEN,
-		"prefix_position_en": user.PositionPrefixEN, "manage_position": user.ManagePosition, "name_en": user.NameEN,
-		"suffix_en": user.SuffixEN, "scopus_id": user.ScopusID, "scholar_author_id": user.ScholarAuthorID,
-		"lab_name": user.LabName, "room": user.Room, "cp_web_id": user.CPWebID, "role_id": user.RoleID,
-		"role_name": user.RoleName, "role": user.Role, "is_active": user.IsActive, "source_updated_at": user.SourceUpdatedAt,
-		"raw_payload": user.RawPayload, "fingerprint": user.Fingerprint, "last_seen_at": user.LastSeenAt, "synced_at": user.SyncedAt,
+func sameOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
 	}
+	return *left == *right
 }
 
 func directoryUserFromPayload(item map[string]any, externalID, rawPayload, fingerprint string, now time.Time) DirectoryUser {

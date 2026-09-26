@@ -276,6 +276,13 @@ func (p *DocumentProcessor) persistOCRResult(document *Document, result workerRe
 		if err := tx.Model(document).Updates(updates).Error; err != nil {
 			return err
 		}
+		var updated Document
+		if err := tx.First(&updated, document.ID).Error; err != nil {
+			return err
+		}
+		if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+			return err
+		}
 		return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: "system:one-ocr", Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("pages=%d lines=%d confidence=%.2f", len(result.Pages), len(allLines), averageConfidence)}).Error
 	})
 }
