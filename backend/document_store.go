@@ -209,8 +209,12 @@ func syncCoreCommitteeFromWorkflow(tx *gorm.DB, document *Document) error {
 	if err := tx.Where("order_id = ?", order.ID).Order("id ASC").Find(&committees).Error; err != nil {
 		return err
 	}
+	var appointments []Appointment
+	if err := tx.Where("document_id = ?", document.ID).Order("id ASC").Find(&appointments).Error; err != nil {
+		return err
+	}
 	name := truncateRunes(strings.TrimSpace(document.Committee), 500)
-	if name == "" {
+	if name == "" && len(appointments) == 0 {
 		if len(committees) > 0 {
 			committeeIDs := make([]uint64, 0, len(committees))
 			for _, committee := range committees {
@@ -252,10 +256,6 @@ func syncCoreCommitteeFromWorkflow(tx *gorm.DB, document *Document) error {
 		return err
 	}
 
-	var appointments []Appointment
-	if err := tx.Where("document_id = ?", document.ID).Order("id ASC").Find(&appointments).Error; err != nil {
-		return err
-	}
 	seenPeople := make(map[uint64]struct{}, len(appointments))
 	for index, appointment := range appointments {
 		roleName := strings.TrimSpace(appointment.CommitteeRole)
