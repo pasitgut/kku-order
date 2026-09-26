@@ -1,26 +1,41 @@
 @import "tailwindcss";
 
+/* ธีมอ้างอิงเว็บวิทยาลัยการคอมพิวเตอร์ มข. (computing.kku.ac.th) */
 :root {
-  --canvas: #f6f8fb;
+  --canvas: #f4f6f9;
   --surface: #ffffff;
-  --ink: #212529;
-  --muted: #6c757d;
-  --line: #dee2e6;
-  --navy: #063b6f;
-  --navy-soft: #0b568e;
-  --accent: #087bb5;
-  --accent-strong: #056394;
-  --accent-soft: #e8f4fa;
-  --brand-blue-light: #9bd8f5;
-  --brand-blue-pale: #edf8fd;
-  --brand-blue-text: #c4e4f3;
-  --brand-gold: #f2c343;
-  --success: #21855b;
-  --success-soft: #e8f6ef;
-  --warning: #b7791f;
-  --warning-soft: #fff4df;
-  --danger: #b84848;
-  --danger-soft: #faeaea;
+  --surface-muted: #f7f9fb;
+  --ink: #1f2933;
+  --muted: #5f6b78;
+  --subtle: #8994a0;
+  --line: #e3e7ec;
+  --line-soft: #eef1f4;
+  --line-strong: #d5dbe2;
+  --navy: #031445;
+  --navy-soft: #0b2a6b;
+  --bar: #1e1e1e;
+  --bar-hover: #2b363d;
+  --bar-text: #cfd6dd;
+  --bar-muted: #aab4be;
+  --accent: #1c75bc;
+  --accent-strong: #0b5a93;
+  --accent-soft: #e4f0fa;
+  --band: #1c75bc;
+  --band-strip: #0b76bc;
+  --band-text: #d6e8f6;
+  --brand-blue-light: #9fc6e6;
+  --brand-blue-pale: #f2f8fd;
+  --brand-blue-text: #c9d6e3;
+  --pill: #e7e9e9;
+  --highlight: #f04814;
+  --success: #1b6e45;
+  --success-soft: #e3f3ea;
+  --warning: #8a5a00;
+  --warning-dot: #d99a1f;
+  --warning-soft: #fff4d6;
+  --danger: #b3330f;
+  --danger-soft: #fde8e3;
+  --shadow-card: 0 1.6px 8px rgba(0, 0, 0, 0.12);
 }
 
 * { box-sizing: border-box; }
@@ -29,24 +44,25 @@ body {
   margin: 0;
   background: var(--canvas);
   color: var(--ink);
-  font-family: "Noto Sans Thai", "Leelawadee UI", "Segoe UI", sans-serif;
+  font-family: var(--font-prompt), "Leelawadee UI", "Segoe UI", sans-serif;
   text-rendering: optimizeLegibility;
 }
 button, input, select, textarea { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
-::selection { background: #cfeafb; color: var(--ink); }
+::selection { background: #cfe3f5; color: var(--ink); }
 
 .shell-scrollbar::-webkit-scrollbar { width: 8px; height: 8px; }
-.shell-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: #b8c9d5; }
+.shell-scrollbar::-webkit-scrollbar-thumb { border-radius: 999px; background: #c2ccd6; }
 .shell-scrollbar::-webkit-scrollbar-track { background: transparent; }
+
+.card { border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-card); }
 
 .data-grid th {
   white-space: nowrap;
-  color: #6c757d;
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  background: var(--surface-muted);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 .data-grid td { border-top: 1px solid var(--line); vertical-align: middle; }
 
@@ -56,13 +72,16 @@ button, a { -webkit-tap-highlight-color: transparent; }
     linear-gradient(rgba(232, 237, 242, 0.55) 1px, transparent 1px) 0 0 / 22px 22px,
     #fff;
 }
-.focus-ring:focus-visible { outline: 3px solid rgba(31, 122, 140, 0.28); outline-offset: 2px; }
+.focus-ring:focus-visible { outline: 3px solid rgba(28, 117, 188, 0.3); outline-offset: 2px; }
 .skeleton { position: relative; overflow: hidden; border-radius: 0.375rem; background: #edf2f5; }
 .skeleton::after { position: absolute; inset: 0; content: ""; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.72), transparent); animation: skeleton-shimmer 1.5s infinite; }
 @keyframes skeleton-shimmer { to { transform: translateX(100%); } }
 
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.toast-enter { animation: toast-in 180ms ease-out; }
+
 @media print {
-  aside, header, button, form, .focus-ring { display: none !important; }
+  header, footer, nav, button, form, .focus-ring, .no-print { display: none !important; }
   main { overflow: visible !important; padding: 0 !important; }
   body, html { background: white !important; }
   section { border-color: #d9d9d9 !important; box-shadow: none !important; }
