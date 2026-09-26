@@ -347,3 +347,95 @@ export function statusLabel(status: string) {
 export function isAppointmentLinked(appointment: Appointment) {
   return Boolean(appointment.directoryUserId);
 }
+
+export type OCRSettings = {
+  engine: string;
+  language: string;
+  dpi: number;
+  maxSide: number;
+  preprocess: boolean;
+  reviewThreshold: number;
+  importEnabled: boolean;
+  importSource: "folder" | "drive";
+  importIntervalMinutes: number;
+  driveFolderUrl: string;
+  driveAfterImport: "move" | "keep";
+};
+
+export type OCRTestResult = { confidence: number; seconds: number; lineCount: number; lines: { text: string; confidence: number }[] };
+
+export type SystemSettings = {
+  userSyncCron: string;
+  userSyncTimezone: string;
+  externalUsersHost: string;
+  apiKeyConfigured: boolean;
+  expiryCron: string;
+  smtpHost: string;
+  smtpPort: string;
+  smtpFrom: string;
+  smtpConfigured: boolean;
+  importDir: string;
+  authRequired: boolean;
+};
+
+export type Me = {
+  userId: string;
+  role: string;
+  displayName: string;
+  email: string;
+  positionTitle: string;
+  department: string;
+  directoryUserId?: number;
+  hasPhoto: boolean;
+  photoVersion: number;
+};
+
+export type MyActivity = {
+  stats: { imported: number; confirmed: number; edited: number };
+  items: { id: number; action: string; label: string; documentId?: number; documentTitle: string; details: string; createdAt: string }[];
+};
+
+export async function getOCRSettings() {
+  return apiFetch<{ data: OCRSettings }>("/api/v1/settings/ocr");
+}
+
+export async function updateOCRSettings(settings: OCRSettings) {
+  return apiFetch<{ data: OCRSettings }>("/api/v1/settings/ocr", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+export async function testOCRSettings(file: File, settings: OCRSettings) {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("settings", JSON.stringify(settings));
+  return apiFetch<{ data: OCRTestResult }>("/api/v1/settings/ocr/test", { method: "POST", body });
+}
+
+export async function getSystemSettings() {
+  return apiFetch<{ data: SystemSettings }>("/api/v1/settings/system");
+}
+
+export async function getMe() {
+  return apiFetch<{ data: Me }>("/api/v1/me");
+}
+
+export async function getMyActivity() {
+  return apiFetch<{ data: MyActivity }>("/api/v1/me/activity");
+}
+
+export function getMyPhotoUrl(version: number) {
+  return `${API_URL}/api/v1/me/photo?v=${version}`;
+}
+
+export async function uploadMyPhoto(photo: Blob) {
+  const body = new FormData();
+  body.append("photo", photo, "profile.jpg");
+  return apiFetch<{ data: { hasPhoto: boolean; photoVersion: number } }>("/api/v1/me/photo", { method: "PUT", body });
+}
+
+export async function deleteMyPhoto() {
+  return apiFetch<{ data: { hasPhoto: boolean } }>("/api/v1/me/photo", { method: "DELETE" });
+}

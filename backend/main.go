@@ -287,7 +287,7 @@ func main() {
 	logger.Printf("external users endpoint: %s (api key configured=%t)", userSync.baseURL, strings.TrimSpace(userSync.apiKey) != "")
 	location := loadTimezone(getenv("USER_SYNC_TZ", "Asia/Bangkok"), logger)
 	folderImporter := NewFolderImporter(db, processor, logger)
-	if imported, importErr := folderImporter.Scan(context.Background()); importErr != nil {
+	if imported, importErr := folderImporter.ScanIfDue(context.Background()); importErr != nil {
 		logger.Printf("initial folder import failed: %v", importErr)
 	} else if imported > 0 {
 		logger.Printf("initial folder import completed: imported=%d", imported)
@@ -308,8 +308,9 @@ func main() {
 	}); err != nil {
 		panic(fmt.Errorf("configure expiry notification schedule: %w", err))
 	}
-	if _, err := scheduler.AddFunc(getenv("IMPORT_CRON", "*/5 * * * *"), func() {
-		imported, importErr := folderImporter.Scan(context.Background())
+	// Ticks every minute; the interval itself comes from the OCR settings page.
+	if _, err := scheduler.AddFunc(getenv("IMPORT_CRON", "* * * * *"), func() {
+		imported, importErr := folderImporter.ScanIfDue(context.Background())
 		if importErr != nil {
 			logger.Printf("scheduled folder import failed: %v", importErr)
 			return
@@ -348,6 +349,16 @@ func main() {
 	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
 	router.POST("/api/v1/sync/users", requireRole("ADMIN", "STAFF"), userSyncHandler(userSync))
 	router.GET("/api/v1/sync/runs", listSyncRuns(db))
+	settingsStore := NewSettingsStore(db)
+	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore))
+	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
+	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRSettingsHandler())
+	router.GET("/api/v1/settings/system", requireRole("ADMIN", "STAFF", "DEVELOPER"), systemSettingsHandler())
+	router.GET("/api/v1/me", meHandler(db))
+	router.GET("/api/v1/me/activity", myActivityHandler(db))
+	router.GET("/api/v1/me/photo", getMyPhotoHandler(db))
+	router.PUT("/api/v1/me/photo", uploadMyPhotoHandler(db))
+	router.DELETE("/api/v1/me/photo", deleteMyPhotoHandler(db))
 
 	port := getenv("PORT", "8080")
 	_ = router.Run(":" + port)
@@ -624,7 +635,7 @@ func corsMiddleware() gin.HandlerFunc {
 		c.Header("Access-Control-Allow-Origin", getenv("WEB_ORIGIN", "http://localhost:3000"))
 		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Request-User, X-Auth-Request-Role")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
 			return

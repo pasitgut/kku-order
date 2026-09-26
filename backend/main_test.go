@@ -49,3 +49,18 @@ func TestCORSPreflightAllowsDeveloperDelete(t *testing.T) {
 		t.Fatalf("allow headers = %q, want auth headers", allowHeaders)
 	}
 }
+
+func TestCORSPreflightAllowsSettingsUpdate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(corsMiddleware())
+	router.PUT("/api/v1/settings/ocr", func(c *gin.Context) { c.Status(http.StatusOK) })
+	request := httptest.NewRequest(http.MethodOptions, "/api/v1/settings/ocr", nil)
+	request.Header.Set("Origin", "http://localhost:3000")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPut)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if !strings.Contains(response.Header().Get("Access-Control-Allow-Methods"), http.MethodPut) {
+		t.Fatalf("allow methods = %q, want PUT", response.Header().Get("Access-Control-Allow-Methods"))
+	}
+}

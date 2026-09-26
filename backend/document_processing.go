@@ -20,8 +20,9 @@ import (
 )
 
 type DocumentProcessor struct {
-	db     *gorm.DB
-	logger *log.Logger
+	db       *gorm.DB
+	logger   *log.Logger
+	settings SettingsStore
 }
 
 type workerResult struct {
@@ -51,7 +52,7 @@ type workerWord struct {
 }
 
 func NewDocumentProcessor(db *gorm.DB, logger *log.Logger) *DocumentProcessor {
-	return &DocumentProcessor{db: db, logger: logger}
+	return &DocumentProcessor{db: db, logger: logger, settings: NewSettingsStore(db)}
 }
 
 func (p *DocumentProcessor) Enqueue(documentID uint) {
@@ -113,7 +114,8 @@ func (p *DocumentProcessor) runOCR(ctx context.Context, documentPath, sourceType
 	if pdfPages > 100 {
 		return workerResult{}, fmt.Errorf("เอกสารมี %d หน้า เกินขอบเขตสูงสุด 100 หน้า", pdfPages)
 	}
-	renderArgs := []string{"-png", "-r", getenvInt("OCR_DPI", 200), "-f", "1"}
+	settings := loadOCRSettingsOrDefault(p.settings)
+	renderArgs := settings.renderArgs()
 	if pdfPages > 0 {
 		renderArgs = append(renderArgs, "-l", strconv.Itoa(pdfPages))
 	}
@@ -122,28 +124,7 @@ func (p *DocumentProcessor) runOCR(ctx context.Context, documentPath, sourceType
 		return workerResult{}, fmt.Errorf("render PDF เป็นภาพ: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	outputJSON := filepath.Join(tempDir, "ocr.json")
-	ocrScript := getenv("OCR_SCRIPT", filepath.Join(".", "ocr_worker.py"))
-	modelsDir := getenv("OCR_MODELS_DIR", filepath.Join(".", "one-ocr", "models"))
-	pythonBin := getenv("OCR_PYTHON", "python")
-	args := []string{ocrScript, "--input-dir", tempDir, "--output-json", outputJSON, "--models-dir", modelsDir, "--language", getenv("OCR_LANGUAGE", "thai"), "--max-side", getenvInt("OCR_MAX_SIDE", 1536), "--preprocess", getenv("OCR_PREPROCESS", "none")}
-	command := exec.CommandContext(ctx, pythonBin, args...)
-	command.Env = append(os.Environ(), "PYTHONUTF8=1")
-	if output, err := command.CombinedOutput(); err != nil {
-		return workerResult{}, fmt.Errorf("เรียก one-ocr: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	contents, err := os.ReadFile(outputJSON)
-	if err != nil {
-		return workerResult{}, fmt.Errorf("อ่านผลลัพธ์ one-ocr: %w", err)
-	}
-	var result workerResult
-	if err := json.Unmarshal(contents, &result); err != nil {
-		return workerResult{}, fmt.Errorf("แปลงผลลัพธ์ one-ocr: %w", err)
-	}
-	if len(result.Pages) == 0 {
-		return workerResult{}, errors.New("one-ocr ไม่พบข้อความในเอกสาร")
-	}
-	return result, nil
+	return runOCRWorker(ctx, settings, tempDir)
 }
 
 func (p *DocumentProcessor) runStructuredImport(ctx context.Context, documentPath, sourceType string) (workerResult, error) {
@@ -190,8 +171,9 @@ func (p *DocumentProcessor) persistOCRResult(document *Document, result workerRe
 	}
 	averageConfidence := averageOCRConfidence(result.Pages)
 	finished := time.Now()
+	threshold := loadOCRSettingsOrDefault(p.settings).ReviewThreshold
 	status := "REVIEW"
-	if averageConfidence < 0.90 || metadata.lowConfidence {
+	if needsReview(averageConfidence, lowConfidenceAt(metadata, threshold), threshold) {
 		status = "NEEDS_REVIEW"
 	}
 

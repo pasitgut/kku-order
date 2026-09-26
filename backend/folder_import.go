@@ -23,10 +23,27 @@ type FolderImporter struct {
 	db        *gorm.DB
 	processor *DocumentProcessor
 	logger    *log.Logger
+	settings  SettingsStore
+	lastScan  time.Time
 }
 
 func NewFolderImporter(db *gorm.DB, processor *DocumentProcessor, logger *log.Logger) *FolderImporter {
-	return &FolderImporter{db: db, processor: processor, logger: logger}
+	return &FolderImporter{db: db, processor: processor, logger: logger, settings: NewSettingsStore(db)}
+}
+
+// ScanIfDue runs on a one-minute tick and applies the admin's on/off switch,
+// source and interval. Google Drive is imported by a separate component.
+func (i *FolderImporter) ScanIfDue(ctx context.Context) (int, error) {
+	settings := loadOCRSettingsOrDefault(i.settings)
+	if !settings.ImportEnabled || settings.ImportSource != "folder" {
+		return 0, nil
+	}
+	now := time.Now()
+	if !importDue(i.lastScan, now, settings.ImportIntervalMinutes) {
+		return 0, nil
+	}
+	i.lastScan = now
+	return i.Scan(ctx)
 }
 
 func (i *FolderImporter) Scan(ctx context.Context) (int, error) {
