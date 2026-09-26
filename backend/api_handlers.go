@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -41,6 +43,7 @@ type fieldUpdateRequest struct {
 
 type appointmentRequest struct {
 	ID               uint    `json:"id"`
+	DirectoryUserID  *uint   `json:"directoryUserId"`
 	FullName         string  `json:"fullName" binding:"required"`
 	Position         string  `json:"position"`
 	Department       string  `json:"department"`
@@ -303,25 +306,34 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				}
 			}
 			if payload.Appointments != nil {
+				// Read the rows before they are replaced: their names are what
+				// OCR produced, which is the key an alias must be stored under.
+				var existingAppointments []Appointment
+				if err := tx.Where("document_id = ?", document.ID).Find(&existingAppointments).Error; err != nil {
+					return err
+				}
+				previous := make(map[uint]Appointment, len(existingAppointments))
+				for _, row := range existingAppointments {
+					previous[row.ID] = row
+				}
 				if err := tx.Where("document_id = ?", document.ID).Delete(&Appointment{}).Error; err != nil {
 					return err
 				}
-				var directoryUsers []DirectoryUser
-				if err := tx.Where("is_active = ?", true).Find(&directoryUsers).Error; err != nil {
+				directoryUsers, aliases, err := loadDirectory(tx)
+				if err != nil {
 					return err
 				}
 				for _, input := range *payload.Appointments {
-					appointment := Appointment{DocumentID: document.ID, FullName: input.FullName, Position: input.Position, Department: input.Department, CommitteeRole: input.CommitteeRole, Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: input.BoundingBox, Verified: input.Verified, VerifiedBy: changedBy, NameMatchMethod: "UNMATCHED"}
-					if matched, score, method, ok := findDirectoryUser(input.FullName, directoryUsers); ok {
-						appointment.DirectoryUserID = &matched.ID
-						appointment.NameMatchMethod = method
-						appointment.NameMatchScore = score
-						if score < 0.90 {
-							appointment.Confidence = minConfidence(appointment.Confidence, score)
-						}
-					}
+					appointment := Appointment{DocumentID: document.ID, FullName: input.FullName, Position: input.Position, Department: input.Department, CommitteeRole: input.CommitteeRole, Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
+					match := resolveAppointmentDirectoryUser(input, directoryUsers, aliases)
+					applyMatchToAppointment(&appointment, match)
 					if err := tx.Create(&appointment).Error; err != nil {
 						return err
+					}
+					if match.Method == matchMethodManual {
+						if err := rememberNameAlias(tx, previous[input.ID], input, match, changedBy); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -447,4 +459,238 @@ func parseDateInput(value string) (*time.Time, error) {
 		return nil, errors.New("วันที่ต้องอยู่ในรูปแบบ YYYY-MM-DD")
 	}
 	return &parsed, nil
+}
+
+type createDirectoryUserRequest struct {
+	Prefix        string `json:"prefix"`
+	FirstName     string `json:"firstName"`
+	LastName      string `json:"lastName"`
+	PositionTitle string `json:"positionTitle"`
+	Department    string `json:"department"`
+	Email         string `json:"email"`
+	Phone         string `json:"phone"`
+}
+
+// createDirectoryUser records somebody the university directory does not
+// carry - an external committee member, or a colleague from another faculty -
+// so an appointment can point at a real row.
+func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload createDirectoryUserRequest
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		firstName := strings.TrimSpace(payload.FirstName)
+		lastName := strings.TrimSpace(payload.LastName)
+		if firstName == "" || lastName == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องระบุชื่อและนามสกุล"})
+			return
+		}
+
+		users, _, err := loadDirectory(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบรายชื่อเดิมได้"})
+			return
+		}
+		key := normalizePersonName(firstName + " " + lastName)
+		for _, existing := range users {
+			if directoryUserKey(existing) == key {
+				c.JSON(http.StatusConflict, gin.H{"error": "มีบุคคลชื่อนี้ในระบบแล้ว", "directoryUserId": existing.ID})
+				return
+			}
+		}
+
+		createdBy := currentUserID(c)
+		user, err := newManualDirectoryUser(payload, createdBy, time.Now())
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมข้อมูลบุคคลใหม่ได้"})
+			return
+		}
+		if err := db.Create(&user).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกบุคคลใหม่ได้"})
+			return
+		}
+		_ = db.Create(&AuditLog{UserID: createdBy, Action: "DIRECTORY_USER_CREATED", Details: user.FullName}).Error
+		c.JSON(http.StatusCreated, gin.H{"data": user})
+	}
+}
+
+// newManualDirectoryUser builds the row for somebody a reviewer entered by
+// hand. raw_payload is a JSON column, so it carries the submitted form rather
+// than an empty string, which MySQL rejects.
+func newManualDirectoryUser(payload createDirectoryUserRequest, createdBy string, now time.Time) (DirectoryUser, error) {
+	firstName := strings.TrimSpace(payload.FirstName)
+	lastName := strings.TrimSpace(payload.LastName)
+	positionTitle := strings.TrimSpace(payload.PositionTitle)
+	raw, err := json.Marshal(map[string]string{
+		"prefix": strings.TrimSpace(payload.Prefix), "first_name": firstName, "last_name": lastName,
+		"position_title": positionTitle, "department": strings.TrimSpace(payload.Department),
+		"email": strings.TrimSpace(payload.Email), "tel": strings.TrimSpace(payload.Phone),
+		"entered_by": createdBy,
+	})
+	if err != nil {
+		return DirectoryUser{}, err
+	}
+	return DirectoryUser{
+		ExternalID:    fmt.Sprintf("manual:%d", now.UnixNano()),
+		Prefix:        strings.TrimSpace(payload.Prefix),
+		FirstName:     firstName,
+		LastName:      lastName,
+		FullName:      strings.TrimSpace(strings.Join(strings.Fields(payload.Prefix+" "+firstName+" "+lastName), " ")),
+		PositionTitle: positionTitle,
+		JobTitle:      positionTitle,
+		Department:    strings.TrimSpace(payload.Department),
+		Email:         strings.TrimSpace(payload.Email),
+		Phone:         strings.TrimSpace(payload.Phone),
+		IsActive:      activeUserCode,
+		Source:        sourceManual,
+		CreatedBy:     createdBy,
+		RawPayload:    string(raw),
+		LastSeenAt:    now,
+		SyncedAt:      now,
+	}, nil
+}
+
+// replacementFile is the new source file a reviewer uploaded over an existing
+// document.
+type replacementFile struct {
+	Title       string
+	Filename    string
+	StoragePath string
+	SourceType  string
+	MimeType    string
+	SizeBytes   int64
+	Hash        string
+}
+
+// replacedFileUpdates swaps in the new file and drops everything the old one
+// produced. The confirmation goes too: it was given for a document nobody has
+// reviewed since.
+func replacedFileUpdates(file replacementFile, importedBy string, now time.Time) map[string]any {
+	retentionUntil := now.AddDate(10, 0, 0)
+	return map[string]any{
+		"title": file.Title, "original_filename": file.Filename, "storage_path": file.StoragePath,
+		"source_type": file.SourceType, "mime_type": file.MimeType, "file_size_bytes": file.SizeBytes,
+		"file_hash": file.Hash, "retention_until": retentionUntil, "import_source": "REUPLOAD",
+		"imported_by": importedBy, "status": "PROCESSING", "processing_stage": "QUEUED",
+		"confirmed_by": "", "confirmed_at": nil,
+		"ocr_text": "", "ocr_error": "", "ocr_provider": "",
+		// Everything below was read out of the file being replaced.
+		"order_type": "", "order_no": "", "order_year_be": 0, "committee": "",
+		"signer_name": "", "signer_position": "", "responsibilities": "", "additional_refs": "",
+		"issued_date": nil, "effective_date": nil, "expiry_date": nil,
+		"page_count": 0, "person_count": 0, "confidence": 0,
+		"processing_started_at": nil, "processing_finished_at": nil, "processing_duration_ms": 0,
+	}
+}
+
+// replaceDocumentFile swaps the source file of a document that is already in
+// the system, keeping its id, its revision history and its audit trail, so a
+// corrected scan does not become a second record of the same order.
+func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var document Document
+		if err := db.First(&document, c.Param("id")).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
+			return
+		}
+		if document.Status == "PROCESSING" {
+			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารกำลังประมวลผลอยู่ กรุณารอให้เสร็จก่อนอัปโหลดทับ"})
+			return
+		}
+
+		file, header, err := c.Request.FormFile("file")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาเลือกไฟล์"})
+			return
+		}
+		defer file.Close()
+		ext := strings.ToLower(filepath.Ext(header.Filename))
+		if !allowedExtensions[ext] {
+			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "รองรับเฉพาะ PDF, DOCX, XLSX และ CSV"})
+			return
+		}
+		if header.Size > 50<<20 {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "ไฟล์ต้องมีขนาดไม่เกิน 50 MB"})
+			return
+		}
+		fileHash, err := hashUpload(file)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ไม่สามารถอ่านไฟล์เพื่อตรวจสอบซ้ำได้"})
+			return
+		}
+		if err := validateFileSignature(file, ext); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// The same file living under two document ids is the duplicate the
+		// upload path already guards against.
+		var clash Document
+		if err := db.Where("file_hash = ? AND id <> ?", fileHash, document.ID).First(&clash).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "ไฟล์นี้ถูกนำเข้าเป็นเอกสารอื่นแล้ว", "duplicateDocumentId": clash.ID})
+			return
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบไฟล์ซ้ำได้"})
+			return
+		}
+
+		storageDir := getenv("UPLOAD_DIR", "./storage")
+		if err := os.MkdirAll(storageDir, 0o750); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมพื้นที่จัดเก็บได้"})
+			return
+		}
+		storagePath := filepath.Join(storageDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), filepath.Base(header.Filename)))
+		if err := c.SaveUploadedFile(header, storagePath); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกไฟล์ได้"})
+			return
+		}
+
+		mimeType := header.Header.Get("Content-Type")
+		if mimeType == "" {
+			mimeType = "application/octet-stream"
+		}
+		replacedBy := currentUserID(c)
+		previousPath := document.StoragePath
+		updates := replacedFileUpdates(replacementFile{
+			Title:       strings.TrimSuffix(filepath.Base(header.Filename), ext),
+			Filename:    header.Filename,
+			StoragePath: storagePath,
+			SourceType:  strings.TrimPrefix(ext, "."),
+			MimeType:    mimeType,
+			SizeBytes:   header.Size,
+			Hash:        fileHash,
+		}, replacedBy, time.Now())
+
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}, &ExpiryNotification{}} {
+				if err := tx.Where("document_id = ?", document.ID).Delete(model).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Model(&document).Updates(updates).Error; err != nil {
+				return err
+			}
+			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: replacedBy, Action: "DOCUMENT_FILE_REPLACED", Details: header.Filename}).Error
+		}); err != nil {
+			_ = os.Remove(storagePath)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอัปโหลดทับเอกสารได้"})
+			return
+		}
+		if previousPath != "" && previousPath != storagePath {
+			_ = os.Remove(previousPath)
+		}
+		processor.Enqueue(document.ID)
+
+		if err := db.First(&document, document.ID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารที่อัปโหลดทับได้"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": document, "message": "อัปโหลดไฟล์ใหม่ทับแล้ว ระบบกำลังประมวลผลอีกครั้ง"})
+	}
 }

@@ -238,7 +238,7 @@ func (p *DocumentProcessor) persistOCRResult(document *Document, result workerRe
 			}
 		}
 		if strings.TrimSpace(metadata.additionalRefs) != "" {
-			reference := DocumentReference{DocumentID: document.ID, ReferenceType: "ADDITIONAL_REFERENCE", ReferenceText: metadata.additionalRefs, PageNo: findPage(result.Pages, metadata.additionalRefs)}
+			reference := DocumentReference{DocumentID: document.ID, ReferenceType: "ADDITIONAL_REFERENCE", ReferenceText: metadata.additionalRefs, PageNo: findPage(result.Pages, metadata.additionalRefs), BoundingBoxJSON: "[]"}
 			if err := tx.Create(&reference).Error; err != nil {
 				return err
 			}
