@@ -137,15 +137,18 @@ type Appointment struct {
 	CommitteeRole    string         `json:"committeeRole" gorm:"size:255"`
 	Responsibilities string         `json:"responsibilities" gorm:"type:text"`
 	NameMatchMethod  string         `json:"nameMatchMethod" gorm:"size:50"`
-	NameMatchScore   float32        `json:"nameMatchScore"`
-	Confidence       float32        `json:"confidence"`
-	PageNo           int            `json:"pageNo"`
-	BoundingBoxJSON  string         `json:"boundingBox" gorm:"type:json"`
-	Verified         bool           `json:"verified"`
-	VerifiedBy       string         `json:"verifiedBy" gorm:"size:255"`
-	VerifiedAt       *time.Time     `json:"verifiedAt"`
-	CreatedAt        time.Time      `json:"createdAt"`
-	UpdatedAt        time.Time      `json:"updatedAt"`
+	// Candidates is computed per request, never stored: the directory
+	// changes, and a stale suggestion is worse than none.
+	Candidates      []directoryCandidate `json:"candidates" gorm:"-"`
+	NameMatchScore  float32              `json:"nameMatchScore"`
+	Confidence      float32              `json:"confidence"`
+	PageNo          int                  `json:"pageNo"`
+	BoundingBoxJSON string               `json:"boundingBox" gorm:"type:json"`
+	Verified        bool                 `json:"verified"`
+	VerifiedBy      string               `json:"verifiedBy" gorm:"size:255"`
+	VerifiedAt      *time.Time           `json:"verifiedAt"`
+	CreatedAt       time.Time            `json:"createdAt"`
+	UpdatedAt       time.Time            `json:"updatedAt"`
 }
 
 type DocumentReference struct {
@@ -201,6 +204,8 @@ type DirectoryUser struct {
 	RoleName         string    `json:"roleName" gorm:"column:role_name;size:100"`
 	Role             string    `json:"role" gorm:"size:100"`
 	IsActive         string    `json:"isActive" gorm:"size:20"`
+	Source           string    `json:"source" gorm:"size:20;not null;default:SYNCED;index"`
+	CreatedBy        string    `json:"createdBy" gorm:"size:255"`
 	SourceUpdatedAt  string    `json:"sourceUpdatedAt" gorm:"column:source_updated_at;size:50"`
 	RawPayload       string    `json:"-" gorm:"type:json"`
 	Fingerprint      string    `json:"-" gorm:"size:64;index"`
@@ -208,6 +213,18 @@ type DirectoryUser struct {
 	SyncedAt         time.Time `json:"syncedAt"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+// PersonNameAlias remembers that a reviewer bound a particular OCR spelling
+// to a person, so the next document carrying the same slip matches on its own.
+type PersonNameAlias struct {
+	ID              uint      `json:"id" gorm:"primaryKey"`
+	NormalizedName  string    `json:"normalizedName" gorm:"size:255;uniqueIndex;not null"`
+	DirectoryUserID uint      `json:"directoryUserId" gorm:"index;not null"`
+	SourceText      string    `json:"sourceText" gorm:"size:500"`
+	CreatedBy       string    `json:"createdBy" gorm:"size:255"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
 type UserSyncRun struct {
@@ -317,6 +334,7 @@ func main() {
 	router.GET("/api/v1/search", searchDocuments(db))
 	router.GET("/api/v1/reports/workload", workloadReport(db))
 	router.GET("/api/v1/directory-users", listDirectoryUsers(db))
+	router.POST("/api/v1/directory-users", requireRole("ADMIN", "STAFF"), createDirectoryUser(db))
 	router.GET("/api/v1/documents", listDocuments(db))
 	router.GET("/api/v1/documents/:id", getDocument(db))
 	router.GET("/api/v1/documents/:id/file", documentFile(db))
@@ -324,6 +342,7 @@ func main() {
 	router.GET("/api/v1/documents/:id/revisions", listDocumentRevisions(db))
 	router.GET("/api/v1/documents/:id/audit", listDocumentAuditLogs(db))
 	router.POST("/api/v1/documents", requireRole("ADMIN", "STAFF"), uploadDocument(db, processor))
+	router.POST("/api/v1/documents/:id/file", requireRole("ADMIN", "STAFF"), replaceDocumentFile(db, processor))
 	router.PATCH("/api/v1/documents/:id", requireRole("ADMIN", "STAFF"), updateDocument(db))
 	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
 	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
@@ -386,7 +405,36 @@ func getDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
+		attachAppointmentCandidates(db, &document)
 		c.JSON(http.StatusOK, gin.H{"data": document})
+	}
+}
+
+// attachAppointmentCandidates suggests who each unlinked row might be. It is
+// computed per request rather than stored, so a suggestion never outlives the
+// directory it came from.
+func attachAppointmentCandidates(db *gorm.DB, document *Document) {
+	needed := false
+	for _, appointment := range document.Appointments {
+		if appointment.DirectoryUserID == nil {
+			needed = true
+			break
+		}
+	}
+	if !needed {
+		return
+	}
+	users, aliases, err := loadDirectory(db)
+	if err != nil {
+		return
+	}
+	for index := range document.Appointments {
+		if document.Appointments[index].DirectoryUserID != nil {
+			continue
+		}
+		match := matchDirectoryUser(document.Appointments[index].FullName, users, aliases)
+		document.Appointments[index].Candidates = candidatesToOffer(match)
+		document.Appointments[index].NameMatchMethod = match.Method
 	}
 }
 
@@ -521,6 +569,15 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 		}
 		if document.Status != "REVIEW" && document.Status != "NEEDS_REVIEW" {
 			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารต้องผ่านขั้นตอนตรวจสอบก่อนยืนยัน", "status": document.Status})
+			return
+		}
+		var appointments []Appointment
+		if err := db.Where("document_id = ?", document.ID).Find(&appointments).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบรายชื่อก่อนยืนยันได้"})
+			return
+		}
+		if blockers := confirmBlockers(appointments); len(blockers) > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "ยังมีรายชื่อที่ยังไม่ได้ผูกกับบุคคลในระบบ", "unmatchedNames": blockers})
 			return
 		}
 		now := time.Now()

@@ -19,6 +19,13 @@ export type ExtractedField = {
   verifiedAt?: string;
 };
 
+export type DirectoryCandidate = {
+  userId: number;
+  fullName: string;
+  positionTitle: string;
+  score: number;
+};
+
 export type Appointment = {
   id: number;
   documentId: number;
@@ -31,6 +38,7 @@ export type Appointment = {
   directoryUser?: DirectoryUser;
   nameMatchMethod?: string;
   nameMatchScore?: number;
+  candidates?: DirectoryCandidate[];
   confidence: number;
   pageNo: number;
   boundingBox: string;
@@ -152,6 +160,8 @@ export type DirectoryUser = {
   roleName: string;
   role: string;
   isActive: string;
+  source: string;
+  createdBy: string;
   sourceUpdatedAt: string;
   lastSeenAt?: string;
   syncedAt?: string;
@@ -237,6 +247,21 @@ export async function getDirectoryUsers(query = "") {
   return apiFetch<{ data: DirectoryUser[] }>(`/api/v1/directory-users${query ? `?q=${encodeURIComponent(query)}` : ""}`);
 }
 
+export async function createDirectoryUser(payload: {
+  prefix?: string;
+  firstName: string;
+  lastName: string;
+  positionTitle?: string;
+  department?: string;
+  email?: string;
+}) {
+  return apiFetch<{ data: DirectoryUser }>("/api/v1/directory-users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function syncDirectoryUsers() {
   return apiFetch<{ data: { fetched: number; created: number; updated: number; unchanged: number } }>("/api/v1/sync/users", { method: "POST" });
 }
@@ -254,6 +279,16 @@ export async function uploadDocument(file: File, overwrite = false) {
   body.append("file", file);
   body.append("overwrite", String(overwrite));
   return apiFetch<{ data: ApiDocument }>("/api/v1/documents", {
+    method: "POST",
+    body,
+  });
+}
+
+// แทนที่ไฟล์ต้นฉบับของเอกสารเดิม โดยคงเลขที่เอกสารและประวัติไว้
+export async function replaceDocumentFile(id: number, file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  return apiFetch<{ data: ApiDocument; message: string }>(`/api/v1/documents/${id}/file`, {
     method: "POST",
     body,
   });
@@ -307,4 +342,8 @@ export function statusLabel(status: string) {
     FAILED: "ประมวลผลไม่สำเร็จ",
   };
   return labels[status] ?? status;
+}
+
+export function isAppointmentLinked(appointment: Appointment) {
+  return Boolean(appointment.directoryUserId);
 }

@@ -92,9 +92,16 @@ func sendPendingExpiryEmails(db *gorm.DB, logger *log.Logger) {
 	}
 	for _, notification := range pending {
 		recipient, subject, body, err := expiryEmailContent(db, notification)
-		if err != nil || recipient == "" {
-			if err != nil {
-				logger.Printf("build expiry email %d failed: %v", notification.ID, err)
+		if err != nil {
+			logger.Printf("build expiry email %d failed: %v", notification.ID, err)
+			continue
+		}
+		if recipient == "" {
+			// No linked person, or the person has no address on file. Record
+			// that instead of silently re-reading this row every day.
+			logger.Printf("expiry notification %d skipped: no reachable recipient", notification.ID)
+			if err := db.Model(&notification).Updates(map[string]any{"status": "SKIPPED"}).Error; err != nil {
+				logger.Printf("mark expiry notification %d skipped failed: %v", notification.ID, err)
 			}
 			continue
 		}

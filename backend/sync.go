@@ -144,7 +144,7 @@ func (s *UserSyncService) upsertUser(item map[string]any) (created bool, updated
 	user := directoryUserFromPayload(item, externalID, string(raw), fingerprint, now)
 
 	var existing DirectoryUser
-	queryErr := s.db.Where("external_id = ?", externalID).First(&existing).Error
+	queryErr := s.db.Where("external_id = ? AND source = ?", externalID, sourceSynced).First(&existing).Error
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
 		if err := s.db.Create(&user).Error; err != nil {
 			return false, false, fmt.Errorf("create directory user %s: %w", externalID, err)
