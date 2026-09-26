@@ -48,6 +48,8 @@ next-env.d.ts
 # local verification artifacts
 /tmp/
 /incoming/
+/secrets/
+/deploy/secrets/
 
 # local image bundles for Podman deployment
 /docflow-images-*.tar

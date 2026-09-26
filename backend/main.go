@@ -269,11 +269,23 @@ func main() {
 	userSync := NewUserSyncService(db, logger)
 	logger.Printf("external users endpoint: %s (api key configured=%t)", userSync.baseURL, strings.TrimSpace(userSync.apiKey) != "")
 	location := loadTimezone(getenv("USER_SYNC_TZ", "Asia/Bangkok"), logger)
-	folderImporter := NewFolderImporter(db, processor, logger)
+	folderImporter := NewFolderImporter(db, logger)
 	if imported, importErr := folderImporter.Scan(context.Background()); importErr != nil {
 		logger.Printf("initial folder import failed: %v", importErr)
 	} else if imported > 0 {
 		logger.Printf("initial folder import completed: imported=%d", imported)
+	}
+	driveImporter, driveErr := NewGoogleDriveImporter(db, logger)
+	if driveErr != nil {
+		logger.Printf("Google Drive sync disabled: %v", driveErr)
+	} else if driveImporter != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		if imported, syncErr := driveImporter.Sync(ctx); syncErr != nil {
+			logger.Printf("initial Google Drive sync failed: %v", syncErr)
+		} else if imported > 0 {
+			logger.Printf("initial Google Drive sync completed: imported=%d", imported)
+		}
+		cancel()
 	}
 	scheduler := cron.New(cron.WithLocation(location), cron.WithChain(cron.DelayIfStillRunning(cron.DefaultLogger), cron.Recover(cron.DefaultLogger)))
 	if _, err := scheduler.AddFunc(getenv("USER_SYNC_CRON", "0 5 * * *"), func() {
@@ -302,6 +314,22 @@ func main() {
 		}
 	}); err != nil {
 		panic(fmt.Errorf("configure folder import schedule: %w", err))
+	}
+	if driveImporter != nil {
+		if _, err := scheduler.AddFunc(getenv("GOOGLE_DRIVE_SYNC_CRON", "*/5 * * * *"), func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			imported, syncErr := driveImporter.Sync(ctx)
+			if syncErr != nil {
+				logger.Printf("scheduled Google Drive sync failed: %v", syncErr)
+				return
+			}
+			if imported > 0 {
+				logger.Printf("scheduled Google Drive sync completed: imported=%d", imported)
+			}
+		}); err != nil {
+			panic(fmt.Errorf("configure Google Drive sync schedule: %w", err))
+		}
 	}
 	refreshExpiryNotifications(db, logger)
 	scheduler.Start()

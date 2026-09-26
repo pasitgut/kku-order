@@ -189,6 +189,30 @@ EXPIRY_CRON=10 5 * * *
 
 วางไฟล์ PDF, DOCX, XLSX หรือ CSV ในโฟลเดอร์ `incoming` ที่ root ของโปรเจกต์ ระบบจะเห็นไฟล์ผ่าน bind mount `/app/incoming`, ตรวจไฟล์ที่เขียนเสร็จแล้ว และนำเข้าอัตโนมัติทุก 5 นาทีตาม `IMPORT_CRON`
 
+### นำเข้าไฟล์จาก Google Drive อัตโนมัติ
+
+ระบบตรวจโฟลเดอร์ Drive ทุก 5 นาทีตาม `GOOGLE_DRIVE_SYNC_CRON` และตรวจโฟลเดอร์ย่อยด้วย รอบแรกจะนำเข้าไฟล์ที่รองรับทั้งหมด จากนั้นจะตรวจเฉพาะไฟล์ใหม่หรือไฟล์ที่แก้ไขแล้ว สถานะการซิงก์อยู่ใน `/app/storage/.google-drive-sync.json` ซึ่งเก็บใน volume เดียวกับไฟล์เอกสาร
+
+1. เปิดใช้ Google Drive API ใน Google Cloud project แล้วสร้าง service account สำหรับอ่านไฟล์
+2. แชร์โฟลเดอร์ Drive เป้าหมายให้ email ของ service account มีสิทธิ์ Viewer
+3. วาง service-account JSON ไว้ที่ `secrets/google-drive-service-account.json` และกำหนดค่าใน `.env.local`:
+
+   ```env
+   GOOGLE_DRIVE_FOLDER_ID=<folder ID หรือ URL ของโฟลเดอร์>
+   GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-service-account.json
+   GOOGLE_DRIVE_SYNC_CRON=*/5 * * * *
+   ```
+
+4. เริ่มระบบโดยเพิ่ม compose override ที่ mount key แบบ read-only:
+
+   ```powershell
+   docker compose -f docker-compose.yml -f docker-compose.drive.yml up -d --build
+   ```
+
+ระบบนำเข้า PDF, DOCX, XLSX และ CSV รวมถึง Google Docs เป็น PDF, Google Sheets เป็น XLSX และ Google Slides/Drawings เป็น PDF ไฟล์ต้องไม่เกิน 50 MB; การ export ไฟล์ Google Workspace มีข้อจำกัด 10 MB ตาม Drive API [files.export](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/export) การค้นหาใช้ Drive API `files.list` รองรับ Shared Drives ด้วย [files.list](https://developers.google.com/workspace/drive/api/reference/rest/v3/files/list)
+
+ไฟล์ JSON ถูกเก็บนอก Git ภายใต้ `secrets/` อย่าเพิ่ม key นี้ลงใน image หรือ commit เข้า repository
+
 การทดสอบ OCR ในเครื่องต้องมี dependencies ใน `backend/one-ocr/.venv` และ binary `pdftoppm`/`pdfinfo`; Dockerfile ติดตั้ง Poppler และ Python dependencies ให้อัตโนมัติ
 
 ## ตรวจสอบโค้ด

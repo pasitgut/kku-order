@@ -2,13 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"io"
 	"log"
-	"mime"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,13 +15,12 @@ import (
 // FolderImporter imports stable files from the configured drop folder. Source
 // files remain in place; the file hash makes subsequent scans idempotent.
 type FolderImporter struct {
-	db        *gorm.DB
-	processor *DocumentProcessor
-	logger    *log.Logger
+	db     *gorm.DB
+	logger *log.Logger
 }
 
-func NewFolderImporter(db *gorm.DB, processor *DocumentProcessor, logger *log.Logger) *FolderImporter {
-	return &FolderImporter{db: db, processor: processor, logger: logger}
+func NewFolderImporter(db *gorm.DB, logger *log.Logger) *FolderImporter {
+	return &FolderImporter{db: db, logger: logger}
 }
 
 func (i *FolderImporter) Scan(ctx context.Context) (int, error) {
@@ -82,75 +76,7 @@ func (i *FolderImporter) importFile(sourcePath string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if info.Size() > 50<<20 {
-		return false, errors.New("ไฟล์ต้องมีขนาดไม่เกิน 50 MB")
-	}
-	hash, err := hashReader(file)
-	if err != nil {
-		return false, fmt.Errorf("คำนวณ hash: %w", err)
-	}
-	ext := strings.ToLower(filepath.Ext(sourcePath))
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return false, err
-	}
-	if err := validateFileSignature(file, ext); err != nil {
-		return false, err
-	}
-	var duplicate Document
-	if err := i.db.Where("file_hash = ?", hash).First(&duplicate).Error; err == nil {
-		return false, nil
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, fmt.Errorf("ตรวจสอบไฟล์ซ้ำ: %w", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return false, err
-	}
-
 	storageDir := getenv("UPLOAD_DIR", "./storage")
-	if err := os.MkdirAll(storageDir, 0o750); err != nil {
-		return false, fmt.Errorf("เตรียมพื้นที่จัดเก็บ: %w", err)
-	}
 	filename := filepath.Base(sourcePath)
-	storagePath := filepath.Join(storageDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), filename))
-	destination, err := os.Create(storagePath)
-	if err != nil {
-		return false, fmt.Errorf("สร้างไฟล์จัดเก็บ: %w", err)
-	}
-	if _, err := io.Copy(destination, file); err != nil {
-		destination.Close()
-		_ = os.Remove(storagePath)
-		return false, fmt.Errorf("คัดลอกไฟล์: %w", err)
-	}
-	if err := destination.Close(); err != nil {
-		_ = os.Remove(storagePath)
-		return false, err
-	}
-
-	retentionUntil := time.Now().AddDate(10, 0, 0)
-	document := Document{
-		Title: strings.TrimSuffix(filename, ext), OriginalFilename: filename, StoragePath: storagePath,
-		SourceType: strings.TrimPrefix(ext, "."), MimeType: mime.TypeByExtension(ext), Status: "PROCESSING",
-		ProcessingStage: "QUEUED", FileSizeBytes: info.Size(), FileHash: hash,
-		RetentionUntil: &retentionUntil, ImportSource: "FOLDER", ImportedBy: "folder-import", QualityProfile: "STANDARD",
-	}
-	if document.MimeType == "" {
-		document.MimeType = "application/octet-stream"
-	}
-	if err := i.db.Create(&document).Error; err != nil {
-		_ = os.Remove(storagePath)
-		return false, fmt.Errorf("บันทึกเอกสาร: %w", err)
-	}
-	if err := i.db.Create(&AuditLog{DocumentID: &document.ID, UserID: document.ImportedBy, Action: "DOCUMENT_FOLDER_IMPORTED", Details: filename}).Error; err != nil {
-		i.logger.Printf("folder import audit failed for document %d: %v", document.ID, err)
-	}
-	i.processor.Enqueue(document.ID)
-	return true, nil
-}
-
-func hashReader(reader io.Reader) (string, error) {
-	digest := sha256.New()
-	if _, err := io.Copy(digest, reader); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(digest.Sum(nil)), nil
+	return storeImportedDocument(i.db, file, filename, storageDir, info.Size())
 }

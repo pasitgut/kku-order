@@ -102,6 +102,25 @@ BACKEND_INTERNAL_URL ต้องเป็น http://api:8080 เพราะ We
 
 ห้ามใส่ API_KEY, .env.local หรือ secret อื่นลงใน image
 
+### เพิ่ม Google Drive sync ใน production
+
+หากต้องการเปิด Google Drive sync ให้สร้าง `deploy/secrets/google-drive-service-account.json` บนเครื่อง deploy แล้วตั้งค่าในไฟล์ `.env` ที่ใช้กับ compose:
+
+~~~env
+GOOGLE_DRIVE_FOLDER_ID=<folder ID หรือ URL ของโฟลเดอร์>
+GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-service-account.json
+GOOGLE_DRIVE_SYNC_CRON=*/5 * * * *
+~~~
+
+แชร์โฟลเดอร์ให้ service account มีสิทธิ์ Viewer จากนั้นเพิ่ม `deploy/podman-compose.drive.yml` เป็น compose file เพิ่มเติม คำสั่งตัวอย่าง:
+
+~~~bash
+cd /opt/docflow
+podman-compose -f podman-compose.yml -f podman-compose.drive.yml up -d
+~~~
+
+Compose override จะ mount JSON แบบ read-only เข้า API container; ไฟล์ key ต้องอ่านได้โดยผู้ใช้ `app` ใน container และห้ามใส่ใน image หรือส่งไปกับ image bundle
+
 ## 3. ทดสอบก่อนส่งขึ้น server
 
 ~~~powershell
@@ -150,6 +169,7 @@ ssh "$ServerUser@$ServerHost" "sudo mkdir -p $RemoteDir /opt/docflow"
 scp $Bundle "$($ServerUser)@$($ServerHost):$RemoteDir/"
 scp "$Bundle.sha256" "$($ServerUser)@$($ServerHost):$RemoteDir/"
 scp deploy/podman-compose.yml "$($ServerUser)@$($ServerHost):/opt/docflow/podman-compose.yml"
+scp deploy/podman-compose.drive.yml "$($ServerUser)@$($ServerHost):/opt/docflow/podman-compose.drive.yml"
 ~~~
 
 ถ้า SSH ใช้ port อื่น ให้เพิ่ม -P <port> ในทั้ง ssh และ scp

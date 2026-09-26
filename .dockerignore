@@ -5,5 +5,7 @@ tmp
 backend/.venv
 backend/one-ocr/.venv
 backend/storage
+secrets
+deploy/secrets
 .env*
 !.env.example
