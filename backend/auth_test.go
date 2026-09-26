@@ -51,3 +51,25 @@ func TestAuthMiddlewareViewerCannotWrite(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
 	}
 }
+
+func TestAuthMiddlewareUsesConfiguredLocalUser(t *testing.T) {
+	t.Setenv("AUTH_REQUIRED", "false")
+	t.Setenv("AUTH_LOCAL_USER", "kittayot.m")
+	router := gin.New()
+	router.Use(authMiddleware())
+	router.GET("/", func(c *gin.Context) { c.String(http.StatusOK, currentUserID(c)) })
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Body.String() != "kittayot.m" {
+		t.Fatalf("user = %q, want the configured local user", response.Body.String())
+	}
+
+	t.Setenv("AUTH_REQUIRED", "true")
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("AUTH_LOCAL_USER must never bypass required SSO, status = %d", response.Code)
+	}
+}

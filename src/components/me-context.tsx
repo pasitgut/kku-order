@@ -5,21 +5,23 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { Me, getMe, getMyPhotoUrl } from "@/lib/api";
 import { initials } from "@/lib/person";
 
-type MeState = { me: Me | null; refresh: () => void; update: (patch: Partial<Me>) => void };
+type MeStatus = "loading" | "ready" | "offline";
+type MeState = { me: Me | null; status: MeStatus; refresh: () => void; update: (patch: Partial<Me>) => void };
 
-const MeContext = createContext<MeState>({ me: null, refresh: () => {}, update: () => {} });
+const MeContext = createContext<MeState>({ me: null, status: "loading", refresh: () => {}, update: () => {} });
 
 export function MeProvider({ children }: { children: React.ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
+  const [status, setStatus] = useState<MeStatus>("loading");
 
   const refresh = useCallback(() => {
-    getMe().then((response) => setMe(response.data)).catch(() => setMe(null));
+    getMe().then((response) => { setMe(response.data); setStatus("ready"); }).catch(() => { setMe(null); setStatus("offline"); });
   }, []);
   const update = useCallback((patch: Partial<Me>) => setMe((current) => current ? { ...current, ...patch } : current), []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  return <MeContext.Provider value={{ me, refresh, update }}>{children}</MeContext.Provider>;
+  return <MeContext.Provider value={{ me, status, refresh, update }}>{children}</MeContext.Provider>;
 }
 
 export function useMe() {
