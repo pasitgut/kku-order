@@ -20,6 +20,9 @@ func migrateDatabase(db *gorm.DB) error {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`).Error; err != nil {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
+	if err := reconcileInitialMigrationHistory(db); err != nil {
+		return fmt.Errorf("reconcile initial migration history: %w", err)
+	}
 
 	entries, err := migrationFiles.ReadDir("migrations")
 	if err != nil {
@@ -57,6 +60,44 @@ func migrateDatabase(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func reconcileInitialMigrationHistory(db *gorm.DB) error {
+	var hasNewDocumentColumns int64
+	if err := db.Raw(`
+		SELECT COUNT(*)
+		FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'documents' AND COLUMN_NAME = 'file_name'`).Scan(&hasNewDocumentColumns).Error; err != nil {
+		return err
+	}
+
+	if hasNewDocumentColumns == 0 {
+		// Legacy databases recorded 0001 under the same name, so clear their
+		// history before applying the replacement initial schema.
+		return db.Exec("DELETE FROM schema_migrations").Error
+	}
+
+	var resetApplied int64
+	if err := db.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", "0006_initial_design_reset.sql").Scan(&resetApplied).Error; err != nil {
+		return err
+	}
+	if resetApplied == 0 {
+		return nil
+	}
+
+	// Keep the already-reset schema while collapsing its migration history to
+	// the new initial version.
+	legacyVersions := []string{
+		"0002_add_ocr_and_mime.sql",
+		"0003_tor_controls.sql",
+		"0004_committee_sections_and_signer.sql",
+		"0005_directory_users_external_mapping.sql",
+		"0006_initial_design_reset.sql",
+	}
+	if err := db.Exec("DELETE FROM schema_migrations WHERE version IN ?", legacyVersions).Error; err != nil {
+		return err
+	}
+	return db.Exec("INSERT IGNORE INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP(3))", "0001_initial.sql").Error
 }
 
 var (
