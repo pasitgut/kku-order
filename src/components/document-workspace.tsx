@@ -5,7 +5,7 @@ import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info, MagnifyingGlass, MapPin, PencilSimple, Trash, UploadSimple, UserPlus, UsersThree, WarningCircle } from "@phosphor-icons/react";
 import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useToast } from "@/components/toast";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocumentPageImageUrl, getDocumentRevisions, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, rosterRows, summarizeDepartments } from "@/lib/member-review";
 
 type PanelView = "roster" | "members" | "metadata" | "duties";
@@ -57,13 +57,15 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [restorePoints, setRestorePoints] = useState<Record<number, RestorePoint>>({});
   const [replaceArmed, setReplaceArmed] = useState(false);
   const [replacing, setReplacing] = useState(false);
+  // เกณฑ์เดียวกับที่ backend ใช้ตัดสินว่าเอกสารต้องตรวจสอบ ปรับได้ที่หน้าตั้งค่า OCR
+  const [reviewThreshold, setReviewThreshold] = useState(0.9);
   const replaceInputRef = useRef<HTMLInputElement>(null);
 
   const selectedOCRPage = document.ocrPages?.find((page) => page.pageNo === selectedPage);
   const pageWidth = selectedOCRPage?.imageWidth || 1;
   const pageHeight = selectedOCRPage?.imageHeight || 1;
   const metadataFields = fields.filter((field) => metadataKeys.includes(field.fieldKey));
-  const lowConfidenceCount = useMemo(() => fields.filter((field) => field.confidence < 0.9 || !field.value).length + appointments.filter((item) => item.confidence < 0.9 || item.nameMatchMethod !== "EXACT").length, [fields, appointments]);
+  const lowConfidenceCount = useMemo(() => fields.filter((field) => field.confidence < reviewThreshold || !field.value).length + appointments.filter((item) => item.confidence < reviewThreshold || item.nameMatchMethod !== "EXACT").length, [fields, appointments, reviewThreshold]);
 
   const departmentSummary = useMemo(() => summarizeDepartments(appointments), [appointments]);
   const activeDepartment = departmentSummary.some((entry) => entry.name === departmentFilter) ? departmentFilter : "";
@@ -84,6 +86,10 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       return null;
     }
   };
+
+  useEffect(() => {
+    getOCRSettings().then((response) => setReviewThreshold(response.data.reviewThreshold)).catch(() => setReviewThreshold(0.9));
+  }, []);
 
   useEffect(() => {
     getDocumentRevisions(document.id).then((response) => setRevisions(response.data)).catch(() => setRevisions([]));
@@ -328,7 +334,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
           })}{departmentGroups.length === 0 && <div className="p-10 text-center text-sm text-[var(--muted)]">ไม่พบรายการตามตัวกรอง</div>}</div>
         </div>}
 
-        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < 0.9 || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
+        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
 
         {panel === "duties" && <div className="flex-1 space-y-5 p-5 lg:p-6"><label className="block"><span className="text-sm font-medium text-[var(--navy)]">หน้าที่รับผิดชอบของคณะกรรมการ</span><textarea value={document.responsibilities} onChange={(event) => setDocument((current) => ({ ...current, responsibilities: event.target.value }))} rows={8} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /><span className="mt-1 block text-xs text-[var(--muted)]">แก้ไขข้อความจากเอกสารได้ แล้วกดบันทึกฉบับร่าง</span></label><label className="block"><span className="text-sm font-medium text-[var(--navy)]">การอ้างอิงประกาศเพิ่มเติม</span><textarea value={document.additionalReferences} onChange={(event) => setDocument((current) => ({ ...current, additionalReferences: event.target.value }))} rows={4} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /></label></div>}
 
