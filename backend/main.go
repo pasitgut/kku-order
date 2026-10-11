@@ -402,11 +402,18 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 			c.JSON(status, gin.H{"error": err.Error()})
 			return
 		}
+		if err := db.Create(&AuditLog{UserID: currentUserID(c), Action: "DRIVE_SYNC_STARTED", Details: fmt.Sprintf("runId=%d", run.ID)}).Error; err != nil {
+			log.Printf("drive sync audit not written: %v", err)
+		}
 		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"runId": run.ID, "status": run.Status}})
 	})
 	router.GET("/api/v1/settings/system", requireRole("ADMIN", "STAFF", "DEVELOPER"), systemSettingsHandler())
 	router.GET("/api/v1/me", meHandler(db))
 	router.GET("/api/v1/me/activity", myActivityHandler(db))
+	auditStore := gormAuditLogStore{db: db}
+	router.GET("/api/v1/audit-logs", requireRole("ADMIN", "DEVELOPER"), listAuditLogsHandler(auditStore))
+	router.GET("/api/v1/audit-logs/actions", requireRole("ADMIN", "DEVELOPER"), auditActionsHandler())
+	router.GET("/api/v1/audit-logs/export.csv", requireRole("ADMIN", "DEVELOPER"), exportAuditLogsHandler(auditStore))
 	router.GET("/api/v1/me/photo", getMyPhotoHandler(db))
 	router.PUT("/api/v1/me/photo", uploadMyPhotoHandler(db))
 	router.DELETE("/api/v1/me/photo", deleteMyPhotoHandler(db))
@@ -471,7 +478,7 @@ func main() {
 	go runDriveOCRQueue(db, processor, logger)
 	scheduler := cron.New(cron.WithLocation(location), cron.WithChain(cron.DelayIfStillRunning(cron.DefaultLogger), cron.Recover(cron.DefaultLogger)))
 	if _, err := scheduler.AddFunc(getenv("USER_SYNC_CRON", "0 5 * * *"), func() {
-		result, syncErr := userSync.SyncUsers(context.Background())
+		result, syncErr := userSync.SyncUsers(context.Background(), auditSystemUser("user-sync"))
 		if syncErr != nil {
 			logger.Printf("scheduled user sync failed: %v", syncErr)
 			return

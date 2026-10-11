@@ -373,11 +373,37 @@ func storeImportedDocument(db *gorm.DB, source io.ReadSeeker, fileName, storageD
 		FileHash: hash, ImportSource: importSource, ImportedBy: "system:" + strings.ToLower(importSource),
 		QualityProfile: "STANDARD", CreatedAt: now, UpdatedAt: now,
 	}
-	if err := createDocumentBundle(db, &core, &workflow); err != nil {
+	// The audit row commits with the document, so a stored file always has its entry.
+	audit := importAuditFor(importSource)
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := createDocumentBundle(tx, &core, &workflow); err != nil {
+			return err
+		}
+		return tx.Create(&AuditLog{DocumentID: &workflow.ID, UserID: audit.actor, Action: audit.action, Details: fileName}).Error
+	})
+	if err != nil {
 		return false, fmt.Errorf("บันทึกเอกสาร: %w", err)
 	}
 	keepFile = true
 	return true, nil
+}
+
+type importAudit struct {
+	action string
+	actor  string
+}
+
+// importAuditFor names the audit entry for each import source. Unknown sources
+// get a generic action, so a new source is still recorded.
+func importAuditFor(importSource string) importAudit {
+	switch importSource {
+	case "FOLDER":
+		return importAudit{action: "DOCUMENT_FOLDER_IMPORTED", actor: auditSystemUser("folder-import")}
+	case "GOOGLE_DRIVE":
+		return importAudit{action: "DOCUMENT_DRIVE_IMPORTED", actor: auditSystemUser("google-drive-import")}
+	default:
+		return importAudit{action: "DOCUMENT_IMPORTED", actor: auditSystemUser(strings.ToLower(importSource))}
+	}
 }
 
 func safeStoredFileName(name string) string {

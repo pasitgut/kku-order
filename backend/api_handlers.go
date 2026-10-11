@@ -374,7 +374,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
 				return err
 			}
-			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: "เจ้าหน้าที่แก้ไขข้อมูลก่อนยืนยัน"}).Error
+			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: describeDocumentChanges(revisions, payload.Appointments != nil)}).Error
 		}); err != nil {
 			if writeCancelledConflict(c, err) {
 				return

@@ -69,7 +69,8 @@ func ensureExpiryNotification(db *gorm.DB, logger *log.Logger, documentID uint, 
 		if err := tx.Create(&ExpiryNotification{DocumentID: documentID, AppointmentID: appointmentID, NoticeType: noticeType, DueAt: dueAt, Status: "PENDING"}).Error; err != nil {
 			return err
 		}
-		return nil
+		docID := documentID
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: auditSystemUser("expiry-notice"), Action: "EXPIRY_NOTICE_CREATED", Details: expiryNoticeDetails(noticeType, dueAt)}).Error
 	})
 	if err != nil && !errors.Is(err, errDocumentCancelled) {
 		logger.Printf("create expiry notification failed: %v", err)
@@ -118,14 +119,21 @@ func sendPendingExpiryEmails(db *gorm.DB, logger *log.Logger) {
 			if err != nil {
 				return err
 			}
+			actor := auditSystemUser("expiry-notice")
 			if recipient == "" {
-				return tx.Model(&current).Update("status", "SKIPPED").Error
+				if err := tx.Model(&current).Update("status", "SKIPPED").Error; err != nil {
+					return err
+				}
+				return tx.Create(&AuditLog{DocumentID: &current.DocumentID, UserID: actor, Action: "EXPIRY_EMAIL_SKIPPED", Details: "ไม่มีอีเมลผู้รับ"}).Error
 			}
 			message := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s", from, recipient, subject, body))
 			if err := smtp.SendMail(host+":"+port, auth, from, []string{recipient}, message); err != nil {
 				return err
 			}
-			return tx.Model(&current).Updates(map[string]any{"status": "SENT", "sent_at": time.Now()}).Error
+			if err := tx.Model(&current).Updates(map[string]any{"status": "SENT", "sent_at": time.Now()}).Error; err != nil {
+				return err
+			}
+			return tx.Create(&AuditLog{DocumentID: &current.DocumentID, UserID: actor, Action: "EXPIRY_EMAIL_SENT", Details: "ส่งถึง " + recipient}).Error
 		})
 		if err != nil && !errors.Is(err, errDocumentCancelled) {
 			logger.Printf("dispatch expiry email %d failed: %v", notification.ID, err)

@@ -239,10 +239,19 @@ func (s *dbSettingsStore) SaveOCR(settings OCRSettings, userID string) error {
 	}
 	row := AppSetting{SettingKey: ocrSettingsKey, Value: string(value), UpdatedBy: userID, UpdatedAt: time.Now()}
 	return s.db.Transaction(func(tx *gorm.DB) error {
+		// The audit row records only the keys that changed, read before the overwrite.
+		var previous AppSetting
+		previousValue := ""
+		err := tx.Where("setting_key = ?", ocrSettingsKey).Take(&previous).Error
+		if err == nil {
+			previousValue = previous.Value
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
 		if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
 			return err
 		}
-		return tx.Create(&AuditLog{UserID: userID, Action: "SETTINGS_OCR_UPDATED", Details: string(value)}).Error
+		return tx.Create(&AuditLog{UserID: userID, Action: "SETTINGS_OCR_UPDATED", Details: settingsChangeDetails(previousValue, string(value))}).Error
 	})
 }
 

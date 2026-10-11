@@ -75,7 +75,7 @@ func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started ti
 		}).Error; err != nil {
 			return err
 		}
-		return tx.Create(&AuditLog{DocumentID: &docID, UserID: "system", Action: "DOCUMENT_EXTRACTION_FAILED", Details: string(detail), CreatedAt: finished}).Error
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: auditSystemUser("document-queue"), Action: "DOCUMENT_EXTRACTION_FAILED", Details: string(detail), CreatedAt: finished}).Error
 	})
 }
 
@@ -161,7 +161,7 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 		if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
 			return err
 		}
-		return tx.Create(&AuditLog{DocumentID: &docID, UserID: "system", Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("engine=%s pages=%d fields=%d appointments=%d", result.Engine, len(rec.OCRPages), len(rec.Fields), len(rec.Appointments))}).Error
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: auditSystemUser("document-queue"), Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("engine=%s pages=%d fields=%d appointments=%d", result.Engine, len(rec.OCRPages), len(rec.Fields), len(rec.Appointments))}).Error
 	})
 }
 

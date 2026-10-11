@@ -441,7 +441,15 @@ func (i *GoogleDriveImporter) processRun(ctx context.Context, conn *sql.Conn, ru
 				status = "PARTIAL"
 				message = fmt.Sprintf("เข้าถึงโฟลเดอร์ไม่สำเร็จ %d รายการ และนำเข้าไฟล์ไม่สำเร็จ %d รายการ จะลองใหม่ในรอบถัดไป", failedFolders, failedFiles)
 			}
-			return imported, i.db.Model(run).Updates(map[string]any{"status": status, "finished_at": time.Now(), "last_error": message}).Error
+			if err := i.db.Model(run).Updates(map[string]any{"status": status, "finished_at": time.Now(), "last_error": message}).Error; err != nil {
+				return imported, err
+			}
+			details := fmt.Sprintf("สถานะ: %s; นำเข้าใหม่ %d รายการ", status, imported)
+			if message != "" {
+				details += "; " + message
+			}
+			i.audit("DRIVE_SYNC_FINISHED", details)
+			return imported, nil
 		}
 	}
 	return imported, nil
@@ -451,7 +459,16 @@ func (i *GoogleDriveImporter) pauseRun(run *DriveSyncRun, cause error) error {
 	if err := i.db.Model(run).Updates(map[string]any{"last_error": cause.Error(), "retry_at": time.Now().Add(5 * time.Minute)}).Error; err != nil {
 		return err
 	}
+	i.audit("DRIVE_SYNC_PAUSED", "รอรอบถัดไป: "+cause.Error())
 	return cause
+}
+
+// audit records a Drive job event under the Google Drive job's audit identity.
+// A failed audit write is logged; the sync itself carries on.
+func (i *GoogleDriveImporter) audit(action, details string) {
+	if err := i.db.Create(&AuditLog{UserID: auditSystemUser("google-drive-import"), Action: action, Details: details}).Error; err != nil {
+		i.logger.Printf("Google Drive audit %s not written: %v", action, err)
+	}
 }
 
 func (i *GoogleDriveImporter) failTask(task any, attempts int, cause error) error {

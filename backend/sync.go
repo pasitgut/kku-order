@@ -49,7 +49,9 @@ func NewUserSyncService(db *gorm.DB, logger *log.Logger) *UserSyncService {
 	}
 }
 
-func (s *UserSyncService) SyncUsers(ctx context.Context) (UserSyncResult, error) {
+// SyncUsers runs one directory sync. actor is the audit UserID: the signed-in
+// account for a manual sync, or auditSystemUser("user-sync") for the schedule.
+func (s *UserSyncService) SyncUsers(ctx context.Context, actor string) (UserSyncResult, error) {
 	started := time.Now()
 	run := UserSyncRun{StartedAt: started, Status: "RUNNING"}
 	if err := s.db.Create(&run).Error; err != nil {
@@ -70,6 +72,9 @@ func (s *UserSyncService) SyncUsers(ctx context.Context) (UserSyncResult, error)
 		}
 		if err := s.db.Save(&run).Error; err != nil && syncErr == nil {
 			return result, fmt.Errorf("save sync run: %w", err)
+		}
+		if err := s.db.Create(&AuditLog{UserID: actor, Action: "DIRECTORY_SYNCED", Details: syncRunAuditDetails(result, syncErr)}).Error; err != nil {
+			s.logger.Printf("directory sync audit not written: %v", err)
 		}
 		return result, syncErr
 	}
@@ -272,7 +277,7 @@ func directoryUserFromPayload(item map[string]any, externalID, rawPayload, finge
 
 func userSyncHandler(service *UserSyncService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result, err := service.SyncUsers(c.Request.Context())
+		result, err := service.SyncUsers(c.Request.Context(), currentUserID(c))
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "runId": result.RunID})
 			return

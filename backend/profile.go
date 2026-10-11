@@ -76,6 +76,17 @@ var activityLabels = map[string]string{
 	"DOCUMENT_REPROCESS_REQUESTED": "ประมวลผลใหม่",
 	"DOCUMENT_EXTRACTION_FAILED":   "ประมวลผลไม่สำเร็จ",
 	"DOCUMENT_PROCESSED":           "ประมวลผลเสร็จ",
+	"DOCUMENT_IMPORTED":            "นำเข้า",
+	"DOCUMENT_DRIVE_IMPORTED":      "นำเข้าจาก Google Drive",
+	"DRIVE_SYNC_STARTED":           "เริ่ม sync Google Drive",
+	"DRIVE_SYNC_FINISHED":          "sync Google Drive เสร็จ",
+	"DRIVE_SYNC_PAUSED":            "sync Google Drive หยุดรอ",
+	"DIRECTORY_SYNCED":             "sync รายชื่อบุคลากร",
+	"PROFILE_PHOTO_UPDATED":        "เปลี่ยนรูปโปรไฟล์",
+	"PROFILE_PHOTO_REMOVED":        "ลบรูปโปรไฟล์",
+	"EXPIRY_NOTICE_CREATED":        "สร้างการแจ้งเตือนหมดวาระ",
+	"EXPIRY_EMAIL_SENT":            "ส่งอีเมลแจ้งหมดวาระ",
+	"EXPIRY_EMAIL_SKIPPED":         "ข้ามอีเมลแจ้งหมดวาระ",
 }
 
 // deletedDocumentDetails is the Details payload of a DOCUMENT_DELETED row. The
@@ -125,7 +136,7 @@ func summarizeActivity(logs []AuditLog, now time.Time) activityStats {
 			continue
 		}
 		switch entry.Action {
-		case "DOCUMENT_UPLOADED", "DOCUMENT_FOLDER_IMPORTED", "DOCUMENT_OVERWRITTEN":
+		case "DOCUMENT_UPLOADED", "DOCUMENT_FOLDER_IMPORTED", "DOCUMENT_DRIVE_IMPORTED", "DOCUMENT_OVERWRITTEN":
 			stats.Imported++
 		case "DOCUMENT_CONFIRMED":
 			stats.Confirmed++
@@ -248,7 +259,12 @@ func uploadMyPhotoHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 		now := time.Now()
 		profile := UserProfile{UserID: userID, PhotoPath: path, PhotoUpdatedAt: &now}
-		if err := db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&profile).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&profile).Error; err != nil {
+				return err
+			}
+			return tx.Create(&AuditLog{UserID: userID, Action: "PROFILE_PHOTO_UPDATED", Details: extension}).Error
+		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "บันทึกรูปไม่สำเร็จ"})
 			return
 		}
@@ -267,7 +283,12 @@ func deleteMyPhotoHandler(db *gorm.DB) gin.HandlerFunc {
 		if ok {
 			_ = os.Remove(profile.PhotoPath)
 		}
-		if err := db.Model(&UserProfile{}).Where("user_id = ?", userID).Updates(map[string]any{"photo_path": "", "photo_updated_at": nil}).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&UserProfile{}).Where("user_id = ?", userID).Updates(map[string]any{"photo_path": "", "photo_updated_at": nil}).Error; err != nil {
+				return err
+			}
+			return tx.Create(&AuditLog{UserID: userID, Action: "PROFILE_PHOTO_REMOVED"}).Error
+		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ลบรูปไม่สำเร็จ"})
 			return
 		}
