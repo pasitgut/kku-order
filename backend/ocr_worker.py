@@ -1,118 +1,24 @@
 import argparse
 import csv
 import json
-import sys
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="DocFlow local OneOCR worker")
-    parser.add_argument("--input-dir", default="")
-    parser.add_argument("--input-file")
+    parser = argparse.ArgumentParser(description="DocFlow structured import worker (DOCX, XLSX, CSV)")
+    parser.add_argument("--input-file", required=True)
     parser.add_argument("--output-json", required=True)
-    parser.add_argument("--models-dir", default="")
-    parser.add_argument("--source-type", default="pdf")
-    parser.add_argument("--language", default="auto")
-    parser.add_argument("--max-side", type=int, default=1536)
-    parser.add_argument("--preprocess", choices=["standard", "none"], default="none")
+    parser.add_argument("--source-type", required=True)
     args = parser.parse_args()
 
-    if args.source_type.lower() != "pdf":
-        if not args.input_file:
-            raise RuntimeError("--input-file is required for structured imports")
-        pages = structured_import(Path(args.input_file), args.source_type.lower())
-        Path(args.output_json).write_text(json.dumps({"pages": pages}, ensure_ascii=False), encoding="utf-8")
-        return 0
-
-    package_dir = Path(__file__).resolve().parent / "one-ocr"
-    sys.path.insert(0, str(package_dir))
-    from oneocr import OneOCR
-    from PIL import Image, ImageEnhance, ImageOps
-
-    language = None if args.language.strip().lower() in {"", "auto"} else args.language.strip()
-    # Match sample-code: keep the PDF orientation fixed, avoid an extra
-    # deskew pass that can move OCR boxes away from the displayed page, and
-    # use the detector threshold used by the working mockup.
-    ocr = OneOCR(config_dir=Path(args.models_dir), default_rotation=0, max_side=args.max_side, score_threshold=0.5)
-    pages = []
-    image_paths = sorted(Path(args.input_dir).glob("page-*.png"), key=lambda path: int(path.stem.rsplit("-", 1)[1]))
-    for image_path in image_paths:
-        page_no = int(image_path.stem.rsplit("-", 1)[1])
-        with Image.open(image_path) as image:
-            image = prepare_image(image, args.preprocess, ImageEnhance, ImageOps)
-            result = ocr.recognize(image, language=language, max_side=args.max_side, score_threshold=0.5)
-            lines = []
-            for line in result.lines:
-                confidence = sum(word.confidence for word in line.words) / len(line.words) if line.words else 0.0
-                words = [{
-                    "text": word.text,
-                    "confidence": word.confidence,
-                    "boundingBox": list(word.bbox.as_rect()) if word.bbox else [],
-                } for word in line.words]
-                lines.append({
-                    "text": line.text,
-                    "confidence": confidence,
-                    "boundingBox": list(line.bbox.as_rect()) if line.bbox else [],
-                    "words": words,
-                })
-            pages.append({
-                "pageNo": page_no,
-                "imageWidth": image.width,
-                "imageHeight": image.height,
-                "imageAngle": result.image_angle,
-                "fullText": result.full_text,
-                "lines": lines,
-            })
-
-    if not pages:
-        raise RuntimeError("no rendered PDF pages were found")
-    output = {"pages": pages}
-    Path(args.output_json).write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
+    source_type = args.source_type.lower()
+    if source_type == "pdf":
+        raise RuntimeError("PDF files are extracted by the external OCR API, not this worker")
+    pages = structured_import(Path(args.input_file), source_type)
+    Path(args.output_json).write_text(json.dumps({"pages": pages}, ensure_ascii=False), encoding="utf-8")
     return 0
-
-
-def prepare_image(image, mode, image_enhance, image_ops):
-    image = image_ops.exif_transpose(image).convert("RGB")
-    if mode == "none":
-        return image
-    image = deskew_image(image)
-    return image_enhance.Brightness(image).enhance(1.05)
-
-
-def deskew_image(image):
-    """Estimate a small text skew angle and rotate the source page once.
-
-    The search runs on a reduced grayscale copy, then applies only the chosen
-    rotation to the original RGB page. This intentionally avoids denoising or
-    other image changes outside the TOR's deskew/brightness scope.
-    """
-    import numpy as np
-    from PIL import Image as PILImage
-
-    max_dimension = max(image.size)
-    scale = min(1.0, 1200.0 / max_dimension)
-    preview = image
-    if scale < 1.0:
-        preview = image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale))))
-    grayscale = np.asarray(preview.convert("L"))
-    dark_pixels = grayscale < 200
-    if int(dark_pixels.sum()) < 100:
-        return image
-
-    best_angle = 0.0
-    best_score = -1.0
-    for angle in np.arange(-15.0, 15.01, 1.0):
-        rotated = preview.rotate(float(angle), resample=PILImage.Resampling.BILINEAR, expand=False, fillcolor=255)
-        profile = (np.asarray(rotated.convert("L")) < 200).sum(axis=1)
-        score = float(profile.var())
-        if score > best_score:
-            best_score = score
-            best_angle = float(angle)
-    if abs(best_angle) < 0.5:
-        return image
-    return image.rotate(best_angle, resample=PILImage.Resampling.BICUBIC, expand=False, fillcolor="white")
 
 
 def structured_import(path: Path, source_type: str):

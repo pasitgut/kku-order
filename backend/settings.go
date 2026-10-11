@@ -1,15 +1,12 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -152,21 +149,6 @@ func mergeOCRSettings(defaults OCRSettings, stored string) (OCRSettings, error) 
 	return merged, nil
 }
 
-func (s OCRSettings) preprocessMode() string {
-	if s.Preprocess {
-		return "standard"
-	}
-	return "none"
-}
-
-func (s OCRSettings) renderArgs() []string {
-	return []string{"-png", "-r", strconv.Itoa(s.DPI), "-f", "1"}
-}
-
-func (s OCRSettings) workerArgs(script, inputDir, outputJSON, modelsDir string) []string {
-	return []string{script, "--input-dir", inputDir, "--output-json", outputJSON, "--models-dir", modelsDir, "--language", s.Language, "--max-side", strconv.Itoa(s.MaxSide), "--preprocess", s.preprocessMode()}
-}
-
 func needsReview(averageConfidence float32, lowConfidence bool, threshold float64) bool {
 	return lowConfidence || float64(averageConfidence) < threshold
 }
@@ -275,31 +257,6 @@ func updateOCRSettingsHandler(store SettingsStore) gin.HandlerFunc {
 		}
 		c.JSON(http.StatusOK, gin.H{"data": settings})
 	}
-}
-
-// runOCRWorker renders nothing itself; it runs the OCR worker on page-*.png
-// files already in inputDir using the given settings.
-func runOCRWorker(ctx context.Context, settings OCRSettings, inputDir string) (workerResult, error) {
-	outputJSON := filepath.Join(inputDir, "ocr.json")
-	script := getenv("OCR_SCRIPT", filepath.Join(".", "ocr_worker.py"))
-	modelsDir := getenv("OCR_MODELS_DIR", filepath.Join(".", "one-ocr", "models"))
-	command := exec.CommandContext(ctx, getenv("OCR_PYTHON", "python"), settings.workerArgs(script, inputDir, outputJSON, modelsDir)...)
-	command.Env = append(os.Environ(), "PYTHONUTF8=1")
-	if output, err := command.CombinedOutput(); err != nil {
-		return workerResult{}, fmt.Errorf("เรียก %s: %w: %s", settings.Engine, err, strings.TrimSpace(string(output)))
-	}
-	contents, err := os.ReadFile(outputJSON)
-	if err != nil {
-		return workerResult{}, fmt.Errorf("อ่านผลลัพธ์ %s: %w", settings.Engine, err)
-	}
-	var result workerResult
-	if err := json.Unmarshal(contents, &result); err != nil {
-		return workerResult{}, fmt.Errorf("แปลงผลลัพธ์ %s: %w", settings.Engine, err)
-	}
-	if len(result.Pages) == 0 {
-		return workerResult{}, fmt.Errorf("%s ไม่พบข้อความในเอกสาร", settings.Engine)
-	}
-	return result, nil
 }
 
 // SystemSettings are read-only values from .env. Secrets are reported only as

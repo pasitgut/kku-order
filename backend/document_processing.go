@@ -122,60 +122,6 @@ type commandMetadata struct {
 }
 
 func extractCommandMetadata(pages []workerPage, fullText string) commandMetadata {
-	return extractCommandMetadataWithProfile(pages, fullText, nil)
-}
-
-func extractCommandMetadataForDocument(pages []workerPage, fullText, filename string) commandMetadata {
-	return extractCommandMetadataWithProfile(pages, fullText, fixedSampleProfileFor(filename))
-}
-
-type fixedSampleProfile struct {
-	firstPageTop float64
-	otherPageTop float64
-	bottom       float64
-	left         float64
-	right        float64
-}
-
-func fixedSampleProfileFor(filename string) *fixedSampleProfile {
-	name := strings.ToLower(filepath.Base(filename))
-	switch {
-	case strings.Contains(name, "malicious_file"), strings.Contains(name, "kku_2"):
-		return &fixedSampleProfile{firstPageTop: 0.38, otherPageTop: 0.03, bottom: 0.93, left: 0.08, right: 0.90}
-	case name == "kku.pdf", strings.HasPrefix(name, "kku-"):
-		return &fixedSampleProfile{firstPageTop: 0.46, otherPageTop: 0.03, bottom: 0.93, left: 0.08, right: 0.90}
-	default:
-		return nil
-	}
-}
-
-func fixedSampleRows(page workerPage, profile *fixedSampleProfile) [][]ocrCell {
-	if profile == nil || page.ImageWidth <= 0 || page.ImageHeight <= 0 {
-		return groupOCRRows(page)
-	}
-	top := profile.otherPageTop
-	if page.PageNo == 1 {
-		top = profile.firstPageTop
-	}
-	rows := groupOCRRows(page)
-	filtered := make([][]ocrCell, 0, len(rows))
-	for _, row := range rows {
-		kept := make([]ocrCell, 0, len(row))
-		for _, cell := range row {
-			centerX := (cell.x + cell.width/2) / float64(page.ImageWidth)
-			centerY := (cell.y + cell.height/2) / float64(page.ImageHeight)
-			if centerX >= profile.left && centerX <= profile.right && centerY >= top && centerY <= profile.bottom {
-				kept = append(kept, cell)
-			}
-		}
-		if len(kept) > 0 {
-			filtered = append(filtered, kept)
-		}
-	}
-	return filtered
-}
-
-func extractCommandMetadataWithProfile(pages []workerPage, fullText string, profile *fixedSampleProfile) commandMetadata {
 	metadata := commandMetadata{}
 	metadata.orderType = inferOrderType(fullText)
 	orderNo := findOrderNo(fullText)
@@ -221,7 +167,7 @@ func extractCommandMetadataWithProfile(pages []workerPage, fullText string, prof
 	for _, page := range pages {
 		department := ""
 		departmentResponsibilities := ""
-		for _, row := range fixedSampleRows(page, profile) {
+		for _, row := range groupOCRRows(page) {
 			rowText := strings.Join(cellTexts(row), " ")
 			if name, ok := parseDepartmentHeader(rowText); ok {
 				department = name
@@ -473,22 +419,6 @@ func averageOCRConfidence(pages []workerPage) float32 {
 		return 0
 	}
 	return total / float32(count)
-}
-
-func parseAppointmentLine(text string) (string, string, bool) {
-	text = replaceThaiDigits(text)
-	roles := []string{"เป็นกรรมการและผู้ช่วยเลขานุการ", "เป็นกรรมการและเลขานุการ", "เป็นรองประธานกรรมการ", "เป็นประธานกรรมการ", "เป็นผู้ช่วยเลขานุการ", "เป็นกรรมการ", "เป็นที่ปรึกษา"}
-	for _, role := range roles {
-		if index := strings.Index(text, role); index >= 0 {
-			name := strings.TrimSpace(text[:index])
-			name = regexp.MustCompile(`^\s*\d+(?:\.\d+)*[.)]?\s*`).ReplaceAllString(name, "")
-			name = strings.Trim(name, " -:.")
-			if len([]rune(name)) >= 3 {
-				return strings.TrimPrefix(role, "เป็น"), name, true
-			}
-		}
-	}
-	return "", "", false
 }
 
 func appointmentRole(text string) string {

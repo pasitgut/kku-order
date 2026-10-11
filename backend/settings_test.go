@@ -81,25 +81,6 @@ func TestMergeStoredOCRSettingsKeepsDefaultsForMissingKeys(t *testing.T) {
 	}
 }
 
-func TestOCRSettingsBuildWorkerArguments(t *testing.T) {
-	settings := defaultOCRSettings()
-	settings.DPI = 300
-	settings.Language = "english"
-	settings.MaxSide = 2048
-	settings.Preprocess = true
-
-	render := strings.Join(settings.renderArgs(), " ")
-	if !strings.Contains(render, "-r 300") {
-		t.Fatalf("render args = %q, want DPI 300", render)
-	}
-	worker := strings.Join(settings.workerArgs("worker.py", "/in", "/out.json", "/models"), " ")
-	for _, want := range []string{"--language english", "--max-side 2048", "--preprocess standard", "--models-dir /models"} {
-		if !strings.Contains(worker, want) {
-			t.Fatalf("worker args = %q, want %q", worker, want)
-		}
-	}
-}
-
 func TestNeedsReviewUsesConfiguredThreshold(t *testing.T) {
 	if !needsReview(0.92, false, 0.95) {
 		t.Fatal("0.92 should need review at threshold 0.95")

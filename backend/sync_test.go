@@ -184,31 +184,3 @@ func TestExtractAppointmentsRebuildsTableRowsWithoutPhantomRoles(t *testing.T) {
 		t.Fatalf("role fallback = %#v", result.appointments[2])
 	}
 }
-
-func TestExtractAppointmentsJoinsFixedSampleRowColumns(t *testing.T) {
-	page := workerPage{PageNo: 1, Lines: []workerLine{
-		{Text: "1.1", Confidence: 0.98, BoundingBox: []float64{100, 200, 20, 10}},
-		{Text: "รองคณบดีฝ่ายวิชาการ", Confidence: 0.96, BoundingBox: []float64{130, 215, 250, 10}},
-		{Text: "เป็นรองประธานกรรมการ", Confidence: 0.96, BoundingBox: []float64{600, 217, 180, 10}},
-	}}
-	result := extractCommandMetadata([]workerPage{page}, "")
-	if len(result.appointments) != 1 {
-		t.Fatalf("appointments = %d, want 1: %#v", len(result.appointments), result.appointments)
-	}
-	if result.appointments[0].CommitteeRole != "รองประธานกรรมการ" {
-		t.Fatalf("role = %q, want รองประธานกรรมการ", result.appointments[0].CommitteeRole)
-	}
-}
-
-func TestFixedSampleProfileKeepsOnlyTableRegion(t *testing.T) {
-	page := workerPage{PageNo: 1, ImageWidth: 1000, ImageHeight: 1000, Lines: []workerLine{
-		{Text: "1. บรรทัดหัวกระดาษ", Confidence: 0.99, BoundingBox: []float64{100, 120, 300, 20}},
-		{Text: "1.1", Confidence: 0.98, BoundingBox: []float64{120, 520, 30, 12}},
-		{Text: "นายทดสอบ ตำแหน่ง", Confidence: 0.96, BoundingBox: []float64{160, 532, 300, 12}},
-		{Text: "เป็นกรรมการ", Confidence: 0.96, BoundingBox: []float64{650, 534, 150, 12}},
-	}}
-	result := extractCommandMetadataForDocument([]workerPage{page}, "", "kku_2.pdf")
-	if len(result.appointments) != 1 || result.appointments[0].FullName == "" {
-		t.Fatalf("fixed profile appointments = %#v, want one table member", result.appointments)
-	}
-}

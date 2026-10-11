@@ -14,14 +14,10 @@ RUN apt-get update \
     && useradd --system --gid app app
 COPY --from=builder /out/docflow-api /app/docflow-api
 COPY ocr_worker.py /app/ocr_worker.py
-COPY one-ocr /app/one-ocr
-RUN pip install --no-cache-dir -e /app/one-ocr \
-    && mkdir -p /app/storage \
-    && chown -R app:app /app
+RUN mkdir -p /app/storage && chown -R app:app /app
 USER app
 EXPOSE 8080
 ENV OCR_SCRIPT=/app/ocr_worker.py \
-    OCR_MODELS_DIR=/app/one-ocr/models \
     OCR_PYTHON=python \
     PDFTOPPM_BIN=pdftoppm \
     PDFINFO_BIN=pdfinfo
