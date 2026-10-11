@@ -31,7 +31,7 @@ services:
       IMPORT_DIR: /app/incoming
       PORT: 8080
       GIN_MODE: release
-      WEB_ORIGIN: http://localhost:3000
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       AUTH_REQUIRED: ${AUTH_REQUIRED:-false}
       AUTH_USER_HEADER: ${AUTH_USER_HEADER:-X-Auth-Request-User}
       AUTH_ROLE_HEADER: ${AUTH_ROLE_HEADER:-X-Auth-Request-Role}
@@ -49,8 +49,13 @@ services:
       OCR_DPI: ${OCR_DPI:-200}
       OCR_MAX_SIDE: ${OCR_MAX_SIDE:-1536}
       OCR_PREPROCESS: ${OCR_PREPROCESS:-none}
+      OCR_API_URL: ${OCR_API_URL:-}
+      OCR_API_KEY: ${OCR_API_KEY:-}
+      OCR_API_KEY_FILE: ${OCR_API_KEY_FILE:-}
+      OCR_API_TIMEOUT: ${OCR_API_TIMEOUT:-10m}
+      OCR_API_CONCURRENCY: ${OCR_API_CONCURRENCY:-1}
     ports:
-      - "8080:8080"
+      - "${API_HOST_PORT:-8080}:8080"
     volumes:
       - docflow_uploads:/app/storage
       - ./incoming:/app/incoming
@@ -75,7 +80,7 @@ services:
       NEXT_PUBLIC_API_URL: /backend
       BACKEND_INTERNAL_URL: http://api:8080
     ports:
-      - "3000:3000"
+      - "${WEB_HOST_PORT:-3000}:3000"
     depends_on:
       api:
         condition: service_healthy

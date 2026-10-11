@@ -46,6 +46,11 @@ services:
       OCR_DPI: ${OCR_DPI:-200}
       OCR_MAX_SIDE: ${OCR_MAX_SIDE:-1536}
       OCR_PREPROCESS: ${OCR_PREPROCESS:-none}
+      OCR_API_URL: ${OCR_API_URL:-}
+      OCR_API_KEY: ${OCR_API_KEY:-}
+      OCR_API_KEY_FILE: ${OCR_API_KEY_FILE:-}
+      OCR_API_TIMEOUT: ${OCR_API_TIMEOUT:-10m}
+      OCR_API_CONCURRENCY: ${OCR_API_CONCURRENCY:-1}
     volumes:
       - docflow_uploads:/app/storage
       - ./incoming:/app/incoming

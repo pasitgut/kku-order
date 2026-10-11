@@ -154,3 +154,25 @@ docker compose down
 - `OCR_SITE_ADDRESS=<โดเมน>` เพื่อให้ Caddy ทำ HTTPS เอง
 - เปลี่ยน `OCR_PROXY_PUBLISH` เป็น `:80` และ `:443` (ใน compose ต้องเพิ่มพอร์ต 443 และ volume ของ certificate)
 - DocFlow เปลี่ยน `OCR_API_URL` เป็น URL ของเครื่อง GPU
+
+## i. เชื่อมแอป DocFlow บน VM เดียวกัน
+
+หลังรันขั้น d แล้ว ให้ตั้งค่าแอป DocFlow บน VM ที่ `~/docflow/kku-order/.env` ดังนี้:
+
+```dotenv
+MYSQL_HOST_PORT=127.0.0.1:13307
+API_HOST_PORT=127.0.0.1:18080
+WEB_HOST_PORT=3000
+WEB_ORIGIN=http://10.198.200.62:3000
+OCR_API_URL=http://ocr-proxy:8000
+OCR_API_KEY=<คัดลอกค่า OCR_API_KEY จาก deploy/ocr/.env>
+```
+
+คัดลอกค่าคีย์มาจากไฟล์ `deploy/ocr/.env` โดยตรง อย่าวางในแชทหรือ commit จากนั้นเปิดแอปด้วยคำสั่ง:
+
+```sh
+cd ~/docflow/kku-order
+docker compose -f docker-compose.yml -f docker-compose.ocr-net.yml up -d --build
+```
+
+ไฟล์ `docker-compose.ocr-net.yml` ต่อ service `api` เข้ากับ network `docflow-ocr` เพื่อให้เรียก `ocr-proxy:8000` ได้ network นี้ถูกสร้างตอนรัน `docker compose up` ในโฟลเดอร์ `deploy/ocr/` (ขั้น d)

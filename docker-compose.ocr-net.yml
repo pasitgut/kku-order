@@ -1,0 +1,12 @@
+# Joins the API to the shared OCR network so it can reach ocr-proxy:8000.
+# Use: docker compose -f docker-compose.yml -f docker-compose.ocr-net.yml up -d --build
+services:
+  api:
+    networks:
+      - default
+      - docflow-ocr
+
+networks:
+  docflow-ocr:
+    external: true
+    name: docflow-ocr
