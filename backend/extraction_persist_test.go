@@ -97,15 +97,44 @@ func TestBuildExtractionRecordsExOfficioConfidenceComesFromPosition(t *testing.T
 	}
 }
 
-func TestBuildExtractionRecordsSkipsEmptyFields(t *testing.T) {
+func TestBuildExtractionRecordsWritesEveryHeaderFieldEvenWhenEmpty(t *testing.T) {
 	rec := buildExtractionRecords(sampleResult(), 0.8)
-	if len(rec.Fields) != 6 {
-		t.Fatalf("fields = %d, want one row per non-empty header value (6)", len(rec.Fields))
+	keys := make([]string, 0, len(rec.Fields))
+	for _, f := range rec.Fields {
+		keys = append(keys, f.FieldKey)
+	}
+	want := "order_no,subject,issued_by,issued_date,effective_date,expiry_date,signer_name,signer_position,additional_references"
+	if got := strings.Join(keys, ","); got != want {
+		t.Fatalf("field keys = %s, want %s", got, want)
 	}
 	for _, f := range rec.Fields {
-		if strings.TrimSpace(f.Value) == "" {
-			t.Fatalf("empty field row written: %+v", f)
+		if (f.FieldKey == "expiry_date" || f.FieldKey == "signer_position") && (f.Value != "" || f.Confidence != 0 || f.PageNo != 0 || f.BoundingBoxJSON != "[]") {
+			t.Fatalf("empty field row %s = %+v, want empty value, confidence 0, PageNo 0, box []", f.FieldKey, f)
 		}
+	}
+}
+
+func TestBuildExtractionRecordsEmptyOrderNoStillGetsFieldRow(t *testing.T) {
+	r := sampleResult()
+	r.Header.OrderNo = ExtractedValue{}
+	for _, v := range []*ExtractedValue{&r.Header.Subject, &r.Header.IssuedBy, &r.Header.Date, &r.Header.EffectiveDate, &r.Header.Signer, &r.Header.References[0], &r.Groups[0].Members[0].Name, &r.Groups[0].Members[0].Position, &r.Groups[0].Members[0].Role, &r.Groups[0].Members[1].Position} {
+		v.Confidence = f32(0.9)
+	}
+	rec := buildExtractionRecords(r, 0.8)
+	var found bool
+	for _, f := range rec.Fields {
+		if f.FieldKey == "order_no" {
+			found = true
+			if f.Value != "" {
+				t.Fatalf("order_no value = %q, want empty", f.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("empty order number must still produce an order_no field row so the reviewer can type it")
+	}
+	if rec.MissingConfidence {
+		t.Fatal("an empty value must not count toward the confidence rule")
 	}
 }
 

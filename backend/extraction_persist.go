@@ -61,32 +61,6 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 	}
 
 	h := result.Header
-	for _, item := range []struct {
-		key, label string
-		v          ExtractedValue
-	}{
-		{"order_no", "เลขที่คำสั่ง", h.OrderNo},
-		{"subject", "เรื่อง", h.Subject},
-		{"issued_by", "ออกโดย", h.IssuedBy},
-		{"issued_date", "วันที่ออกคำสั่ง", h.Date},
-		{"effective_date", "วันที่มีผล", h.EffectiveDate},
-		{"expiry_date", "วันที่สิ้นสุด", h.ExpiryDate},
-		{"signer_name", "ผู้ลงนาม", h.Signer},
-	} {
-		track(item.v)
-		if strings.TrimSpace(item.v.Text) == "" {
-			continue
-		}
-		rec.Fields = append(rec.Fields, ExtractedField{
-			FieldKey:        item.key,
-			FieldLabel:      item.label,
-			Value:           item.v.Text,
-			SourceText:      item.v.Text,
-			Confidence:      confidenceOf(item.v),
-			PageNo:          pageOf(item.v),
-			BoundingBoxJSON: firstBoxJSON(item.v.Boxes),
-		})
-	}
 
 	refTexts := make([]string, 0, len(h.References))
 	for _, ref := range h.References {
@@ -102,6 +76,27 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 			BoundingBoxJSON: firstBoxJSON(ref.Boxes),
 		})
 	}
+
+	// ทุกฟิลด์มีแถวเสมอ แม้ค่าว่าง เพื่อให้ผู้ตรวจพิมพ์ค่าที่ OCR พลาดได้ (ข้อยกเว้นของ controller)
+	// ค่าว่างไม่นับเข้าเกณฑ์ความมั่นใจ (track ข้ามค่าว่างอยู่แล้ว)
+	for _, item := range []struct {
+		key, label string
+		v          ExtractedValue
+	}{
+		{"order_no", "เลขที่คำสั่ง", h.OrderNo},
+		{"subject", "เรื่อง", h.Subject},
+		{"issued_by", "ออกโดย", h.IssuedBy},
+		{"issued_date", "วันที่ออกคำสั่ง", h.Date},
+		{"effective_date", "วันที่มีผล", h.EffectiveDate},
+		{"expiry_date", "วันที่สิ้นสุด", h.ExpiryDate},
+		{"signer_name", "ผู้ลงนาม", h.Signer},
+		{"signer_position", "ตำแหน่งผู้ลงนาม", ExtractedValue{}},
+	} {
+		track(item.v)
+		rec.Fields = append(rec.Fields, fieldRow(item.key, item.label, item.v))
+	}
+	// อ้างอิงแต่ละรายการถูกนับความมั่นใจไปแล้วด้านบน แถวรวมนี้จึงไม่นับซ้ำ
+	rec.Fields = append(rec.Fields, fieldRow("additional_references", "เอกสารอ้างอิง", ExtractedValue{Text: strings.Join(refTexts, "\n")}))
 
 	rec.Updates["order_no"] = truncateRunes(h.OrderNo.Text, colLimitDocumentOrderNo)
 	rec.Updates["title"] = truncateRunes(h.Subject.Text, colLimitDocumentTitle)
@@ -200,6 +195,18 @@ func minPresentConfidence(values ...ExtractedValue) float32 {
 		}
 	}
 	return lowest
+}
+
+func fieldRow(key, label string, v ExtractedValue) ExtractedField {
+	return ExtractedField{
+		FieldKey:        key,
+		FieldLabel:      label,
+		Value:           v.Text,
+		SourceText:      v.Text,
+		Confidence:      confidenceOf(v),
+		PageNo:          pageOf(v),
+		BoundingBoxJSON: firstBoxJSON(v.Boxes),
+	}
 }
 
 func confidenceOf(v ExtractedValue) float32 {
