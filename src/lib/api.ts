@@ -88,6 +88,8 @@ export type ApiDocument = {
   retentionUntil?: string;
   importSource: string;
   processingStage: string;
+  extractionAttempts?: number;
+  nextAttemptAt?: string | null;
   processingStartedAt?: string;
   processingFinishedAt?: string;
   processingDurationMs: number;
@@ -350,6 +352,7 @@ export function isAppointmentLinked(appointment: Appointment) {
 
 export type OCRSettings = {
   engine: string;
+  apiUrl: string;
   language: string;
   dpi: number;
   maxSide: number;
@@ -362,7 +365,7 @@ export type OCRSettings = {
   driveAfterImport: "move" | "keep";
 };
 
-export type OCRTestResult = { confidence: number; seconds: number; lineCount: number; lines: { text: string; confidence: number }[] };
+export type OCRConnectionResult = { status: "ok" | "unauthorized" | "unreachable"; detail: string };
 
 export type SystemSettings = {
   userSyncCron: string;
@@ -396,7 +399,7 @@ export type MyActivity = {
 };
 
 export async function getOCRSettings() {
-  return apiFetch<{ data: OCRSettings }>("/api/v1/settings/ocr");
+  return apiFetch<{ data: OCRSettings; ocrApiKeyConfigured: boolean }>("/api/v1/settings/ocr");
 }
 
 export async function updateOCRSettings(settings: OCRSettings) {
@@ -407,11 +410,16 @@ export async function updateOCRSettings(settings: OCRSettings) {
   });
 }
 
-export async function testOCRSettings(file: File, settings: OCRSettings) {
-  const body = new FormData();
-  body.append("file", file);
-  body.append("settings", JSON.stringify(settings));
-  return apiFetch<{ data: OCRTestResult }>("/api/v1/settings/ocr/test", { method: "POST", body });
+export async function testOCRConnection(body: { engine?: string; apiUrl?: string }) {
+  return apiFetch<{ data: OCRConnectionResult }>("/api/v1/settings/ocr/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function reprocessDocument(id: number) {
+  return apiFetch<{ id: number; processingStage: string }>(`/api/v1/documents/${id}/reprocess`, { method: "POST" });
 }
 
 export async function getSystemSettings() {

@@ -4,9 +4,12 @@ import { useRouter } from "next/navigation";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info, MagnifyingGlass, MapPin, PencilSimple, Trash, UploadSimple, UserPlus, UsersThree, WarningCircle } from "@phosphor-icons/react";
 import { AppShell, StatusBadge } from "@/components/app-shell";
+import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
-import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, rosterRows, summarizeDepartments } from "@/lib/member-review";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
+import { can } from "@/lib/permissions";
+import { canReprocess, processingNote } from "@/lib/processing-status";
 
 type PanelView = "roster" | "members" | "metadata" | "duties";
 
@@ -60,6 +63,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   // เกณฑ์เดียวกับที่ backend ใช้ตัดสินว่าเอกสารต้องตรวจสอบ ปรับได้ที่หน้าตั้งค่า OCR
   const [reviewThreshold, setReviewThreshold] = useState(0.9);
   const replaceInputRef = useRef<HTMLInputElement>(null);
+  const { me } = useMe();
+  const [reprocessing, setReprocessing] = useState(false);
 
   const selectedOCRPage = document.ocrPages?.find((page) => page.pageNo === selectedPage);
   const pageWidth = selectedOCRPage?.imageWidth || 1;
@@ -237,6 +242,18 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     }
   };
 
+  // ประมวลผลใหม่จะเปลี่ยนข้อมูลที่สกัดไว้ จึงโหลดหน้าใหม่เพื่อติดตามคิวอีกครั้ง
+  const onReprocess = async () => {
+    setReprocessing(true);
+    try {
+      await reprocessDocument(document.id);
+      window.location.reload();
+    } catch (reason) {
+      showError(reason, "ประมวลผลใหม่ไม่สำเร็จ");
+      setReprocessing(false);
+    }
+  };
+
   const removeDocument = async () => {
     if (!deleteArmed) {
       setDeleteArmed(true);
@@ -273,6 +290,10 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       <section className="card flex min-w-0 flex-col overflow-hidden">
         <div className="space-y-3 px-5 pb-4 pt-5 lg:px-6">
           <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-[var(--navy)]">ตรวจสอบข้อมูลเอกสาร</h2><span className="text-xs text-[var(--muted)]">ข้อมูลจากการสกัด · แก้ไขได้ทุกช่อง</span></div>
+          {processingNote(document) && <div className="flex flex-wrap items-center gap-3 rounded-lg bg-[var(--warning-soft)] px-3.5 py-2.5 text-[13px] text-[var(--warning)]">
+            <div className="min-w-0 flex-1"><p>{processingNote(document)}</p>{document.ocrError && <p className="mt-0.5 text-xs font-light">{document.ocrError}</p>}</div>
+            {can(me?.role ?? "", "import") && canReprocess(document) && <button type="button" disabled={reprocessing} onClick={onReprocess} className="focus-ring h-9 shrink-0 rounded-md border border-[var(--warning)] bg-white px-3 text-[13px] font-medium text-[var(--warning)] hover:bg-[var(--warning-soft)] disabled:opacity-50">{reprocessing ? "กำลังส่งคิว..." : "ประมวลผลใหม่"}</button>}
+          </div>}
           <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="min-w-[180px] flex-1"><p className="text-xs text-[var(--muted)]">ตรวจแล้ว <span className="font-medium text-[var(--ink)]">{verifiedCount}</span> จาก {appointments.length} รายชื่อ</p><span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${appointments.length ? Math.round((verifiedCount / appointments.length) * 100) : 0}%` }} /></span></div>
             {unlinkedAppointments.length > 0 && <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs"><span className="h-2 w-2 rounded-full bg-[var(--highlight)]" />ยังไม่ผูก {unlinkedAppointments.length}</span>}
@@ -309,13 +330,13 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
                 const open = openRows[row.id] ?? (memberFilter === "warning" && problem);
                 return <li key={row.id} className={`border-b border-[var(--line-soft)] ${selectedAppointmentId === row.id ? "bg-[var(--brand-blue-pale)]" : ""}`}>
                   <div className="flex min-h-[52px] items-center gap-3 px-5 py-2 lg:px-6">
-                    <input type="checkbox" checked={row.verified} onChange={(event) => updateAppointment(row.id, "verified", event.target.checked)} aria-label={`ตรวจแล้ว ${row.fullName}`} className="h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
-                    <div className="min-w-0 flex-1 sm:flex sm:items-baseline sm:gap-2.5"><p className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0">{row.fullName || "ไม่ระบุชื่อ"}</p><p className="truncate text-xs font-light text-[var(--muted)]">{[row.position, row.committeeRole].filter(Boolean).join(" · ") || "-"}</p></div>
+                    <input type="checkbox" checked={row.verified} onChange={(event) => updateAppointment(row.id, "verified", event.target.checked)} aria-label={`ตรวจแล้ว ${personLabel(row)}`} className="h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
+                    <div className="min-w-0 flex-1 sm:flex sm:items-baseline sm:gap-2.5"><p className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0">{personLabel(row)}</p><p className="truncate text-xs font-light text-[var(--muted)]">{[row.position, row.committeeRole].filter(Boolean).join(" · ") || "-"}</p></div>
                     <span className="hidden whitespace-nowrap text-xs text-[var(--subtle)] sm:inline">{Math.round(row.confidence * 100)}% · น.{row.pageNo || "-"}</span>
                     <MatchTag state={state} />
                     {problem
                       ? <button type="button" aria-expanded={open} onClick={() => toggleRow(row.id, open)} className={`${smallButton} h-8 border-[var(--line-strong)] bg-white font-medium text-[var(--accent)] hover:bg-[var(--line-soft)]`}>{open ? "ซ่อน" : "จัดการ"}</button>
-                      : <button type="button" aria-expanded={open} aria-label={`${open ? "ปิด" : "แก้ไข"} ${row.fullName}`} onClick={() => toggleRow(row.id, open)} className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--accent)]"><PencilSimple size={15} /></button>}
+                      : <button type="button" aria-expanded={open} aria-label={`${open ? "ปิด" : "แก้ไข"} ${personLabel(row)}`} onClick={() => toggleRow(row.id, open)} className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--accent)]"><PencilSimple size={15} /></button>}
                   </div>
                   {open && <div className="space-y-3 px-5 pb-4 lg:pr-6 sm:pl-[52px] lg:pl-[54px]">
                     <div className="grid gap-2 sm:grid-cols-3">

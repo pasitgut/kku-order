@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Appointment } from "./api.ts";
-import { countByFilter, filterMembers, groupByDepartment, matchState, rosterRows, summarizeDepartments } from "./member-review.ts";
+import { countByFilter, filterMembers, groupByDepartment, matchState, personLabel, rosterRows, summarizeDepartments } from "./member-review.ts";
 
 function appointment(overrides: Partial<Appointment>): Appointment {
   return {
@@ -71,4 +71,14 @@ test("rosterRows lists every name with department and position only", () => {
     { id: 1, no: 2, fullName: "ผศ.ดร.สมชาย ใจดี", department: "คณะกรรมการบริหารหลักสูตร", position: "ผู้ช่วยศาสตราจารย์" },
     { id: 5, no: 3, fullName: "นางสาวพิมพ์ชนก อินทร์แก้ว", department: "ไม่ระบุฝ่าย", position: "นักวิชาการศึกษา" },
   ]);
+});
+
+test("ex-officio row without name is labelled by position", () => {
+  assert.equal(personLabel({ fullName: "", position: "เลขานุการ" }), "เลขานุการ (โดยตำแหน่ง)");
+  assert.equal(personLabel({ fullName: "สมชาย", position: "ผอ." }), "สมชาย");
+});
+
+test("ex-officio row waits for a reviewer to choose the person", () => {
+  const row = appointment({ id: 6, fullName: "", position: "เลขานุการ", nameMatchMethod: "EX_OFFICIO" });
+  assert.equal(matchState(row).label, "รอผู้ตรวจเลือกบุคคล");
 });

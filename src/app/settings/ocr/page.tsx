@@ -1,18 +1,20 @@
 "use client";
 
-import { ChangeEvent, useEffect, useState } from "react";
-import { FilePdf, FolderSimple, GoogleDriveLogo, Info } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
+import { FolderSimple, GoogleDriveLogo, Info } from "@phosphor-icons/react";
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { useToast } from "@/components/toast";
-import { OCRSettings, OCRTestResult, getOCRSettings, getSystemSettings, testOCRSettings, updateOCRSettings } from "@/lib/api";
+import { OCRConnectionResult, OCRSettings, getOCRSettings, getSystemSettings, testOCRConnection, updateOCRSettings } from "@/lib/api";
 import { can } from "@/lib/permissions";
+import { isInsecureURL } from "@/lib/processing-status";
 
 const engines = [
-  { id: "one-ocr", name: "one-ocr", description: "ทำงานในเครื่อง รองรับไทย อังกฤษ และเลขไทย ข้อมูลไม่ออกนอกระบบ", status: "ติดตั้งแล้ว", available: true },
-  { id: "tesseract", name: "Tesseract", description: "ทำงานในเครื่อง โอเพนซอร์ส ต้องติดตั้งชุดภาษาไทยเพิ่ม", status: "ยังไม่รองรับ", available: false },
-  { id: "external", name: "OCR ผ่าน API ภายนอก", description: "ส่งภาพไปประมวลผลที่บริการภายนอก ต้องมี URL และ API key", status: "ยังไม่รองรับ", available: false },
+  { id: "thaidoc", name: "thaidoc-extract", description: "ส่งไฟล์ PDF ไปอ่านที่ thaidoc-extract ผ่าน API ต้องมี URL และ API key" },
+  { id: "docflow-contract", name: "DocFlow contract", description: "ส่งไฟล์ไปอ่านที่ API ที่ตอบตามรูปแบบ DocFlow contract ต้องมี URL และ API key" },
 ];
+
+const connectionTone: Record<OCRConnectionResult["status"], "good" | "warn" | "bad"> = { ok: "good", unauthorized: "warn", unreachable: "bad" };
 
 function Segmented<T extends string | number>({ label, value, options, onChange, disabled }: { label: string; value: T; options: [T, string][]; onChange: (value: T) => void; disabled?: boolean }) {
   return <div role="radiogroup" aria-label={label} className="inline-flex gap-0.5 rounded-lg bg-[#f1f3f6] p-[3px]">
@@ -39,12 +41,12 @@ export default function OCRSettingsPage() {
   const [importDir, setImportDir] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [sample, setSample] = useState<File | null>(null);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [result, setResult] = useState<OCRTestResult | null>(null);
+  const [connection, setConnection] = useState<OCRConnectionResult | null>(null);
 
   useEffect(() => {
-    getOCRSettings().then((response) => { setSaved(response.data); setForm(response.data); }).catch((reason: Error) => setError(reason.message));
+    getOCRSettings().then((response) => { setSaved(response.data); setForm(response.data); setApiKeyConfigured(response.ocrApiKeyConfigured); }).catch((reason: Error) => setError(reason.message));
     getSystemSettings().then((response) => setImportDir(response.data.importDir)).catch(() => setImportDir(""));
   }, []);
 
@@ -67,21 +69,19 @@ export default function OCRSettingsPage() {
     }
   };
 
-  const runTest = async () => {
-    if (!form || !sample) return;
+  const runConnectionTest = async () => {
+    if (!form) return;
     setTesting(true);
-    setResult(null);
+    setConnection(null);
     try {
-      const response = await testOCRSettings(sample, form);
-      setResult(response.data);
+      const response = await testOCRConnection({ engine: form.engine, apiUrl: form.apiUrl });
+      setConnection(response.data);
     } catch (reason) {
-      toast(reason instanceof Error ? reason.message : "ทดสอบไม่สำเร็จ", { kind: "error" });
+      toast(reason instanceof Error ? reason.message : "ทดสอบการเชื่อมต่อไม่สำเร็จ", { kind: "error" });
     } finally {
       setTesting(false);
     }
   };
-
-  const onSample = (event: ChangeEvent<HTMLInputElement>) => { setSample(event.target.files?.[0] ?? null); setResult(null); };
 
   if (!form) return <SettingsFrame note="เปลี่ยนค่าในหน้านี้ได้โดยไม่ต้องแก้ .env">{error ? <div role="alert" className="rounded-lg bg-[var(--danger-soft)] p-4 text-sm font-medium text-[var(--danger)]">{error}</div> : <div className="card p-8"><div className="skeleton h-6 w-48" /><div className="skeleton mt-3 h-4 w-72" /></div>}</SettingsFrame>;
 
@@ -94,24 +94,26 @@ export default function OCRSettingsPage() {
       <div role="radiogroup" aria-label="เครื่องมือ OCR" className="grid gap-3.5 p-5 md:grid-cols-3 lg:px-6">
         {engines.map((engine) => {
           const active = form.engine === engine.id;
-          return <button key={engine.id} type="button" role="radio" aria-checked={active} disabled={!engine.available || !editable} onClick={() => patch({ engine: engine.id })} className={`focus-ring flex flex-col gap-2 rounded-[10px] p-4 text-left transition disabled:cursor-not-allowed ${active ? "border-2 border-[var(--accent)] bg-[var(--brand-blue-pale)]" : "border border-[var(--line-strong)] bg-white enabled:hover:border-[var(--accent)]"} ${engine.available ? "" : "opacity-60"}`}>
+          return <button key={engine.id} type="button" role="radio" aria-checked={active} disabled={!editable} onClick={() => patch({ engine: engine.id })} className={`focus-ring flex flex-col gap-2 rounded-[10px] p-4 text-left transition disabled:cursor-not-allowed ${active ? "border-2 border-[var(--accent)] bg-[var(--brand-blue-pale)]" : "border border-[var(--line-strong)] bg-white enabled:hover:border-[var(--accent)]"}`}>
             <span className="flex items-center justify-between gap-2"><span className="font-semibold text-[var(--navy)]">{engine.name}</span><span aria-hidden="true" className={`h-[18px] w-[18px] rounded-full ${active ? "border-[5px] border-[var(--accent)] bg-white" : "border-[1.5px] border-[#c2ccd6]"}`} /></span>
             <span className="text-xs font-light leading-5 text-[var(--muted)]">{engine.description}</span>
-            <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]"><StatusDot tone={engine.available ? "good" : "idle"} />{active ? "ใช้งานอยู่" : engine.status}</span>
+            <span className="flex items-center gap-1.5 text-xs text-[var(--muted)]"><StatusDot tone={active ? "good" : "idle"} />{active ? "ใช้งานอยู่" : "พร้อมใช้งาน"}</span>
           </button>;
         })}
       </div>
     </SettingsCard>
 
-    <div className="grid items-start gap-6 xl:grid-cols-3">
-      <div className="space-y-6 xl:col-span-2">
-        <SettingsCard title="การสแกนและปรับภาพ" description="ค่าที่ใช้แปลง PDF เป็นภาพก่อนอ่านข้อความ">
-          <Row title="ภาษาในเอกสาร" hint="อัตโนมัติจะตรวจภาษาเองทีละบรรทัด"><Segmented label="ภาษาในเอกสาร" value={form.language} disabled={!editable} options={[["auto", "อัตโนมัติ"], ["thai", "ไทย"], ["english", "อังกฤษ"]]} onChange={(language) => patch({ language })} /></Row>
-          <Row title="ความละเอียด (DPI)" hint={form.dpi < 300 ? <span className="inline-flex items-center gap-1.5"><StatusDot tone="warn" />ต่ำกว่าที่ TOR แนะนำ (300 DPI)</span> : "ละเอียดขึ้นอ่านแม่นขึ้น แต่ใช้เวลานานขึ้น"}><Segmented label="ความละเอียด" value={form.dpi} disabled={!editable} options={[[150, "150"], [200, "200"], [300, "300"], [400, "400"]]} onChange={(dpi) => patch({ dpi })} /></Row>
-          <Row title="ขนาดภาพสูงสุด" hint="ย่อด้านยาวของภาพก่อนอ่าน ลดเวลาและหน่วยความจำ" htmlFor="max-side"><select id="max-side" value={form.maxSide} disabled={!editable} onChange={(event) => patch({ maxSide: Number(event.target.value) })} className="focus-ring h-10 min-w-[160px] rounded-md border border-[var(--line-strong)] bg-white px-2.5 text-sm disabled:opacity-60">{[1024, 1536, 2048, 3072].map((size) => <option key={size} value={size}>{size.toLocaleString("th-TH")} px</option>)}</select></Row>
-          <Row title="ปรับภาพอัตโนมัติก่อนอ่าน" hint={<>แก้ภาพเอียงและเพิ่มความสว่าง ใช้เฉพาะเอกสารสแกนที่เอียง<br /><span className="inline-flex items-center gap-1.5"><StatusDot tone="warn" />กับ PDF ที่คมชัดอยู่แล้วอาจอ่านแย่ลง ทดสอบก่อนเปิดใช้</span></>}><span id="preprocess-label" className="sr-only">ปรับภาพอัตโนมัติก่อนอ่าน</span><Switch checked={form.preprocess} disabled={!editable} labelledBy="preprocess-label" onChange={(preprocess) => patch({ preprocess })} /></Row>
+    <div className="space-y-6">
+      <SettingsCard title="การเชื่อมต่อ OCR API" description="ที่อยู่ของบริการอ่านเอกสาร ใช้กับเอ็นจิน thaidoc-extract และ DocFlow contract">
+        {isInsecureURL(form.apiUrl) && <div role="alert" className="mx-5 mt-5 flex items-center gap-2 rounded-lg bg-[var(--warning-soft)] px-4 py-3 text-[13px] text-[var(--warning)] lg:mx-6"><StatusDot tone="warn" />การเชื่อมต่อไม่ได้เข้ารหัส แนะนำให้ใช้ https://</div>}
+        <Row title="API URL" hint="เช่น https://ocr.example.ac.th" htmlFor="api-url"><input id="api-url" type="url" value={form.apiUrl} disabled={!editable} onChange={(event) => patch({ apiUrl: event.target.value.trim() })} placeholder="https://..." className="focus-ring h-10 w-full rounded-md border border-[var(--line-strong)] px-3 text-[13px] disabled:opacity-60 sm:w-[340px]" /></Row>
+        <Row title="API key" hint="ตั้งค่าที่ OCR_API_KEY ในไฟล์ .env ไม่แสดงในหน้านี้"><span className="inline-flex items-center gap-1.5 text-[13px] text-[var(--muted)]"><StatusDot tone={apiKeyConfigured ? "good" : "idle"} />{apiKeyConfigured ? "ตั้งค่าแล้ว" : "ยังไม่ได้ตั้งค่า"}</span></Row>
+        <Row title="ทดสอบการเชื่อมต่อ" hint={connection ? <span className="inline-flex items-center gap-1.5"><StatusDot tone={connectionTone[connection.status]} />{connection.detail}</span> : "ตรวจว่าเข้าถึง API และ API key ใช้ได้หรือไม่"}><button type="button" disabled={!editable || testing} onClick={runConnectionTest} className="focus-ring h-10 rounded-md border border-[var(--line-strong)] bg-white px-4 text-sm hover:bg-[var(--line-soft)] disabled:cursor-not-allowed disabled:opacity-50">{testing ? "กำลังทดสอบ..." : "ทดสอบการเชื่อมต่อ"}</button></Row>
+      </SettingsCard>
+
+      <SettingsCard title="การตรวจสอบ" description="เอกสารหรือรายชื่อที่อ่านได้ต่ำกว่าเกณฑ์นี้ จะถูกทำเครื่องหมายให้ตรวจสอบ">
           <Row title="เกณฑ์ความมั่นใจ" hint="เอกสารหรือรายชื่อที่อ่านได้ต่ำกว่านี้ จะถูกทำเครื่องหมายให้ตรวจสอบ" htmlFor="threshold"><span className="flex items-center gap-3"><input id="threshold" type="range" min={50} max={100} step={5} value={threshold} disabled={!editable} onChange={(event) => patch({ reviewThreshold: Number(event.target.value) / 100 })} className="w-[200px] accent-[var(--accent)]" /><span className="w-12 text-right text-[15px] font-semibold text-[var(--navy)]">{threshold}%</span></span></Row>
-        </SettingsCard>
+      </SettingsCard>
 
         <SettingsCard title="ดึงเอกสารอัตโนมัติ" description="ระบบตรวจแหล่งไฟล์ตามรอบเวลา นำเข้า PDF ใหม่เข้าคิว OCR เอง และข้ามไฟล์ซ้ำ" action={<><span id="import-label" className="sr-only">เปิดการดึงเอกสารอัตโนมัติ</span><Switch checked={form.importEnabled} disabled={!editable} labelledBy="import-label" onChange={(importEnabled) => patch({ importEnabled })} /></>}>
           <div className={form.importEnabled ? "" : "opacity-50"}>
@@ -124,24 +126,6 @@ export default function OCRSettingsPage() {
             <Row title={form.importSource === "drive" ? "ดึงไฟล์ทุก" : "ตรวจโฟลเดอร์ทุก"} htmlFor="interval"><select id="interval" value={form.importIntervalMinutes} disabled={!editable || !form.importEnabled} onChange={(event) => patch({ importIntervalMinutes: Number(event.target.value) })} className="focus-ring h-10 min-w-[160px] rounded-md border border-[var(--line-strong)] bg-white px-2.5 text-sm disabled:opacity-60">{[[1, "1 นาที"], [5, "5 นาที"], [15, "15 นาที"], [30, "30 นาที"], [60, "1 ชั่วโมง"], [1440, "วันละครั้ง"]].map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}</select></Row>
           </div>
         </SettingsCard>
-      </div>
-
-      <SettingsCard title="ทดสอบการอ่าน" description="ลองกับเอกสาร 1 หน้า ด้วยค่าที่ตั้งไว้ในหน้านี้ (ยังไม่ต้องบันทึก)">
-        <div className="space-y-3.5 p-5">
-          <label className="focus-ring flex cursor-pointer items-center gap-3 rounded-lg border-[1.5px] border-dashed border-[var(--brand-blue-light)] p-3.5 hover:border-[var(--accent)] hover:bg-[var(--brand-blue-pale)]">
-            <input type="file" accept=".pdf,.png,.jpg,.jpeg" className="sr-only" disabled={!editable} onChange={onSample} />
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#f1f3f6] text-[var(--muted)]"><FilePdf size={18} /></span>
-            <span className="min-w-0"><span className="block truncate text-[13px] font-medium">{sample ? sample.name : "เลือกไฟล์ตัวอย่าง"}</span><span className="block text-xs text-[var(--accent)]">{sample ? "เปลี่ยนไฟล์" : "PDF, PNG หรือ JPG ไม่เกิน 20 MB"}</span></span>
-          </label>
-          <button type="button" disabled={!editable || !sample || testing} onClick={runTest} className="focus-ring h-11 w-full rounded-md bg-[var(--accent)] text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{testing ? `กำลังอ่านด้วย ${form.engine} · ${form.dpi} DPI...` : "ทดสอบด้วยค่าที่ตั้งไว้"}</button>
-          {testing && <span className="block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--accent)]" /></span>}
-          {result && <>
-            <div className="grid grid-cols-3 rounded-lg border border-[var(--line)]">{[["ความมั่นใจ", `${Math.round(result.confidence * 100)}%`], ["เวลา", `${result.seconds} วิ`], ["บรรทัด", result.lineCount.toLocaleString("th-TH")]].map(([label, value]) => <div key={label} className="border-r border-[var(--line-soft)] px-3 py-2.5 last:border-0"><p className="text-[11px] text-[var(--muted)]">{label}</p><p className="text-base font-semibold text-[var(--navy)]">{value}</p></div>)}</div>
-            <div><p className="mb-1.5 text-xs text-[var(--muted)]">ข้อความที่อ่านได้</p><div className="shell-scrollbar max-h-[320px] overflow-y-auto rounded-lg bg-[var(--surface-muted)] px-3.5 py-3 text-[13px] leading-7">{result.lines.map((line, index) => <p key={index} className={line.confidence < form.reviewThreshold ? "bg-[var(--warning-soft)]" : ""}>{line.text}</p>)}</div>
-              <p className="mt-1.5 inline-flex items-center gap-1.5 text-xs text-[var(--muted)]"><span className="h-2.5 w-2.5 rounded-sm bg-[var(--warning-soft)]" />ต่ำกว่าเกณฑ์ {threshold}%</p></div>
-          </>}
-        </div>
-      </SettingsCard>
     </div>
 
     {editable && <div className="card flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6">

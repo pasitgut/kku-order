@@ -53,7 +53,7 @@ export default function UploadPage() {
     patchFile(index, { state: "uploading", message: undefined });
     try {
       await uploadDocument(file, overwrite);
-      patchFile(index, { state: "success", message: overwrite ? "บันทึกแทนไฟล์เดิมแล้ว รอ one-ocr ประมวลผล" : "รอ one-ocr ประมวลผล" });
+      patchFile(index, { state: "success", message: overwrite ? "บันทึกแทนไฟล์เดิมแล้ว รอระบบ OCR ประมวลผล" : "รอระบบ OCR ประมวลผล" });
       return true;
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 409) {
@@ -69,7 +69,7 @@ export default function UploadPage() {
   };
 
   const announce = (saved: number) => {
-    if (saved > 0) toast(`นำเข้า ${saved} ไฟล์แล้ว · รอ one-ocr ประมวลผล`, { action: { label: "ดูเอกสาร", href: "/documents" } });
+    if (saved > 0) toast(`นำเข้า ${saved} ไฟล์แล้ว · รอระบบ OCR ประมวลผล`, { action: { label: "ดูเอกสาร", href: "/documents" } });
   };
 
   const startProcessing = async () => {
@@ -102,7 +102,7 @@ export default function UploadPage() {
     <span className="text-xs font-light leading-5 text-[var(--muted)]">PDF สำหรับ OCR · DOCX, XLSX, CSV นำเข้าโดยตรง<br />ไม่เกิน 50 MB ต่อไฟล์</span>
   </label>;
 
-  return <AppShell breadcrumb="หน้าหลัก / นำเข้าเอกสาร" title="นำเข้าชุดเอกสารคำสั่งแต่งตั้ง" description="ไฟล์จะถูกบันทึกลง MySQL ก่อนเข้าสู่คิวปรับภาพและสกัดด้วย one-ocr">
+  return <AppShell breadcrumb="หน้าหลัก / นำเข้าเอกสาร" title="นำเข้าชุดเอกสารคำสั่งแต่งตั้ง" description="ไฟล์จะถูกบันทึกลง MySQL ก่อนเข้าสู่คิวปรับภาพและสกัดด้วยบริการ OCR">
     <div className="grid items-start gap-6 xl:grid-cols-3">
       <div className="xl:col-span-2">
         {files.length === 0 ? dropzone(true) : <section className="card flex flex-col overflow-hidden">
@@ -137,7 +137,7 @@ export default function UploadPage() {
         {files.length > 0 && dropzone(false)}
         <section className="card p-5 lg:p-6">
           <h2 className="font-semibold text-[var(--navy)]">กระบวนการหลังนำเข้า</h2>
-          <ol className="mt-4 space-y-4">{[["01", "ตรวจทิศทางและปรับภาพ", "Deskew และปรับความสว่างก่อน OCR"], ["02", "สกัดข้อความด้วย one-ocr", "ประมวลผลภาษาไทย อังกฤษ เลขไทย และเลขอารบิกในเครื่อง"], ["03", "จำแนกฟิลด์ข้อมูล", "แยกชื่อ ตำแหน่ง บทบาท เลขที่คำสั่ง และวันที่"], ["04", "ตรวจสอบก่อนบันทึกสมบูรณ์", "เจ้าหน้าที่แก้ไขและยืนยันทุกครั้งก่อนเป็น CONFIRMED"]].map(([step, title, description]) => <li key={step} className="flex gap-3"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#f1f3f6] text-[11px] font-semibold text-[var(--muted)]">{step}</span><div><p className="text-sm font-medium">{title}</p><p className="mt-0.5 text-xs font-light leading-5 text-[var(--muted)]">{description}</p></div></li>)}</ol>
+          <ol className="mt-4 space-y-4">{[["01", "ตรวจทิศทางและปรับภาพ", "Deskew และปรับความสว่างก่อน OCR"], ["02", "สกัดข้อความด้วยบริการ OCR", "ส่งไฟล์ไปอ่านข้อความที่บริการ OCR ที่ตั้งค่าไว้ในหน้าตั้งค่า"], ["03", "จำแนกฟิลด์ข้อมูล", "แยกชื่อ ตำแหน่ง บทบาท เลขที่คำสั่ง และวันที่"], ["04", "ตรวจสอบก่อนบันทึกสมบูรณ์", "เจ้าหน้าที่แก้ไขและยืนยันทุกครั้งก่อนเป็น CONFIRMED"]].map(([step, title, description]) => <li key={step} className="flex gap-3"><span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#f1f3f6] text-[11px] font-semibold text-[var(--muted)]">{step}</span><div><p className="text-sm font-medium">{title}</p><p className="mt-0.5 text-xs font-light leading-5 text-[var(--muted)]">{description}</p></div></li>)}</ol>
         </section>
         <section className="card flex gap-3 p-5 lg:p-6">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#f1f3f6] text-[var(--muted)]"><Info size={15} /></span>

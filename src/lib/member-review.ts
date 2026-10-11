@@ -19,11 +19,16 @@ export function departmentOf(row: Appointment) {
   return row.department?.trim() || NO_DEPARTMENT;
 }
 
+export function personLabel(row: { fullName: string; position: string }): string {
+  return row.fullName.trim() !== "" ? row.fullName : `${row.position} (โดยตำแหน่ง)`;
+}
+
 export function matchState(row: Appointment): MatchState {
   const method = row.nameMatchMethod ?? "";
   if (!isLinked(row)) {
     if (resolvedMethods.has(method)) return { label: "พบชื่อตรง รอผูก", detail: "พบชื่อที่ตรงกัน กดเพื่อผูก", tone: "warning" };
     if (method === "AMBIGUOUS") return { label: `ชื่อซ้ำ ${row.candidates?.length || "หลาย"} คน`, detail: "มีชื่อซ้ำกันหลายคน ต้องเลือกเอง", tone: "danger" };
+    if (method === "EX_OFFICIO") return { label: "รอผู้ตรวจเลือกบุคคล", detail: "กรรมการโดยตำแหน่งที่ไม่มีชื่อ ต้องให้ผู้ตรวจเลือกบุคคล", tone: "warning" };
     if (method === "DIRECTORY_EMPTY") return { label: "ยังไม่มีฐานบุคลากร", detail: "ยังไม่มีฐานข้อมูลบุคลากร กรุณา sync ก่อน", tone: "danger" };
     return { label: "ไม่พบในระบบ", detail: "ไม่พบรายชื่อในระบบ", tone: "danger" };
   }
