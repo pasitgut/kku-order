@@ -52,6 +52,13 @@
 12. **การประมวลผลใหม่ (reprocess) และการอัปโหลดทับ** ใช้ helper `retryResetUpdates()` ร่วมกัน รวมทั้งเส้นทาง duplicate-overwrite ใน `uploadDocument` (main.go) ไม่ใช่เฉพาะ `replacedFileUpdates`
 13. **กรณี HTTP status ที่ตารางใน spec ไม่ได้ระบุ** (เช่น 404, 405) ถือเป็นถาวร เพราะมักหมายถึง URL ตั้งค่าผิด
 14. **ไฟล์ที่ไม่ใช่ PDF เข้าคิวเดียวกันแต่ไม่ลองใหม่** ตาม spec (เขียนไว้เพื่อความชัดเจน)
+15. **`markExtractionFailed(doc Document, failure ExtractError, started time.Time)`** ใช้ `(doc, err)` ตาม spec บรรทัด 250 และเพิ่ม `started` เพื่อบันทึกระยะเวลาใน `processing_duration_ms` (ฉบับก่อนหน้าเปลี่ยนเป็น `(id, failure)` โดยไม่บันทึกไว้)
+16. **ฟิลด์ฟังก์ชันใน `DocumentProcessor`** (`pageCount`, `importStructured`, `now`, `newExtractor`) และ `checkPDFLimits(ctx, path, countPages)` รับตัวนับหน้าเป็นพารามิเตอร์ เพื่อให้เทสต์ไม่ต้องใช้ `pdfinfo`, Python หรือไฟล์นอก `t.TempDir()`
+17. **DOCX/XLSX/CSV ใช้เส้นทางบันทึกเดียวกับ PDF** โดยแปลงผลด้วย `structuredExtraction` (`engine = structured-import`) ความมั่นใจของทุกค่าเป็นค่าเฉลี่ยของเอกสาร เพื่อให้ threshold เดิมใช้ได้ `IssuedBy` = ชื่อเรื่องเพื่อให้ `committee` เหมือนเดิม กรอบของบรรทัดไม่ normalize (เก็บ `[]`) และไฟล์ที่ไม่ใช่ตัวอย่างยังไม่มีรายชื่อสมาชิก (พฤติกรรมเดิมของ `extractCommandMetadata` ที่ไม่มี profile)
+18. **คอลัมน์ `committee` และ `order_type` ของ PDF เติมจาก `IssuedBy` (ผู้ออกคำสั่ง)** spec ไม่ได้ระบุ (ค่าเดิมของ `committee` มาจากชื่อเรื่อง)
+19. **Signature ที่เปลี่ยน:** `NewDocumentProcessor(db, logger, cfg)`, `getOCRSettingsHandler(store, cfg)` (ตอบ `ocrApiKeyConfigured`), `checkOCRConnection(ctx, client, healthURL, apiKey)` ไม่รับ `thaidoc` (ไม่ได้ใช้); `applyDirectoryMatches` ถูกลบ เหลือ `matchAppointments` ที่ข้ามแถวไม่มีชื่อ
+20. **`extractionStatus` ใช้ `needsReview` เดิม** (`settings.go`) แทนการเขียนกฎ threshold ใหม่ และ `confidenceLabel` ใน frontend ใช้ `"ไม่ระบุ"` เมื่อค่าเป็น 0 ของเอกสารที่ประมวลผลเสร็จแล้ว
+21. **คำสั่งในแผนชี้ไปที่ worktree `/Users/kit/kku/kku-order-thaidoc`** (แผนเดิมชี้ไปที่ `/Users/kit/kku/kku-order-thaidoc` ซึ่งเป็น checkout หลัก) ยกเว้นคำสั่งบน VM และ `deploy/ocr` ของ Task 1 ที่ไม่เปลี่ยน
 
 ## โครงสร้างไฟล์ (ภาพรวม)
 
@@ -66,6 +73,8 @@
 | `backend/document_queue.go` | ใหม่ | `planExtractionFailure`, `extractionJobs`, dispatcher |
 | `backend/document_queue_store.go` | ใหม่ | `gormExtractionJobs`, `retryResetUpdates` |
 | `backend/reprocess.go` | ใหม่ | `reprocessStore`, `reprocessDocumentHandler` |
+| `backend/document_retry.go` | ใหม่ | `planExtractionFailure`, `retryResetUpdates` |
+| `backend/structured_extraction.go` | ใหม่ | `structuredExtraction` (DOCX/XLSX/CSV เป็น `ExtractionResult`) |
 | `backend/ocr_connection.go` | ใหม่ | `checkOCRConnection`, `testOCRConnectionHandler` |
 | `backend/migrations/0008_extraction_retry.sql` | ใหม่ | คอลัมน์ลองใหม่ |
 | `docs/ocr-api-contract.md` | ใหม่ | DocFlow contract |
@@ -213,7 +222,7 @@ OCR_PROXY_PUBLISH=127.0.0.1:18000
 - [ ] **Step 6: ตรวจไฟล์ก่อน commit**
 
 ```sh
-cd /Users/kit/kku/kku-order && docker compose -f deploy/ocr/compose.yml --env-file deploy/ocr/.env.example config >/dev/null 2>&1; echo "exit=$?"
+cd /Users/kit/kku/kku-order-thaidoc && docker compose -f deploy/ocr/compose.yml --env-file deploy/ocr/.env.example config >/dev/null 2>&1; echo "exit=$?"
 ```
 
 คาดหวัง: exit อาจไม่เป็น 0 เพราะ `OCR_API_KEY` ไม่ถูกตั้ง ให้ตรวจว่า error มีแค่เรื่องตัวแปรที่ `:?` บังคับ ถ้ามี error อื่นให้แก้
@@ -249,7 +258,7 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 - [ ] **Step 1: ตรวจรูปแบบ fixture ก่อนเขียนเทสต์**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && jq '{subject, number, ref_number, signer, date, order, bbox_subject: .bbox.subject, bbox_ref: .bbox.ref_number, keys: (keys)}' testdata/extraction/thaidoc-extract-json.json | head -60
+cd /Users/kit/kku/kku-order-thaidoc/backend && jq '{subject, number, ref_number, signer, date, order, bbox_subject: .bbox.subject, bbox_ref: .bbox.ref_number, keys: (keys)}' testdata/extraction/thaidoc-extract-json.json | head -60
 ```
 
 คาดหวัง: `subject`, `number`, `signer` เป็น string, `ref_number` เป็น array ของ string, `bbox.subject` เป็น array ของ box, `bbox.ref_number` เป็น array ของ array ถ้าไม่ตรงให้ปรับ struct ในขั้นตอน implement ให้ตรงกับผลจริง
@@ -374,7 +383,7 @@ func TestParseThaidocResponseRequiresDataKey(t *testing.T) {
 - [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run ParseThaidoc 2>&1 | tail -20
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run ParseThaidoc 2>&1 | tail -20
 ```
 
 คาดหวัง: build fail ด้วย `undefined: parseThaidocResponse` (ยังไม่มี implementation)
@@ -472,14 +481,6 @@ import (
 	"strings"
 )
 
-type thaidocBox struct {
-	Page int     `json:"page"`
-	X0   float64 `json:"x0"`
-	Y0   float64 `json:"y0"`
-	X1   float64 `json:"x1"`
-	Y1   float64 `json:"y1"`
-}
-
 type thaidocPage struct {
 	Page   int `json:"page"`
 	Width  int `json:"width"`
@@ -487,10 +488,10 @@ type thaidocPage struct {
 }
 
 type thaidocMemberBBox struct {
-	Prefix   []thaidocBox `json:"prefix"`
-	Name     []thaidocBox `json:"name"`
-	Position []thaidocBox `json:"position"`
-	Role     []thaidocBox `json:"role"`
+	Prefix   []Box `json:"prefix"`
+	Name     []Box `json:"name"`
+	Position []Box `json:"position"`
+	Role     []Box `json:"role"`
 }
 
 type thaidocMember struct {
@@ -506,8 +507,8 @@ type thaidocGroup struct {
 	Duty     string          `json:"duty"`
 	ListName []thaidocMember `json:"list name"`
 	BBox     struct {
-		Dept []thaidocBox `json:"dept"`
-		Duty []thaidocBox `json:"duty"`
+		Dept []Box `json:"dept"`
+		Duty []Box `json:"duty"`
 	} `json:"bbox"`
 }
 
@@ -523,23 +524,19 @@ type thaidocResponse struct {
 	Data          *[]thaidocGroup `json:"data"`
 	Pages         []thaidocPage  `json:"pages"`
 	BBox          struct {
-		Subject       []thaidocBox   `json:"subject"`
-		Date          []thaidocBox   `json:"date"`
-		Order         []thaidocBox   `json:"order"`
-		EffectiveDate []thaidocBox   `json:"effective date"`
-		Number        []thaidocBox   `json:"number"`
-		ExpiryDate    []thaidocBox   `json:"expiry date"`
-		RefNumber     [][]thaidocBox `json:"ref_number"`
-		Signer        []thaidocBox   `json:"signer"`
+		Subject       []Box   `json:"subject"`
+		Date          []Box   `json:"date"`
+		Order         []Box   `json:"order"`
+		EffectiveDate []Box   `json:"effective date"`
+		Number        []Box   `json:"number"`
+		ExpiryDate    []Box   `json:"expiry date"`
+		RefNumber     [][]Box `json:"ref_number"`
+		Signer        []Box   `json:"signer"`
 	} `json:"bbox"`
 }
 
-func thaidocValue(text string, boxes []thaidocBox) ExtractedValue {
-	v := ExtractedValue{Text: strings.TrimSpace(text)}
-	for _, b := range boxes {
-		v.Boxes = append(v.Boxes, Box{Page: b.Page, X0: b.X0, Y0: b.Y0, X1: b.X1, Y1: b.Y1})
-	}
-	return v
+func thaidocValue(text string, boxes []Box) ExtractedValue {
+	return ExtractedValue{Text: strings.TrimSpace(text), Boxes: boxes}
 }
 
 // parseThaidocResponse แปลงคำตอบของ thaidoc `/api/v1/extract-json` เป็น ExtractionResult
@@ -566,7 +563,7 @@ func parseThaidocResponse(raw []byte) (ExtractionResult, error) {
 		},
 	}
 	for i, ref := range resp.RefNumber {
-		var boxes []thaidocBox
+		var boxes []Box
 		if i < len(resp.BBox.RefNumber) {
 			boxes = resp.BBox.RefNumber[i]
 		}
@@ -602,15 +599,15 @@ func parseThaidocResponse(raw []byte) (ExtractionResult, error) {
 }
 ```
 
-หมายเหตุ: ค่า `Boxes` ของ `Name` ถ้า `bbox.name` ว่าง ให้ใช้ `Position` ตามที่ spec ระบุ (กรอบของสมาชิก) ให้เพิ่มในขั้น implement ถ้าเทสต์ `Name.Boxes` ว่าง แต่ fixture มีกรอบ `name` อยู่แล้ว
+หมายเหตุ: กรอบของสมาชิกที่ `name` ว่าง จะตกไปที่ `position` ใน `buildExtractionRecords` (Task 5) ไม่ต้องทำ fallback ใน decoder
 
 - [ ] **Step 6: รันเทสต์ ต้อง PASS**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go test ./... -run ParseThaidoc -v 2>&1 | tail -30
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go test ./... -run ParseThaidoc -v 2>&1 | tail -30 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
 ```
 
-คาดหวัง: 5 เทสต์ PASS ถ้า `gofmt -l` แสดงไฟล์ให้รัน `gofmt -w` กับไฟล์ที่ระบุ
+คาดหวัง: 5 เทสต์ PASS ถ้า `gofmt -l` แสดงไฟล์ให้รัน `gofmt -w` กับไฟล์ที่ระบุ และรันเต็มชุดเหลือเฉพาะ baseline `TestNewManualDirectoryUserStoresValidJSONPayload`
 
 - [ ] **Step 7: Commit**
 
@@ -729,7 +726,7 @@ func TestParseContractResponseRequiresGroupsKey(t *testing.T) {
 - [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run ParseContract 2>&1 | tail -10
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run ParseContract 2>&1 | tail -10
 ```
 
 คาดหวัง: `undefined: parseContractResponse`
@@ -770,7 +767,7 @@ func parseContractResponse(raw []byte) (ExtractionResult, error) {
 - [ ] **Step 5: รันเทสต์ ต้อง PASS**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run ParseContract -v 2>&1 | tail -10
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run ParseContract -v 2>&1 | tail -10 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
 ```
 
 - [ ] **Step 6: เขียน `docs/ocr-api-contract.md` (ภาษาไทย)**
@@ -801,24 +798,26 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 - Create: `backend/extractor_http_test.go`
 - Create: `backend/ocr_config.go`
 - Create: `backend/ocr_config_test.go`
+- Modify: `backend/settings.go` (เพิ่มฟิลด์ `APIURL string json:"apiUrl"` ใน `OCRSettings` เท่านั้น ฟิลด์นี้ต้องมีตั้งแต่ Task นี้เพราะ `newExtractor` อ่านค่า)
 
 **Interfaces:**
 - ผลิต: `type httpExtractor struct{ engine, endpoint, apiKey string; client *http.Client; decode func([]byte) (ExtractionResult, error) }` ที่ implement `Extractor`
-- ผลิต: `func classifyHTTPFailure(status int, body []byte) *ExtractError`
-- ผลิต: `type ocrAPIConfig struct{ DefaultURL, APIKey string; Timeout time.Duration; Concurrency int }`
-- ผลิต: `func loadOCRAPIConfig(getenv func(string) string, readFile func(string) ([]byte, error)) ocrAPIConfig`
+- ผลิต: `func classifyHTTPFailure(status int, body []byte) *ExtractError` (ใช้ฟิลด์ `detail` ของคำตอบ 400/413/415/422 ในข้อความ)
+- ผลิต: `type ocrAPIConfig struct{ DefaultURL, APIKey string; Timeout time.Duration; Concurrency int }`, `loadOCRAPIConfig(getenv func(string) string, readFile func(string) ([]byte, error)) ocrAPIConfig`, `loadOCRAPIConfigFromEnv() ocrAPIConfig`
+- ผลิต: `func ocrBaseURL(settingsURL, defaultURL string) string` (ใช้ค่าที่บันทึกก่อน ถ้าว่างใช้ env; Task 8 ใช้ร่วม)
 - ผลิต: `func newExtractor(settings OCRSettings, cfg ocrAPIConfig) (Extractor, error)`
-- ผลิต: `func checkPDFLimits(path string) error` (ย้ายการตรวจ 50 MB และ 100 หน้าเดิมมาไว้ที่นี่)
+- ผลิต: `type pageCounter func(ctx context.Context, path string) int`, `func checkPDFLimits(ctx context.Context, path string, countPages pageCounter) error`
+- ใช้: `detectPDFPageCount(ctx context.Context, path string) int` ใน `backend/document_processing.go` ซึ่งมี signature ตรงกับ `pageCounter`
 
-- [ ] **Step 1: หาการตรวจ 100 หน้าเดิม**
+- [ ] **Step 1: ยืนยันฟังก์ชันนับหน้าที่มีอยู่**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && grep -rn "100\b\|50 \* 1024\|maxPages\|maxPDF\|MaxPages\|pdfinfo\|PDFINFO" --include=*.go . | grep -v _test | head -20
+cd /Users/kit/kku/kku-order-thaidoc/backend && grep -n "func detectPDFPageCount" document_processing.go
 ```
 
-จดชื่อฟังก์ชันที่นับหน้า PDF และค่า limit ที่ใช้อยู่ แล้วใช้ค่าเดียวกันใน `checkPDFLimits` (ถ้าเดิมไม่มีการตรวจ 50 MB ให้เพิ่ม)
+คาดหวัง: หนึ่งบรรทัด `func detectPDFPageCount(ctx context.Context, path string) int` (ใช้ `pdfinfo`) เดิมจำกัด 100 หน้าใน `runOCR` ซึ่งจะถูกลบใน Task 7 โค้ดเดิมไม่มีการตรวจ 50 MB จึงเพิ่มใน `checkPDFLimits`
 
-- [ ] **Step 2: เขียนเทสต์ `backend/extractor_http_test.go`**
+- [ ] **Step 2: เขียนเทสต์ที่ล้มเหลว `backend/extractor_http_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
@@ -831,6 +830,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -936,6 +936,13 @@ func TestHTTPExtractorClassifiesStatusCodes(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPFailureIncludesAPIDetail(t *testing.T) {
+	ee := classifyHTTPFailure(http.StatusBadRequest, []byte(`{"detail":"a.txt: not a readable PDF or image"}`))
+	if ee.Retryable || !strings.Contains(ee.Message, "not a readable PDF") {
+		t.Fatalf("got %+v", ee)
+	}
+}
+
 func TestHTTPExtractorConnectionFailureIsRetryable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	url := srv.URL
@@ -974,19 +981,25 @@ func TestHTTPExtractorBadBodyIsPermanent(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: เขียนเทสต์ `backend/ocr_config_test.go`**
+- [ ] **Step 3: เขียนเทสต์ที่ล้มเหลว `backend/ocr_config_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
 	"testing"
 	"time"
 )
 
 func fakeEnv(values map[string]string) func(string) string {
 	return func(k string) string { return values[k] }
+}
+
+func fixedPageCount(n int) pageCounter {
+	return func(context.Context, string) int { return n }
 }
 
 func TestLoadOCRAPIConfigDefaults(t *testing.T) {
@@ -1010,6 +1023,15 @@ func TestLoadOCRAPIConfigReadsKeyFileAndClampsConcurrency(t *testing.T) {
 	})
 	if cfg.APIKey != "key-from-file" || cfg.Timeout != 3*time.Minute || cfg.Concurrency != 8 {
 		t.Fatalf("cfg = %+v", cfg)
+	}
+}
+
+func TestOCRBaseURLPrefersSettingsThenDefault(t *testing.T) {
+	if got := ocrBaseURL(" https://a.example/ ", "https://b.example"); got != "https://a.example" {
+		t.Fatalf("settings url = %q", got)
+	}
+	if got := ocrBaseURL("", "https://b.example/"); got != "https://b.example" {
+		t.Fatalf("default url = %q", got)
 	}
 }
 
@@ -1042,10 +1064,36 @@ func TestNewExtractorRejectsMissingURLAndUnknownEngine(t *testing.T) {
 }
 
 func TestCheckPDFLimitsRejectsMissingFile(t *testing.T) {
-	err := checkPDFLimits("/nonexistent/file.pdf")
+	err := checkPDFLimits(context.Background(), "/nonexistent/file.pdf", fixedPageCount(1))
 	var ee *ExtractError
 	if !errors.As(err, &ee) || ee.Retryable {
 		t.Fatalf("err = %#v, want permanent ExtractError", err)
+	}
+}
+
+func TestCheckPDFLimitsRejectsOversizeFile(t *testing.T) {
+	path := writeTempPDF(t)
+	if err := os.Truncate(path, maxPDFBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	err := checkPDFLimits(context.Background(), path, fixedPageCount(1))
+	var ee *ExtractError
+	if !errors.As(err, &ee) || ee.Retryable || ee.Status != 413 {
+		t.Fatalf("err = %#v, want permanent 413", err)
+	}
+}
+
+func TestCheckPDFLimitsRejectsMoreThan100Pages(t *testing.T) {
+	err := checkPDFLimits(context.Background(), writeTempPDF(t), fixedPageCount(101))
+	var ee *ExtractError
+	if !errors.As(err, &ee) || ee.Retryable || ee.Status != 413 {
+		t.Fatalf("err = %#v, want permanent 413 for 101 pages", err)
+	}
+}
+
+func TestCheckPDFLimitsAcceptsExactly100Pages(t *testing.T) {
+	if err := checkPDFLimits(context.Background(), writeTempPDF(t), fixedPageCount(100)); err != nil {
+		t.Fatalf("100 pages must be accepted: %v", err)
 	}
 }
 ```
@@ -1053,12 +1101,20 @@ func TestCheckPDFLimitsRejectsMissingFile(t *testing.T) {
 - [ ] **Step 4: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'HTTPExtractor|OCRAPIConfig|NewExtractor|CheckPDFLimits' 2>&1 | tail -10
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'HTTPExtractor|ClassifyHTTP|OCRAPIConfig|OCRBaseURL|NewExtractor|CheckPDFLimits' 2>&1 | tail -10
 ```
 
-คาดหวัง: build fail ด้วย undefined symbols
+คาดหวัง: build fail ด้วย `undefined` ของ `httpExtractor`, `classifyHTTPFailure`, `ocrBaseURL`, `checkPDFLimits` และ `APIURL`
 
-- [ ] **Step 5: เขียน `backend/extractor_http.go`**
+- [ ] **Step 5: implement**
+
+1. `backend/settings.go` ใน `OCRSettings` เพิ่มบรรทัดหลัง `Engine`:
+
+```go
+	APIURL                string  `json:"apiUrl"`
+```
+
+2. `backend/extractor_http.go` (ไฟล์ใหม่):
 
 ```go
 package main
@@ -1066,12 +1122,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type httpExtractor struct {
@@ -1143,6 +1201,9 @@ func classifyHTTPFailure(status int, body []byte) *ExtractError {
 		ee.Message = "API key ไม่ถูกต้อง หรือไม่มีสิทธิ์เรียกใช้ OCR"
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
 		ee.Message = fmt.Sprintf("OCR API ปฏิเสธไฟล์ (%d)", status)
+		if detail := apiDetail(body); detail != "" {
+			ee.Message += ": " + detail
+		}
 	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		ee.Retryable = true
 		ee.Message = fmt.Sprintf("OCR API ยังไม่พร้อมให้บริการ (%d)", status)
@@ -1154,16 +1215,26 @@ func classifyHTTPFailure(status int, body []byte) *ExtractError {
 	}
 	return ee
 }
+
+// apiDetail อ่านฟิลด์ detail ของคำตอบ error (รูปแบบ FastAPI) ถ้ามี
+func apiDetail(body []byte) string {
+	var v struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v.Detail)
+}
 ```
 
-หมายเหตุ: ไฟล์นี้ไม่ใช้ package `errors` จึงไม่ต้อง import
-
-- [ ] **Step 6: เขียน `backend/ocr_config.go`**
+3. `backend/ocr_config.go` (ไฟล์ใหม่):
 
 ```go
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -1174,7 +1245,11 @@ import (
 
 const (
 	maxPDFBytes = 50 << 20
+	maxPDFPages = 100
 )
+
+// pageCounter นับหน้า PDF ตอนใช้งานจริงคือ detectPDFPageCount (pdfinfo) เทสต์ส่งฟังก์ชันปลอมแทน
+type pageCounter func(ctx context.Context, path string) int
 
 type ocrAPIConfig struct {
 	DefaultURL  string
@@ -1211,11 +1286,17 @@ func loadOCRAPIConfigFromEnv() ocrAPIConfig {
 	return loadOCRAPIConfig(os.Getenv, os.ReadFile)
 }
 
-func newExtractor(settings OCRSettings, cfg ocrAPIConfig) (Extractor, error) {
-	base := strings.TrimRight(strings.TrimSpace(settings.APIURL), "/")
+// ocrBaseURL ใช้ URL ที่บันทึกไว้ก่อน ถ้าว่างใช้ค่าจาก env (OCR_API_URL)
+func ocrBaseURL(settingsURL, defaultURL string) string {
+	base := strings.TrimRight(strings.TrimSpace(settingsURL), "/")
 	if base == "" {
-		base = strings.TrimRight(cfg.DefaultURL, "/")
+		base = strings.TrimRight(strings.TrimSpace(defaultURL), "/")
 	}
+	return base
+}
+
+func newExtractor(settings OCRSettings, cfg ocrAPIConfig) (Extractor, error) {
+	base := ocrBaseURL(settings.APIURL, cfg.DefaultURL)
 	if base == "" {
 		return nil, &ExtractError{Message: "ยังไม่ได้ตั้งค่า URL ของ OCR API"}
 	}
@@ -1242,9 +1323,8 @@ func newExtractor(settings OCRSettings, cfg ocrAPIConfig) (Extractor, error) {
 	}
 }
 
-// checkPDFLimits ตรวจก่อนส่ง: ไม่มีไฟล์หรือเกิน 50 MB เป็นถาวร
-// การนับหน้า (100 หน้า) ใช้ฟังก์ชันเดิมที่พบในขั้นที่ 1 (ดูผลค้นหา) และคืน ExtractError ถาวรเมื่อเกิน
-func checkPDFLimits(path string) error {
+// checkPDFLimits ตรวจก่อนส่ง: ไม่มีไฟล์, เกิน 50 MB หรือเกิน 100 หน้าเป็นถาวร (ไม่ลองใหม่)
+func checkPDFLimits(ctx context.Context, path string, countPages pageCounter) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return &ExtractError{Message: "ไม่พบไฟล์ PDF"}
@@ -1252,22 +1332,25 @@ func checkPDFLimits(path string) error {
 	if info.Size() > maxPDFBytes {
 		return &ExtractError{Status: 413, Message: "ไฟล์ PDF ใหญ่เกิน 50 MB"}
 	}
+	if pages := countPages(ctx, path); pages > maxPDFPages {
+		return &ExtractError{Status: 413, Message: fmt.Sprintf("PDF มี %d หน้า เกินขอบเขตสูงสุด %d หน้า", pages, maxPDFPages)}
+	}
 	return nil
 }
 ```
 
-หมายเหตุ: ในขั้น implement ให้เพิ่มการนับหน้าเข้า `checkPDFLimits` ด้วยฟังก์ชันเดิมที่พบใน Step 1 เมื่อเกิน 100 หน้าให้คืน `&ExtractError{Status: 413, Message: "PDF เกิน 100 หน้า"}` (ไม่ต้องเพิ่ม error sentinel)
-
-- [ ] **Step 7: รันเทสต์ ต้อง PASS**
+- [ ] **Step 6: รันเทสต์ ต้อง PASS**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go vet ./... && go test ./... -run 'HTTPExtractor|OCRAPIConfig|NewExtractor|CheckPDFLimits' -v 2>&1 | tail -40
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go vet ./... && go test ./... -run 'HTTPExtractor|ClassifyHTTP|OCRAPIConfig|OCRBaseURL|NewExtractor|CheckPDFLimits' -v 2>&1 | tail -40 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
 ```
 
-- [ ] **Step 8: Commit**
+คาดหวัง: เทสต์ของ Task นี้ PASS และการรันเต็มชุดเหลือเฉพาะ baseline `TestNewManualDirectoryUserStoresValidJSONPayload`
+
+- [ ] **Step 7: Commit**
 
 ```sh
-git add backend/extractor_http.go backend/extractor_http_test.go backend/ocr_config.go backend/ocr_config_test.go && git commit -m "Add HTTP OCR extractor, error classification and API config
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/extractor_http.go backend/extractor_http_test.go backend/ocr_config.go backend/ocr_config_test.go backend/settings.go && git commit -m "Add HTTP OCR extractor, error classification, config and PDF limits
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -1279,19 +1362,20 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 **Files:**
 - Create: `backend/extraction_persist.go`
 - Create: `backend/extraction_persist_test.go`
-- Modify: `backend/directory_matching.go` (เพิ่ม `matchAppointments` ที่ข้ามชื่อว่าง และแก้ป้าย blocker ใน `confirmBlockers`)
-- Modify: `backend/directory_matching_test.go` (ถ้ามี; เพิ่มเทสต์ของ blocker)
+- Modify: `backend/directory_matching.go` (เพิ่ม `matchAppointments` ที่ข้ามแถวไม่มีชื่อ, ให้ `applyDirectoryMatches` เรียกใช้, `confirmBlockers` ใช้ `personLabel`)
+- Modify: `backend/directory_matching_test.go` (**มีไฟล์อยู่แล้ว ต้องต่อท้ายเทสต์ ห้ามสร้างใหม่หรือเขียนทับ**)
 
 **Interfaces:**
-- ผลิต: `type extractionRecords struct{ Fields []ExtractedField; Appointments []Appointment; OCRPages []OCRPage; OCRLines []OCRLine; Updates map[string]any; AverageConfidence float32; MissingConfidence bool; LowConfidence bool }`
-- ผลิต: `func buildExtractionRecords(result ExtractionResult, threshold float64) extractionRecords`
-- ผลิต: `func extractionStatus(records extractionRecords, threshold float64) (status, stage string)` (คืน `NEEDS_REVIEW` หรือ `REVIEW`, `EXTRACTED`)
-- ผลิต: `func truncateRunes(s string, max int) string`
-- ผลิต: `func personLabel(a Appointment) string` (ฝั่ง Go สำหรับ blocker): `<Position> (โดยตำแหน่ง)` เมื่อ FullName ว่าง
+- ใช้ของเดิม (ไม่ประกาศซ้ำ): `truncateRunes(value string, limit int) string` ใน `backend/document_store.go`, `needsReview(averageConfidence float32, lowConfidence bool, threshold float64) bool` ใน `settings.go`, `parseThaiDate`, `inferOrderType`, `findOrderYear` ใน `document_processing.go`, `loadDirectory(db) ([]DirectoryUser, map[string]uint, error)` ใน `directory_repository.go`
+- ผลิต: `type extractionRecords struct{ Fields []ExtractedField; Appointments []Appointment; OCRPages []OCRPage; OCRLines []OCRLine; References []DocumentReference; Updates map[string]any; AverageConfidence float32; MissingConfidence bool; LowConfidence bool }`
+- ผลิต: `func buildExtractionRecords(result ExtractionResult, threshold float64) extractionRecords` (ไม่แตะ DB)
+- ผลิต: `func extractionStatus(rec extractionRecords, threshold float64) (status, stage string)` คืน `NEEDS_REVIEW`/`REVIEW` และ `EXTRACTED`
+- ผลิต: `func personLabel(a Appointment) string` คืน `FullName` หรือ `<Position> (โดยตำแหน่ง)`
+- ผลิต: `func matchAppointments(appointments []Appointment, users []DirectoryUser, aliases map[string]uint) bool` ใน `directory_matching.go`
 
-หมายเหตุ: ชื่อ field ของ `ExtractedField`, `Appointment`, `OCRPage`, `OCRLine` ให้ตรวจด้วย `grep -n "type ExtractedField struct\|type Appointment struct\|type OCRPage struct\|type OCRLine struct" backend/*.go` ก่อนเขียนโค้ด แล้วใช้ชื่อจริง
+**กฎที่ใช้ (ตาม spec บรรทัด 138):** นับความมั่นใจเฉพาะค่าที่ไม่ว่างใน `Header` และ `Members` (`prefix`, `name`, `position`, `role`) ไม่นับ `Department`/`Duty`
 
-- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/extraction_persist_test.go`**
+- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/extraction_persist_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
@@ -1357,7 +1441,7 @@ func TestBuildExtractionRecordsAverageAndThreshold(t *testing.T) {
 	r.Groups[0].Members[1].Position.Confidence = f32(0.5)
 	rec := buildExtractionRecords(r, 0.8)
 	if rec.MissingConfidence {
-		t.Fatal("MissingConfidence should be false when every non-empty value has confidence")
+		t.Fatal("MissingConfidence should be false: every non-empty Header/Member value has confidence (Department and Duty are not counted)")
 	}
 	if !rec.LowConfidence {
 		t.Fatal("LowConfidence should be true when a value is below threshold")
@@ -1376,7 +1460,7 @@ func TestBuildExtractionRecordsAppointmentsAndExOfficio(t *testing.T) {
 	if rec.Appointments[0].FullName != "สมชาย ใจดี" || rec.Appointments[0].Department != "สำนักงาน" {
 		t.Fatalf("first appointment = %+v", rec.Appointments[0])
 	}
-	if rec.Appointments[1].FullName != "" || rec.Appointments[1].Position != "เลขานุการ" {
+	if rec.Appointments[1].FullName != "" || rec.Appointments[1].Position != "เลขานุการ" || rec.Appointments[1].NameMatchMethod != "EX_OFFICIO" {
 		t.Fatalf("ex-officio appointment = %+v", rec.Appointments[1])
 	}
 	if got := personLabel(rec.Appointments[1]); got != "เลขานุการ (โดยตำแหน่ง)" {
@@ -1400,6 +1484,13 @@ func TestBuildExtractionRecordsUnparsedDateKeepsRawText(t *testing.T) {
 	}
 }
 
+func TestBuildExtractionRecordsCommitteeFromIssuer(t *testing.T) {
+	rec := buildExtractionRecords(sampleResult(), 0.8)
+	if rec.Updates["committee"] != "คณะกรรมการบริหาร" || rec.Updates["additional_refs"] != "ที่ ศธ 0001/2569" {
+		t.Fatalf("updates = %v", rec.Updates)
+	}
+}
+
 func TestBuildExtractionRecordsCreatesOnePageRowPerResultPage(t *testing.T) {
 	r := sampleResult()
 	r.Pages = append(r.Pages, ExtractedPage{Page: 2}) // ไม่รู้ขนาด
@@ -1409,6 +1500,28 @@ func TestBuildExtractionRecordsCreatesOnePageRowPerResultPage(t *testing.T) {
 	}
 	if rec.OCRPages[1].ImageWidth != 1 || rec.OCRPages[1].ImageHeight != 1 {
 		t.Fatalf("unknown page size should default to 1x1, got %+v", rec.OCRPages[1])
+	}
+}
+
+func TestBuildExtractionRecordsKeepsOCRLinesAndText(t *testing.T) {
+	r := sampleResult()
+	r.Pages[0].Lines = []ExtractedValue{{Text: "บรรทัด 1"}, {Text: "บรรทัด 2"}}
+	rec := buildExtractionRecords(r, 0.8)
+	if rec.Updates["ocr_text"] != "บรรทัด 1\nบรรทัด 2" {
+		t.Fatalf("ocr_text = %v", rec.Updates["ocr_text"])
+	}
+	if len(rec.OCRLines) != 2 || rec.OCRLines[1].PageNo != 1 || rec.OCRLines[1].LineIndex != 1 {
+		t.Fatalf("OCRLines = %+v", rec.OCRLines)
+	}
+	if rec.OCRPages[0].RawText != "บรรทัด 1\nบรรทัด 2" {
+		t.Fatalf("page raw text = %q", rec.OCRPages[0].RawText)
+	}
+}
+
+func TestBuildExtractionRecordsEmptyOCRTextWithoutLines(t *testing.T) {
+	rec := buildExtractionRecords(sampleResult(), 0.8)
+	if rec.Updates["ocr_text"] != "" {
+		t.Fatalf("ocr_text = %v, want empty string", rec.Updates["ocr_text"])
 	}
 }
 
@@ -1437,41 +1550,39 @@ func TestTruncateRunesDoesNotSplitThaiCharacters(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: เขียนเทสต์ blocker ใน `backend/directory_matching_test.go`** (ถ้าไฟล์ยังไม่มีให้สร้างไฟล์นี้)
+- [ ] **Step 2: ต่อท้ายเทสต์ใน `backend/directory_matching_test.go` (ไฟล์มีอยู่แล้ว ให้ใช้ `Edit` หรือ append ต่อท้าย ไม่สร้างใหม่)**
 
 ```go
-package main
-
-import "testing"
-
-func TestConfirmBlockersLabelsExOfficeRows(t *testing.T) {
+func TestConfirmBlockersLabelsExOfficioRows(t *testing.T) {
 	blockers := confirmBlockers([]Appointment{
 		{FullName: "", Position: "เลขานุการ"},
 		{FullName: "สมชาย", Position: "ผอ."},
 	})
-	if len(blockers) != 2 {
-		t.Fatalf("blockers = %v, want 2 entries", blockers)
+	if len(blockers) != 2 || blockers[0] != "เลขานุการ (โดยตำแหน่ง)" || blockers[1] != "สมชาย" {
+		t.Fatalf("blockers = %v", blockers)
 	}
-	if blockers[0] != "เลขานุการ (โดยตำแหน่ง)" {
-		t.Fatalf("ex-officio label = %q", blockers[0])
-	}
-	if blockers[1] != "สมชาย" {
-		t.Fatalf("named blocker = %q", blockers[1])
+}
+
+func TestMatchAppointmentsSkipsBlankNames(t *testing.T) {
+	apps := []Appointment{{FullName: "", Position: "เลขานุการ"}}
+	weak := matchAppointments(apps, nil, nil)
+	if weak || apps[0].DirectoryUserID != nil || apps[0].NameMatchMethod != "" {
+		t.Fatalf("weak=%t apps=%+v", weak, apps[0])
 	}
 }
 ```
 
-หมายเหตุ: ถ้า `confirmBlockers` ถูกเรียกเฉพาะคนที่ไม่มี DirectoryUserID ให้เทสต์ข้างบนยังเป็นจริง (แถวทั้งสองไม่มี DirectoryUserID ในเทสต์)
-
 - [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'BuildExtractionRecords|TruncateRunes|ConfirmBlockersLabels' 2>&1 | tail -15
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'BuildExtractionRecords|TruncateRunes|ConfirmBlockersLabels|MatchAppointmentsSkips' 2>&1 | tail -15
 ```
 
-คาดหวัง: build fail (`undefined: buildExtractionRecords`) และ blocker test FAIL เมื่อ compile ได้
+คาดหวัง: build fail ด้วย `undefined: buildExtractionRecords`, `personLabel`, `matchAppointments`
 
-- [ ] **Step 4: เขียน `backend/extraction_persist.go`**
+- [ ] **Step 4: implement**
+
+1. สร้าง `backend/extraction_persist.go` (ไม่ประกาศ `truncateRunes` ซ้ำ ใช้ตัวใน `document_store.go`):
 
 ```go
 package main
@@ -1481,16 +1592,16 @@ import (
 	"strings"
 )
 
+// ขนาดคอลัมน์ตาม struct ใน main.go (Document, Appointment)
 const (
-	colLimitAppointmentPosition  = 255
-	colLimitAppointmentRole      = 255
-	colLimitAppointmentFullName  = 500
-	colLimitAppointmentDept      = 500
-	colLimitDocumentOrderNo      = 100
-	colLimitDocumentTitle        = 500
-	colLimitDocumentCommittee    = 500
-	colLimitDocumentSignerName   = 500
-	colLimitDocumentSignerPos    = 255
+	colLimitAppointmentPosition = 255
+	colLimitAppointmentRole     = 255
+	colLimitAppointmentFullName = 500
+	colLimitAppointmentDept     = 500
+	colLimitDocumentOrderNo     = 100
+	colLimitDocumentTitle       = 500
+	colLimitDocumentCommittee   = 500
+	colLimitDocumentSignerName  = 500
 )
 
 type extractionRecords struct {
@@ -1498,21 +1609,14 @@ type extractionRecords struct {
 	Appointments      []Appointment
 	OCRPages          []OCRPage
 	OCRLines          []OCRLine
+	References        []DocumentReference
 	Updates           map[string]any
 	AverageConfidence float32
 	MissingConfidence bool
 	LowConfidence     bool
 }
 
-// truncateRunes ตัดข้อความตามจำนวน rune เพื่อไม่ตัดกลางอักขระไทย
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max])
-}
-
+// personLabel ใช้แสดงแถวในรายการ blocker และหน้าการแสดงชื่อ
 func personLabel(a Appointment) string {
 	if strings.TrimSpace(a.FullName) != "" {
 		return a.FullName
@@ -1526,6 +1630,7 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 	var sum float32
 	var count int
 
+	// track นับเฉพาะค่าที่ไม่ว่างใน Header และ Members (spec บรรทัด 138)
 	track := func(v ExtractedValue) {
 		if strings.TrimSpace(v.Text) == "" {
 			return
@@ -1542,9 +1647,9 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 	}
 
 	addField := func(key, label string, v ExtractedValue, pageNo int) {
-		row := ExtractedField{Key: key, Label: label, Value: v.Text, PageNo: pageNo}
-		if len(v.Boxes) > 0 {
-			row.BoundingBoxJSON = boxesJSON(v.Boxes[:1])
+		row := ExtractedField{FieldKey: key, FieldLabel: label, Value: v.Text, PageNo: pageNo, BoundingBoxJSON: firstBoxJSON(v.Boxes)}
+		if v.Confidence != nil {
+			row.Confidence = *v.Confidence
 		}
 		rec.Fields = append(rec.Fields, row)
 	}
@@ -1565,18 +1670,24 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 		addField(item.key, item.label, item.v, pageOf(item.v))
 		track(item.v)
 	}
-	refs := make([]string, 0, len(h.References))
+	refTexts := make([]string, 0, len(h.References))
 	for _, ref := range h.References {
 		track(ref)
-		refs = append(refs, ref.Text)
+		if strings.TrimSpace(ref.Text) == "" {
+			continue
+		}
+		refTexts = append(refTexts, ref.Text)
+		rec.References = append(rec.References, DocumentReference{ReferenceType: "ADDITIONAL_REFERENCE", ReferenceText: ref.Text, PageNo: pageOf(ref), BoundingBoxJSON: firstBoxJSON(ref.Boxes)})
 	}
-	addField("additional_references", "เอกสารอ้างอิง", ExtractedValue{Text: strings.Join(refs, "\n")}, 0)
+	addField("additional_references", "เอกสารอ้างอิง", ExtractedValue{Text: strings.Join(refTexts, "\n")}, 0)
 
 	rec.Updates["order_no"] = truncateRunes(h.OrderNo.Text, colLimitDocumentOrderNo)
-	rec.Updates["title"] = truncateRunes(h.Subject.Text, colLimitDocumentTitle)
-	rec.Updates["committee_name"] = truncateRunes(h.IssuedBy.Text, colLimitDocumentCommittee)
+	if title := truncateRunes(h.Subject.Text, colLimitDocumentTitle); title != "" {
+		rec.Updates["title"] = title
+	}
+	rec.Updates["committee"] = truncateRunes(h.IssuedBy.Text, colLimitDocumentCommittee)
 	rec.Updates["signer_name"] = truncateRunes(h.Signer.Text, colLimitDocumentSignerName)
-	rec.Updates["additional_references"] = strings.Join(refs, "\n")
+	rec.Updates["additional_refs"] = strings.Join(refTexts, "\n")
 	rec.Updates["order_type"] = inferOrderType(h.IssuedBy.Text)
 	rec.Updates["order_year_be"] = findOrderYear(h.OrderNo.Text)
 	rec.Updates["issued_date"] = parseThaiDateOrNil(h.Date.Text)
@@ -1585,57 +1696,56 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 
 	for _, g := range result.Groups {
 		dept := truncateRunes(g.Department.Text, colLimitAppointmentDept)
-		track(g.Department)
-		track(g.Duty)
 		for _, m := range g.Members {
+			track(m.Prefix)
 			track(m.Name)
 			track(m.Position)
 			track(m.Role)
-			track(m.Prefix)
-			fullName := strings.TrimSpace(m.Prefix.Text + m.Name.Text)
 			box := m.Name
 			if len(box.Boxes) == 0 {
-				box = m.Position
+				box = m.Position // กรอบของสมาชิกที่ชื่อว่าง ใช้กรอบของตำแหน่งแทน
 			}
-			a := Appointment{
-				FullName:         truncateRunes(fullName, colLimitAppointmentFullName),
+			rec.Appointments = append(rec.Appointments, Appointment{
+				FullName:         truncateRunes(m.Prefix.Text+m.Name.Text, colLimitAppointmentFullName),
 				Position:         truncateRunes(m.Position.Text, colLimitAppointmentPosition),
 				CommitteeRole:    truncateRunes(m.Role.Text, colLimitAppointmentRole),
 				Department:       dept,
 				Responsibilities: g.Duty.Text,
 				NameMatchMethod:  matchMethodFor(m.ExOfficio),
-			}
-			if len(box.Boxes) > 0 {
-				a.BoundingBoxJSON = boxesJSON(box.Boxes[:1])
-			}
-			rec.Appointments = append(rec.Appointments, a)
+				PageNo:           pageOf(box),
+				BoundingBoxJSON:  firstBoxJSON(box.Boxes),
+			})
 		}
 	}
 
+	var allLines []string
 	for _, p := range result.Pages {
 		width, height := p.Width, p.Height
 		if width <= 0 || height <= 0 {
 			width, height = 1, 1
 		}
-		rec.OCRPages = append(rec.OCRPages, OCRPage{PageNo: p.Page, ImageWidth: width, ImageHeight: height})
-		for _, line := range p.Lines {
-			rec.OCRLines = append(rec.OCRLines, OCRLine{PageNo: p.Page, Text: line.Text})
+		pageTexts := make([]string, 0, len(p.Lines))
+		for i, line := range p.Lines {
+			pageTexts = append(pageTexts, line.Text)
+			rec.OCRLines = append(rec.OCRLines, OCRLine{PageNo: p.Page, LineIndex: i, Text: line.Text, BoundingBoxJSON: boxesJSON(line.Boxes)})
 		}
+		allLines = append(allLines, pageTexts...)
+		rec.OCRPages = append(rec.OCRPages, OCRPage{PageNo: p.Page, ImageWidth: width, ImageHeight: height, RawText: strings.Join(pageTexts, "\n"), Status: "COMPLETED"})
 	}
+	rec.Updates["ocr_text"] = strings.Join(allLines, "\n")
 
 	if count > 0 {
 		rec.AverageConfidence = sum / float32(count)
 	}
 	rec.Updates["confidence"] = rec.AverageConfidence
+	rec.Updates["page_count"] = len(result.Pages)
+	rec.Updates["person_count"] = len(rec.Appointments)
 	return rec
 }
 
-// extractionStatus คืนสถานะและ processing_stage ตามกฎค่าความมั่นใจของ spec
+// extractionStatus ตาม spec: ค่าที่ไม่มี confidence หรือ needsReview เดิมที่ threshold ให้ NEEDS_REVIEW
 func extractionStatus(rec extractionRecords, threshold float64) (string, string) {
-	if rec.MissingConfidence || rec.LowConfidence {
-		return "NEEDS_REVIEW", "EXTRACTED"
-	}
-	if rec.AverageConfidence < float32(threshold) {
+	if rec.MissingConfidence || needsReview(rec.AverageConfidence, rec.LowConfidence, threshold) {
 		return "NEEDS_REVIEW", "EXTRACTED"
 	}
 	return "REVIEW", "EXTRACTED"
@@ -1656,11 +1766,10 @@ func matchMethodFor(exOfficio bool) string {
 }
 
 func parseThaiDateOrNil(text string) any {
-	t := parseThaiDate(text)
-	if t == nil {
-		return nil
+	if t := parseThaiDate(text); t != nil {
+		return *t
 	}
-	return *t
+	return nil
 }
 
 func boxesJSON(boxes []Box) string {
@@ -1671,26 +1780,62 @@ func boxesJSON(boxes []Box) string {
 	return "[" + strings.Join(parts, ",") + "]"
 }
 
+// firstBoxJSON เก็บเฉพาะกรอบแรกตาม spec (ตารางการบันทึก)
+func firstBoxJSON(boxes []Box) string {
+	if len(boxes) == 0 {
+		return "[]"
+	}
+	return boxesJSON(boxes[:1])
+}
 ```
 
-หมายเหตุสำหรับผู้ implement:
-- ชื่อ field `ExtractedField` (`Key`, `Label`, `Value`, `PageNo`, `BoundingBoxJSON`), `Appointment` (`FullName`, `Position`, `CommitteeRole`, `Department`, `Responsibilities`, `NameMatchMethod`, `BoundingBoxJSON`), `OCRPage`, `OCRLine` ต้องตรวจกับ struct จริงแล้วปรับชื่อ ถ้า `BoundingBoxJSON` หรือ `Label` ไม่มี ให้ใช้ชื่อคอลัมน์ที่มีจริงแทน ไม่ต้องเพิ่ม field ใหม่
-- `OCRLine` ต้องใส่ `OCRPageID` หรือความสัมพันธ์จริงตามโมเดล; `Document.OCRText` ให้ตั้งใน `Updates["ocr_text"]` เป็นข้อความรวมของทุกบรรทัด
-- `NameMatchMethod` ค่าว่างของ `matchMethodFor(false)` ให้ตรงกับค่าเดิมของ `Appointment` ที่ใช้ตอนไม่มีการจับคู่
-- `extractionStatus` ทำตามกฎ spec: ไม่มี confidence หรือมีค่าต่ำกว่า threshold ให้ NEEDS_REVIEW
-- ถ้า import `time` ไม่ถูกใช้ในไฟล์นี้ให้ลบออก (go vet จะแจ้ง)
-- ทำ `matchAppointments` ใน `directory_matching.go` ให้ข้าม `FullName` ว่าง และให้ `confirmBlockers` ใช้ `personLabel` แทนการใช้ FullName ตรง ๆ
+2. `backend/directory_matching.go`: แทนที่ฟังก์ชัน `applyDirectoryMatches` ด้วยโค้ดต่อไปนี้ และเพิ่ม `matchAppointments` (ใช้ import `strings` ที่มีอยู่แล้ว):
+
+```go
+// matchAppointments จับคู่แถวที่มีชื่อกับ directory แถวที่ไม่มีชื่อ (กรรมการโดยตำแหน่ง) ข้ามไป
+// คืน true ถ้ามีแถวที่มีชื่อแต่จับคู่ไม่ได้หรือคะแนนต่ำ
+func matchAppointments(appointments []Appointment, users []DirectoryUser, aliases map[string]uint) bool {
+	weak := false
+	for index := range appointments {
+		appointment := &appointments[index]
+		if strings.TrimSpace(appointment.FullName) == "" {
+			continue
+		}
+		match := matchDirectoryUser(appointment.FullName, users, aliases)
+		applyMatchToAppointment(appointment, match)
+		if !match.Matched || match.Score < 0.90 || appointment.Confidence < 0.90 {
+			weak = true
+		}
+	}
+	return weak
+}
+
+func (p *DocumentProcessor) applyDirectoryMatches(metadata *commandMetadata) {
+	users, aliases, err := loadDirectory(p.db)
+	if err != nil {
+		p.logger.Printf("directory matching skipped: %v", err)
+		return
+	}
+	if matchAppointments(metadata.appointments, users, aliases) {
+		metadata.lowConfidence = true
+	}
+}
+```
+
+3. `confirmBlockers` ใน `directory_matching.go`: เปลี่ยน `blockers = append(blockers, appointment.FullName)` เป็น `blockers = append(blockers, personLabel(appointment))`
 
 - [ ] **Step 5: รันเทสต์ ต้อง PASS**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -w extraction_persist.go && go vet ./... && go test ./... -run 'BuildExtractionRecords|TruncateRunes|ConfirmBlockersLabels' -v 2>&1 | tail -40
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -w extraction_persist.go && go vet ./... && go test ./... -run 'BuildExtractionRecords|TruncateRunes|ConfirmBlockersLabels|MatchAppointmentsSkips' -v 2>&1 | tail -40 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
 ```
+
+คาดหวัง: เทสต์ของ Task นี้ PASS และการรันเต็มชุดเหลือเฉพาะ baseline `TestNewManualDirectoryUserStoresValidJSONPayload`
 
 - [ ] **Step 6: Commit**
 
 ```sh
-git add backend/extraction_persist.go backend/extraction_persist_test.go backend/directory_matching.go backend/directory_matching_test.go && git commit -m "Map extraction results to document rows with rune truncation
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/extraction_persist.go backend/extraction_persist_test.go backend/directory_matching.go backend/directory_matching_test.go && git commit -m "Map extraction results to document rows with rune truncation
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -1701,8 +1846,8 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `backend/migrations/0008_extraction_retry.sql`
-- Modify: `backend/main.go` (type `Document`: เพิ่มฟิลด์ใหม่; `uploadDocument` ใช้ `retryResetUpdates()` ในเส้นทาง duplicate-overwrite)
-- Modify: `backend/api_handlers.go` (`replacedFileUpdates` เรียก `retryResetUpdates()`)
+- Modify: `backend/main.go` (type `Document`: เพิ่มฟิลด์ใหม่; เส้นทาง duplicate-overwrite ใน `uploadDocument` merge `retryResetUpdates()` เข้า map `updates`)
+- Modify: `backend/api_handlers.go` (`replacedFileUpdates` merge `retryResetUpdates()` เข้าผลลัพธ์)
 - Create: `backend/document_retry.go`
 - Create: `backend/document_retry_test.go`
 
@@ -1711,10 +1856,11 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 - ผลิต: `func planExtractionFailure(err error, attempts int, lastStatus int, now time.Time) failurePlan`
 - ผลิต: `func retryResetUpdates() map[string]any`
 - ผลิต: `const maxExtractionAttempts = 5`
+- ใช้ซ้ำใน Task 7 และ 9: `t0` (`var t0 = time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)`) ประกาศในไฟล์เทสต์นี้ไฟล์เดียว
 
 - [ ] **Step 1: เขียน migration `backend/migrations/0008_extraction_retry.sql`**
 
-ตรวจรูปแบบของ `0002_application_extensions.sql` ก่อนเขียน แล้วใช้ statement แยกทีละคำสั่งตามที่ `migrations.go` รองรับ:
+ตรวจรูปแบบ `0007_app_settings_and_user_profiles.sql` ก่อน (ใช้ statement ต่อหนึ่งบรรทัด) ตัว runner ใน `backend/migrations.go` รองรับเฉพาะรูปแบบ `ALTER TABLE x ADD COLUMN IF NOT EXISTS ...` (regex `addColumnIfMissingPattern`) และ `ALTER TABLE x ADD KEY ...` (regex `addKeyPattern`)
 
 ```sql
 ALTER TABLE document_workflows ADD COLUMN IF NOT EXISTS extraction_attempts INT NOT NULL DEFAULT 0;
@@ -1723,13 +1869,15 @@ ALTER TABLE document_workflows ADD COLUMN IF NOT EXISTS extraction_last_status I
 ALTER TABLE document_workflows ADD KEY ix_document_workflows_next_attempt (processing_stage, next_attempt_at);
 ```
 
-- [ ] **Step 2: เขียนเทสต์ที่ล้มเหลว `backend/document_retry_test.go`**
+- [ ] **Step 2: เขียนเทสต์ที่ล้มเหลว `backend/document_retry_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1826,17 +1974,52 @@ func TestRetryResetUpdatesClearsAllRetryColumns(t *testing.T) {
 		t.Fatalf("next_attempt_at = %v (present=%t), want nil", v, ok)
 	}
 }
+
+// เทสต์นี้เป็นข้อบังคับ: การอัปโหลดทับต้องรีเซ็ตการลองใหม่ (spec ส่วนที่ 3)
+func TestReplacedFileUpdatesResetsRetryState(t *testing.T) {
+	u := replacedFileUpdates(replacementFile{Filename: "b.pdf"}, "tester", t0)
+	if u["extraction_attempts"] != 0 || u["extraction_last_status"] != 0 {
+		t.Fatalf("retry counters not reset: %v", u)
+	}
+	if v, ok := u["next_attempt_at"]; !ok || v != nil {
+		t.Fatalf("next_attempt_at = %v (present=%t), want nil", v, ok)
+	}
+}
+
+// ตรวจว่า statement ใน migration 0008 อยู่ในรูปแบบที่ runner รองรับ (ไม่ต้องใช้ DB)
+func TestMigration0008StatementsUseSupportedForms(t *testing.T) {
+	raw, err := os.ReadFile("migrations/0008_extraction_retry.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	count := 0
+	for _, statement := range strings.Split(string(raw), ";") {
+		statement = strings.TrimSpace(statement)
+		if statement == "" {
+			continue
+		}
+		count++
+		if !addColumnIfMissingPattern.MatchString(statement) && !addKeyPattern.MatchString(statement) {
+			t.Fatalf("statement not supported by migration runner: %s", statement)
+		}
+	}
+	if count != 4 {
+		t.Fatalf("statements = %d, want 4", count)
+	}
+}
 ```
 
 - [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'PlanExtractionFailure|RetryResetUpdates' 2>&1 | tail -10
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'PlanExtractionFailure|RetryResetUpdates|ReplacedFileUpdates|Migration0008' 2>&1 | tail -10
 ```
 
-คาดหวัง: build fail (`undefined: planExtractionFailure`)
+คาดหวัง: build fail ด้วย `undefined: planExtractionFailure`, `retryResetUpdates`
 
-- [ ] **Step 4: เขียน `backend/document_retry.go`**
+- [ ] **Step 4: implement**
+
+1. `backend/document_retry.go` (ไฟล์ใหม่):
 
 ```go
 package main
@@ -1884,6 +2067,7 @@ func planExtractionFailure(err error, attempts int, lastStatus int, now time.Tim
 	return fail
 }
 
+// retryResetUpdates ใช้ร่วมกันทุกเส้นทางที่เริ่มเอกสารใหม่ (reprocess, อัปโหลดทับ, เขียนผลสำเร็จ)
 func retryResetUpdates() map[string]any {
 	return map[string]any{
 		"extraction_attempts":    0,
@@ -1893,38 +2077,43 @@ func retryResetUpdates() map[string]any {
 }
 ```
 
-- [ ] **Step 5: เพิ่มฟิลด์ใน `Document` (`backend/main.go`) และใช้ helper**
-
-เพิ่มสามบรรทัดหลัง `ProcessingFinishedAt` ใน struct `Document`:
+2. `backend/main.go`: ใน `type Document struct` เพิ่มสามบรรทัดหลังบรรทัด `ProcessingFinishedAt`:
 
 ```go
-	ExtractionAttempts   int                 `json:"extractionAttempts" gorm:"not null;default:0"`
-	NextAttemptAt        *time.Time          `json:"nextAttemptAt"`
-	ExtractionLastStatus int                 `json:"-" gorm:"not null;default:0"`
+	ExtractionAttempts   int        `json:"extractionAttempts" gorm:"not null;default:0"`
+	NextAttemptAt        *time.Time `json:"nextAttemptAt"`
+	ExtractionLastStatus int        `json:"-" gorm:"not null;default:0"`
 ```
 
-แก้ `replacedFileUpdates` ใน `backend/api_handlers.go` ให้ merge ค่าจาก `retryResetUpdates()` เข้า map ที่คืน และในเส้นทาง duplicate-overwrite ของ `uploadDocument` (main.go ใกล้ `processor.Enqueue(duplicate.ID)`) ให้ merge ค่าเดียวกัน
+ใน `uploadDocument` (เส้นทาง duplicate-overwrite) หลังบล็อก `updates := map[string]any{...}` ให้เพิ่ม:
 
-เทสต์ของการ merge: เพิ่มใน `document_retry_test.go` ถ้า `replacedFileUpdates` สร้างได้โดยไม่ต้องใช้ DB ตรวจว่า `replacedFileUpdates(replacementFile{...}, "u", t0)` มี key `extraction_attempts` และ `next_attempt_at` ให้ค่ารีเซ็ต
-
-- [ ] **Step 6: รันเทสต์ ต้อง PASS**
-
-```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go vet ./... && go test ./... -run 'PlanExtractionFailure|RetryResetUpdates' -v 2>&1 | tail -30
+```go
+			for key, value := range retryResetUpdates() {
+				updates[key] = value
+			}
 ```
 
-- [ ] **Step 7: ตรวจว่า migration ของ runner รับไฟล์**
+3. `backend/api_handlers.go`: ใน `replacedFileUpdates` เปลี่ยน `return map[string]any{` เป็น `updates := map[string]any{` และก่อน `return` ท้ายฟังก์ชันให้เพิ่ม:
 
-```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'Migration' -v 2>&1 | tail -15
+```go
+	for key, value := range retryResetUpdates() {
+		updates[key] = value
+	}
+	return updates
 ```
 
-ถ้าไม่มีเทสต์ migration ให้รัน `go build ./...` เท่านั้น แล้วบันทึกในรายงานว่ายังไม่มีเทสต์ migration (ตรวจจริงใน Task 12 ผ่าน VM)
-
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: รันเทสต์ ต้อง PASS**
 
 ```sh
-git add backend/migrations/0008_extraction_retry.sql backend/main.go backend/api_handlers.go backend/document_retry.go backend/document_retry_test.go && git commit -m "Add extraction retry columns and failure planning
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go vet ./... && go test ./... -run 'PlanExtractionFailure|RetryResetUpdates|ReplacedFileUpdates|Migration0008' -v 2>&1 | tail -30 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
+```
+
+คาดหวัง: เทสต์ของ Task นี้ PASS (รวม `TestMigration0008StatementsUseSupportedForms` และ `TestReplacedFileUpdatesResetsRetryState` ซึ่งต้องรันจริง ไม่ใช่ข้าม) และการรันเต็มชุดเหลือเฉพาะ baseline
+
+- [ ] **Step 6: Commit**
+
+```sh
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/migrations/0008_extraction_retry.sql backend/main.go backend/api_handlers.go backend/document_retry.go backend/document_retry_test.go && git commit -m "Add extraction retry columns and failure planning
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -1937,18 +2126,21 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 - Create: `backend/document_queue.go`
 - Create: `backend/document_queue_test.go`
 - Create: `backend/document_queue_store.go`
-- Modify: `backend/document_processing.go` (แทน `Enqueue`/`Process` เดิม; ย้าย receivers ของ `persistOCRResult`, `runStructuredImport` ไปยัง store ใหม่ตามที่ระบุ)
-- Modify: `backend/main.go` (สร้าง processor ด้วย config, เรียก `Start`, `Recover` ตอนเริ่ม, เพิ่ม cron `Sweep` ทุกนาที, เปลี่ยน callers ของ `Enqueue` ให้ตรงกับ signature เดิม)
+- Create: `backend/structured_extraction.go` (แปลงผล DOCX/XLSX/CSV เป็น `ExtractionResult`)
+- Create: `backend/structured_extraction_test.go`
+- Modify: `backend/document_processing.go` (struct `DocumentProcessor` มีฟิลด์ใหม่; `NewDocumentProcessor` รับ `cfg ocrAPIConfig`; **ลบ** `Enqueue`, `Process`, `runOCR`, `persistOCRResult` เดิม; คง `runStructuredImport` เป็น method ของ `DocumentProcessor` ไว้ (ยังเรียก `ocr_worker.py` เดิม))
+- Modify: `backend/main.go` (สร้าง `ocrConfig`, เรียก `NewDocumentProcessor(db, logger, ocrConfig)`, `processor.Start`, `processor.Recover`, cron `processor.Sweep`)
 
 **Interfaces:**
-- ผลิต: `type extractionJobs interface { Claim(id uint, now time.Time) (Document, bool, error); SaveExtraction(doc *Document, result ExtractionResult, started time.Time) error; MarkRetry(id uint, plan failurePlan) error; MarkFailed(id uint, failure ExtractError, started time.Time) error; RunStructuredImport(ctx context.Context, doc *Document, started time.Time) error; DueForQueue(now time.Time, startup bool) ([]uint, error) }`
-- ผลิต: `DocumentProcessor` มี field `jobs extractionJobs`, `ocrConfig ocrAPIConfig`, `newExtractor func(OCRSettings, ocrAPIConfig) (Extractor, error)`, `now func() time.Time`, `queue chan uint` (buffer 256)
-- ผลิต: `func (p *DocumentProcessor) Enqueue(id uint)` (ไม่บล็อก), `Start(ctx context.Context)`, `Sweep()`, `Recover()`
-- ผลิต: `func (p *DocumentProcessor) processOne(ctx context.Context, id uint)`
-- ผลิต: `func (p *DocumentProcessor) markExtractionFailed(id uint, failure ExtractError, started time.Time)` จุดเดียวที่เรียก `jobs.MarkFailed`
+- ผลิต: `type extractionJobs interface { Claim(id uint, now time.Time) (Document, bool, error); SaveExtraction(doc *Document, result ExtractionResult, started time.Time) error; SaveStructured(doc *Document, result workerResult, started time.Time) error; MarkRetry(id uint, plan failurePlan) error; MarkFailed(id uint, failure ExtractError, started time.Time) error; DueForQueue(now time.Time, startup bool) ([]uint, error) }`
+- ผลิต: `gormExtractionJobs{db, logger, settings SettingsStore, timeout}` implement `extractionJobs`
+- ผลิต: ฟิลด์ของ `DocumentProcessor`: `jobs extractionJobs`, `ocrConfig ocrAPIConfig`, `newExtractor func(OCRSettings, ocrAPIConfig) (Extractor, error)`, `pageCount pageCounter`, `importStructured func(ctx context.Context, path, sourceType string) (workerResult, error)`, `now func() time.Time`, `queue chan uint` (buffer 256)
+- ผลิต: `func (p *DocumentProcessor) Enqueue(documentID uint)` (ไม่บล็อก; ยังใช้ signature เดิมที่ `api_handlers.go` และ `main.go` เรียก), `Start(ctx context.Context)`, `Sweep()`, `Recover()`, `processOne(ctx context.Context, id uint)`
+- ผลิต: `func (p *DocumentProcessor) markExtractionFailed(doc Document, failure ExtractError, started time.Time)` จุดเดียวที่เรียก `jobs.MarkFailed` (รูปแบบ `(doc, err)` ตาม spec + `started` สำหรับระยะเวลา)
 - ผลิต: `func staleBefore(now time.Time, timeout time.Duration, startup bool) time.Time`
+- ผลิต: `func structuredExtraction(result workerResult) ExtractionResult`, `const structuredImportEngine = "structured-import"`, `func thaiDateText(t *time.Time) string`
 
-- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/document_queue_test.go`**
+- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/document_queue_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
@@ -1956,25 +2148,29 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
+	"os"
 	"sync"
 	"testing"
 	"time"
 )
 
 type fakeJobs struct {
-	mu          sync.Mutex
-	claimed     map[uint]int
-	doc         Document
-	claimOK     bool
-	saved       int
-	saveErr     error
-	retries     []failurePlan
-	failures    []ExtractError
-	structured  int
-	dueIDs      []uint
-	dueStartup  []bool
+	mu            sync.Mutex
+	claimed       map[uint]int
+	doc           Document
+	claimOK       bool
+	saved         int
+	savedStructured int
+	saveErr       error
+	retries       []failurePlan
+	failures      []ExtractError
+	dueIDs        []uint
+	dueStartup    []bool
 }
 
+// Claim คืน ok เฉพาะครั้งแรกของเอกสารเดียวกัน เหมือนเงื่อนไข WHERE ของ store จริง
 func (f *fakeJobs) Claim(id uint, now time.Time) (Document, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1982,7 +2178,7 @@ func (f *fakeJobs) Claim(id uint, now time.Time) (Document, bool, error) {
 		f.claimed = map[uint]int{}
 	}
 	f.claimed[id]++
-	if !f.claimOK {
+	if f.claimed[id] > 1 || !f.claimOK {
 		return Document{}, false, nil
 	}
 	return f.doc, true, nil
@@ -1992,6 +2188,13 @@ func (f *fakeJobs) SaveExtraction(doc *Document, result ExtractionResult, starte
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.saved++
+	return f.saveErr
+}
+
+func (f *fakeJobs) SaveStructured(doc *Document, result workerResult, started time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.savedStructured++
 	return f.saveErr
 }
 
@@ -2006,13 +2209,6 @@ func (f *fakeJobs) MarkFailed(id uint, failure ExtractError, started time.Time) 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failures = append(f.failures, failure)
-	return nil
-}
-
-func (f *fakeJobs) RunStructuredImport(ctx context.Context, doc *Document, started time.Time) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.structured++
 	return nil
 }
 
@@ -2035,12 +2231,23 @@ func (e *fakeExtractor) Extract(ctx context.Context, path, name string) (Extract
 	return e.result, e.err
 }
 
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newTestProcessor(jobs *fakeJobs, ex Extractor, now time.Time) *DocumentProcessor {
 	return &DocumentProcessor{
-		jobs:      jobs,
-		ocrConfig: ocrAPIConfig{Timeout: time.Minute, Concurrency: 1},
-		newExtractor: func(OCRSettings, ocrAPIConfig) (Extractor, error) {
-			return ex, nil
+		logger:       log.New(io.Discard, "", 0),
+		settings:     &fakeSettingsStore{settings: defaultOCRSettings()},
+		jobs:         jobs,
+		ocrConfig:    ocrAPIConfig{Timeout: time.Minute, Concurrency: 1},
+		newExtractor: func(OCRSettings, ocrAPIConfig) (Extractor, error) { return ex, nil },
+		pageCount:    func(context.Context, string) int { return 1 },
+		importStructured: func(context.Context, string, string) (workerResult, error) {
+			return workerResult{Pages: []workerPage{{PageNo: 1}}}, nil
 		},
 		now:   func() time.Time { return now },
 		queue: make(chan uint, 8),
@@ -2051,7 +2258,7 @@ func pdfDoc(t *testing.T) Document {
 	t.Helper()
 	path := t.TempDir() + "/a.pdf"
 	writeFile(t, path, "%PDF-1.4")
-	return Document{ID: 7, SourceType: "PDF", StoragePath: path, ProcessingStage: "EXTRACTING"}
+	return Document{ID: 7, SourceType: "PDF", OriginalFilename: "a.pdf", StoragePath: path, ProcessingStage: "EXTRACTING"}
 }
 
 func TestProcessOneSavesSuccessOnce(t *testing.T) {
@@ -2060,13 +2267,13 @@ func TestProcessOneSavesSuccessOnce(t *testing.T) {
 	p := newTestProcessor(jobs, ex, t0)
 
 	p.processOne(context.Background(), 7)
-	p.processOne(context.Background(), 7) // ส่งซ้ำ แต่ claim ถูกต้องควรข้าม
-
-	jobs.claimOK = false
-	p.processOne(context.Background(), 7)
+	p.processOne(context.Background(), 7) // ส่งซ้ำ แต่ claim ครั้งที่สองต้องคืน ok=false
 
 	if jobs.saved != 1 {
 		t.Fatalf("saved = %d, want 1", jobs.saved)
+	}
+	if ex.calls != 1 {
+		t.Fatalf("extractor calls = %d, want 1", ex.calls)
 	}
 }
 
@@ -2148,15 +2355,35 @@ func TestProcessOneSaveErrorFailsDocument(t *testing.T) {
 	}
 }
 
+func TestProcessOneOversizePDFFailsBeforeCallingAPI(t *testing.T) {
+	doc := pdfDoc(t)
+	if err := os.Truncate(doc.StoragePath, maxPDFBytes+1); err != nil {
+		t.Fatal(err)
+	}
+	jobs := &fakeJobs{claimOK: true, doc: doc}
+	ex := &fakeExtractor{}
+	newTestProcessor(jobs, ex, t0).processOne(context.Background(), 7)
+
+	if ex.calls != 0 || len(jobs.failures) != 1 || len(jobs.retries) != 0 {
+		t.Fatalf("calls=%d failures=%d retries=%d", ex.calls, len(jobs.failures), len(jobs.retries))
+	}
+}
+
 func TestProcessOneNonPDFUsesStructuredImportWithoutRetry(t *testing.T) {
 	doc := pdfDoc(t)
 	doc.SourceType = "DOCX"
 	jobs := &fakeJobs{claimOK: true, doc: doc}
 	ex := &fakeExtractor{}
-	newTestProcessor(jobs, ex, t0).processOne(context.Background(), 7)
+	p := newTestProcessor(jobs, ex, t0)
+	structuredCalls := 0
+	p.importStructured = func(context.Context, string, string) (workerResult, error) {
+		structuredCalls++
+		return workerResult{Pages: []workerPage{{PageNo: 1}}}, nil
+	}
+	p.processOne(context.Background(), 7)
 
-	if jobs.structured != 1 || ex.calls != 0 {
-		t.Fatalf("structured=%d extractorCalls=%d", jobs.structured, ex.calls)
+	if structuredCalls != 1 || jobs.savedStructured != 1 || ex.calls != 0 || len(jobs.retries) != 0 {
+		t.Fatalf("structured=%d savedStructured=%d extractorCalls=%d retries=%d", structuredCalls, jobs.savedStructured, ex.calls, len(jobs.retries))
 	}
 }
 
@@ -2196,17 +2423,89 @@ func TestStaleBeforeUsesTimeoutPlusTwoMinutes(t *testing.T) {
 }
 ```
 
-หมายเหตุ: `writeFile(t, path, content)` เป็น helper ที่ต้องเพิ่มใน `document_queue_test.go` เอง (`os.WriteFile` ด้วยสิทธิ์ 0o600 และ `t.Fatal` เมื่อ error) และ `t0` ประกาศแล้วใน `document_retry_test.go` (Task 6) ให้ใช้ร่วมกัน
+- [ ] **Step 2: เขียนเทสต์ที่ล้มเหลว `backend/structured_extraction_test.go`** (ไฟล์ใหม่)
 
-- [ ] **Step 2: รันเทสต์ ต้อง FAIL**
+```go
+package main
 
-```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'ProcessOne|Sweep|Recover|StaleBefore' 2>&1 | tail -10
+import (
+	"testing"
+	"time"
+)
+
+func TestStructuredExtractionTagsEngineAndKeepsPageSizes(t *testing.T) {
+	result := workerResult{Pages: []workerPage{{
+		PageNo: 1, ImageWidth: 1654, ImageHeight: 2339, FullText: "คำสั่งแต่งตั้ง",
+		Lines: []workerLine{{Text: "คำสั่งแต่งตั้ง", Confidence: 0.9}},
+	}}}
+	got := structuredExtraction(result)
+	if got.Engine != structuredImportEngine {
+		t.Fatalf("Engine = %q", got.Engine)
+	}
+	if len(got.Pages) != 1 || got.Pages[0].Width != 1654 || len(got.Pages[0].Lines) != 1 {
+		t.Fatalf("Pages = %+v", got.Pages)
+	}
+	if got.Header.Subject.Confidence == nil {
+		t.Fatal("structured values must carry the page average confidence so the threshold rule applies")
+	}
+}
+
+func TestThaiDateTextRoundTripsThroughParser(t *testing.T) {
+	d := time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local)
+	got := parseThaiDate(thaiDateText(&d))
+	if got == nil || !got.Equal(d) {
+		t.Fatalf("parseThaiDate(%q) = %v, want %v", thaiDateText(&d), got, d)
+	}
+}
 ```
 
-คาดหวัง: build fail ด้วย `undefined` ของ `processOne`, `Sweep`, `Recover`, `staleBefore`
+- [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
-- [ ] **Step 3: เขียน `backend/document_queue.go`**
+```sh
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'ProcessOne|Sweep|Recover|StaleBefore|StructuredExtraction|ThaiDateText' 2>&1 | tail -10
+```
+
+คาดหวัง: build fail ด้วย `undefined` ของ `processOne`, `Sweep`, `Recover`, `staleBefore`, `structuredExtraction`, `thaiDateText`, `structuredImportEngine` และฟิลด์ใหม่ของ `DocumentProcessor`
+
+- [ ] **Step 4: implement**
+
+1. `backend/document_processing.go`:
+   - ใน `type DocumentProcessor struct` เพิ่มฟิลด์ (คงฟิลด์เดิม `db`, `logger`, `settings`):
+
+```go
+	jobs             extractionJobs
+	ocrConfig        ocrAPIConfig
+	newExtractor     func(OCRSettings, ocrAPIConfig) (Extractor, error)
+	pageCount        pageCounter
+	importStructured func(ctx context.Context, path, sourceType string) (workerResult, error)
+	now              func() time.Time
+	queue            chan uint
+```
+
+   - แทนที่ `NewDocumentProcessor` ทั้งฟังก์ชันด้วย:
+
+```go
+func NewDocumentProcessor(db *gorm.DB, logger *log.Logger, cfg ocrAPIConfig) *DocumentProcessor {
+	settings := NewSettingsStore(db)
+	p := &DocumentProcessor{
+		db:           db,
+		logger:       logger,
+		settings:     settings,
+		ocrConfig:    cfg,
+		newExtractor: newExtractor,
+		pageCount:    detectPDFPageCount,
+		now:          time.Now,
+		queue:        make(chan uint, 256),
+	}
+	p.jobs = gormExtractionJobs{db: db, logger: logger, settings: settings, timeout: cfg.Timeout}
+	p.importStructured = p.runStructuredImport
+	return p
+}
+```
+
+   - ลบ `func (p *DocumentProcessor) Enqueue`, `func (p *DocumentProcessor) Process`, `func (p *DocumentProcessor) runOCR`, `func (p *DocumentProcessor) persistOCRResult` ทั้งฟังก์ชัน (ฟังก์ชันใหม่อยู่ใน `document_queue.go`) และลบ import ที่ไม่ได้ใช้หลังลบ (`go vet` จะบอก)
+
+2. `backend/document_queue.go` (ไฟล์ใหม่):
 
 ```go
 package main
@@ -2214,16 +2513,16 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"strings"
 	"time"
 )
 
 type extractionJobs interface {
 	Claim(id uint, now time.Time) (Document, bool, error)
 	SaveExtraction(doc *Document, result ExtractionResult, started time.Time) error
+	SaveStructured(doc *Document, result workerResult, started time.Time) error
 	MarkRetry(id uint, plan failurePlan) error
 	MarkFailed(id uint, failure ExtractError, started time.Time) error
-	RunStructuredImport(ctx context.Context, doc *Document, started time.Time) error
 	DueForQueue(now time.Time, startup bool) ([]uint, error)
 }
 
@@ -2237,11 +2536,11 @@ func staleBefore(now time.Time, timeout time.Duration, startup bool) time.Time {
 }
 
 // Enqueue ส่ง id เข้าคิวแบบไม่บล็อก ถ้าคิวเต็มปล่อยให้ Sweep หยิบภายหลัง
-func (p *DocumentProcessor) Enqueue(id uint) {
+func (p *DocumentProcessor) Enqueue(documentID uint) {
 	select {
-	case p.queue <- id:
+	case p.queue <- documentID:
 	default:
-		p.logger.Printf("ocr queue full, document %d will be picked up by sweep", id)
+		p.logger.Printf("ocr queue full, document %d will be picked up by sweep", documentID)
 	}
 }
 
@@ -2301,25 +2600,30 @@ func (p *DocumentProcessor) processOne(ctx context.Context, id uint) {
 	}
 	started := now
 
-	if doc.SourceType != "PDF" {
-		if err := p.jobs.RunStructuredImport(ctx, &doc, started); err != nil {
-			p.markExtractionFailed(id, ExtractError{Message: "อ่านไฟล์ไม่สำเร็จ: " + err.Error()}, started)
+	if !strings.EqualFold(doc.SourceType, "pdf") {
+		result, err := p.importStructured(ctx, doc.StoragePath, doc.SourceType)
+		if err != nil {
+			p.markExtractionFailed(doc, ExtractError{Message: "อ่านไฟล์ไม่สำเร็จ: " + err.Error()}, started)
+			return
+		}
+		if err := p.jobs.SaveStructured(&doc, result, started); err != nil {
+			p.markExtractionFailed(doc, ExtractError{Message: "บันทึกผลการอ่านไม่สำเร็จ"}, started)
 		}
 		return
 	}
 
-	if err := checkPDFLimits(doc.StoragePath); err != nil {
-		p.markExtractionFailed(id, asExtractError(err), started)
+	if err := checkPDFLimits(ctx, doc.StoragePath, p.pageCount); err != nil {
+		p.markExtractionFailed(doc, asExtractError(err), started)
 		return
 	}
-	settings, err := p.settings.Load()
+	settings, err := p.settings.LoadOCR()
 	if err != nil {
-		p.markExtractionFailed(id, ExtractError{Message: "อ่านค่าตั้งค่า OCR ไม่ได้"}, started)
+		p.markExtractionFailed(doc, ExtractError{Message: "อ่านค่าตั้งค่า OCR ไม่ได้"}, started)
 		return
 	}
 	extractor, err := p.newExtractor(settings, p.ocrConfig)
 	if err != nil {
-		p.markExtractionFailed(id, asExtractError(err), started)
+		p.markExtractionFailed(doc, asExtractError(err), started)
 		return
 	}
 
@@ -2328,23 +2632,23 @@ func (p *DocumentProcessor) processOne(ctx context.Context, id uint) {
 		plan := planExtractionFailure(err, doc.ExtractionAttempts, doc.ExtractionLastStatus, p.now())
 		if plan.Retry {
 			if mErr := p.jobs.MarkRetry(id, plan); mErr != nil {
-				log.Printf("mark retry %d: %v", id, mErr)
+				p.logger.Printf("mark retry %d: %v", id, mErr)
 			}
 			return
 		}
-		p.markExtractionFailed(id, plan.Failure, started)
+		p.markExtractionFailed(doc, plan.Failure, started)
 		return
 	}
 
 	if err := p.jobs.SaveExtraction(&doc, result, started); err != nil {
-		p.markExtractionFailed(id, ExtractError{Message: "บันทึกผลการอ่านไม่สำเร็จ"}, started)
+		p.markExtractionFailed(doc, ExtractError{Message: "บันทึกผลการอ่านไม่สำเร็จ"}, started)
 	}
 }
 
 // markExtractionFailed เป็นจุดเดียวที่ตั้งสถานะ FAILED (งานอีเมลแจ้งแอดมินจะต่อที่นี่)
-func (p *DocumentProcessor) markExtractionFailed(id uint, failure ExtractError, started time.Time) {
-	if err := p.jobs.MarkFailed(id, failure, started); err != nil {
-		p.logger.Printf("mark failed %d: %v", id, err)
+func (p *DocumentProcessor) markExtractionFailed(doc Document, failure ExtractError, started time.Time) {
+	if err := p.jobs.MarkFailed(doc.ID, failure, started); err != nil {
+		p.logger.Printf("mark failed %d: %v", doc.ID, err)
 	}
 }
 
@@ -2357,18 +2661,97 @@ func asExtractError(err error) ExtractError {
 }
 ```
 
-หมายเหตุ: `p.settings` เป็น `SettingsStore` เดิมที่มีอยู่แล้วใน `DocumentProcessor` (ตรวจชื่อเมธอดโหลดจริงด้วย grep แล้วปรับ) และ `p.logger` ต้องไม่เป็น nil ใน `newTestProcessor` ให้ตั้ง `logger: log.New(io.Discard, "", 0)` ในเทสต์ (เพิ่มในฟังก์ชัน `newTestProcessor` ของเทสต์ ไม่ใช่เติมในโค้ดจริง)
-
-- [ ] **Step 4: เขียน `backend/document_queue_store.go` (ชั้น DB; ไม่มีเทสต์ unit ตรวจใน Task 12)**
-
-ไฟล์นี้มี receiver `gormExtractionJobs` ที่ implement `extractionJobs` ทุกเมธอด ใช้ `gorm` กับตาราง `document_workflows` (model `Document`)
+3. `backend/structured_extraction.go` (ไฟล์ใหม่):
 
 ```go
 package main
 
 import (
-	"context"
+	"fmt"
+	"strings"
+	"time"
+)
+
+const structuredImportEngine = "structured-import"
+
+var thaiMonthNames = [...]string{"มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"}
+
+// thaiDateText เขียนวันที่เป็นข้อความไทย (พ.ศ.) ให้ parseThaiDate อ่านกลับได้
+func thaiDateText(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d %s %d", t.Day(), thaiMonthNames[t.Month()-1], t.Year()+543)
+}
+
+// structuredExtraction แปลงผลของ ocr_worker.py (DOCX/XLSX/CSV) เป็น ExtractionResult
+// ใช้ extractCommandMetadata แบบไม่มี profile และตั้งความมั่นใจของทุกค่าเป็นค่าเฉลี่ยของเอกสาร
+// เพื่อให้กฎ NEEDS_REVIEW ตาม threshold ยังใช้ได้เหมือนเดิม
+// เอนจินเดิม committee = ชื่อเรื่อง จึงตั้ง IssuedBy = title
+func structuredExtraction(result workerResult) ExtractionResult {
+	pages := result.Pages
+	meta := extractCommandMetadata(pages, joinPageText(pages))
+	avg := averageOCRConfidence(pages)
+	val := func(text string) ExtractedValue {
+		c := avg
+		return ExtractedValue{Text: text, Confidence: &c}
+	}
+
+	out := ExtractionResult{
+		Engine: structuredImportEngine,
+		Header: ExtractedHeader{
+			OrderNo:       val(meta.orderNo),
+			Subject:       val(meta.title),
+			IssuedBy:      val(meta.title),
+			Date:          val(thaiDateText(meta.issuedDate)),
+			EffectiveDate: val(thaiDateText(meta.effectiveDate)),
+			ExpiryDate:    val(thaiDateText(meta.expiryDate)),
+			Signer:        val(meta.signer),
+		},
+	}
+	if meta.additionalRefs != "" {
+		out.Header.References = []ExtractedValue{val(meta.additionalRefs)}
+	}
+	for _, a := range meta.appointments {
+		out.Groups = append(out.Groups, ExtractedGroup{
+			Department: val(a.Department),
+			Duty:       val(a.Responsibilities),
+			Members: []ExtractedMember{{
+				Name:      val(a.FullName),
+				Position:  val(a.Position),
+				Role:      val(a.CommitteeRole),
+				ExOfficio: strings.TrimSpace(a.FullName) == "" && strings.TrimSpace(a.Position) != "",
+			}},
+		})
+	}
+	for _, p := range pages {
+		page := ExtractedPage{Page: p.PageNo, Width: p.ImageWidth, Height: p.ImageHeight}
+		for _, line := range p.Lines {
+			conf := line.Confidence
+			page.Lines = append(page.Lines, ExtractedValue{Text: line.Text, Confidence: &conf})
+		}
+		out.Pages = append(out.Pages, page)
+	}
+	return out
+}
+
+func joinPageText(pages []workerPage) string {
+	texts := make([]string, 0, len(pages))
+	for _, p := range pages {
+		texts = append(texts, p.FullText)
+	}
+	return strings.TrimSpace(strings.Join(texts, "\n"))
+}
+```
+
+4. `backend/document_queue_store.go` (ไฟล์ใหม่). ชื่อคอลัมน์ทั้งหมดตรงกับ struct จริงใน `main.go`; `AuditLog` ใช้ `DocumentID *uint`, `UserID`, `Action`, `Details`, `CreatedAt`:
+
+```go
+package main
+
+import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -2382,7 +2765,7 @@ type gormExtractionJobs struct {
 	timeout  time.Duration
 }
 
-// Claim เปลี่ยนเป็น EXTRACTING แบบมีเงื่อนไข ถ้าไม่มีแถวตรงเงื่อนไขคืน ok=false
+// Claim เปลี่ยนเป็น EXTRACTING แบบมีเงื่อนไข ถ้าไม่มีแถวตรงเงื่อนไขคืน ok=false (กันการส่งซ้ำ)
 func (g gormExtractionJobs) Claim(id uint, now time.Time) (Document, bool, error) {
 	res := g.db.Model(&Document{}).
 		Where("id = ? AND processing_stage IN ?", id, []string{"QUEUED", "RETRY_WAIT"}).
@@ -2417,8 +2800,11 @@ func (g gormExtractionJobs) MarkRetry(id uint, plan failurePlan) error {
 	}).Error
 }
 
-// MarkFailed ตั้ง FAILED และเขียน AuditLog ในทรานแซกชันเดียว
+// MarkFailed ตั้ง NEEDS_REVIEW/FAILED และเขียน AuditLog ในทรานแซกชันเดียว
 func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started time.Time) error {
+	finished := time.Now()
+	docID := id
+	detail, _ := json.Marshal(failure)
 	return g.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&Document{}).Where("id = ?", id).Updates(map[string]any{
 			"status":                 "NEEDS_REVIEW",
@@ -2426,21 +2812,24 @@ func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started ti
 			"next_attempt_at":        nil,
 			"extraction_last_status": failure.Status,
 			"ocr_error":              failure.Message,
-			"processing_finished_at": time.Now(),
+			"processing_finished_at": finished,
+			"processing_duration_ms": finished.Sub(started).Milliseconds(),
 		}).Error; err != nil {
 			return err
 		}
-		detail, _ := json.Marshal(failure)
-		return tx.Create(&AuditLog{Action: "DOCUMENT_EXTRACTION_FAILED", EntityType: "document", EntityID: id, Actor: "system", Details: string(detail), CreatedAt: time.Now()}).Error
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: "system", Action: "DOCUMENT_EXTRACTION_FAILED", Details: string(detail), CreatedAt: finished}).Error
 	})
 }
 
 // SaveExtraction เขียนผลตาม extractionRecords ในทรานแซกชันเดียว แล้วล้าง retry state
-// ลำดับการเขียน: Updates ของ document -> ลบ fields/appointments/ocr_pages/ocr_lines เดิม -> เขียนแถวใหม่
+// ลำดับ: Updates ของ document -> ลบแถวเดิม -> สร้าง fields, appointments, references, ocr_pages (แล้ว ocr_lines ที่ผูก ocr_page_id) -> sync core
 func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResult, started time.Time) error {
-	threshold := g.settingsThreshold()
+	threshold := loadOCRSettingsOrDefault(g.settings).ReviewThreshold
 	rec := buildExtractionRecords(result, threshold)
+	matchRecordAppointments(g.db, rec.Appointments)
 	status, stage := extractionStatus(rec, threshold)
+	docID := doc.ID
+
 	return g.db.Transaction(func(tx *gorm.DB) error {
 		rec.Updates["status"] = status
 		rec.Updates["processing_stage"] = stage
@@ -2448,25 +2837,25 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 		rec.Updates["ocr_error"] = ""
 		rec.Updates["processing_finished_at"] = time.Now()
 		rec.Updates["processing_duration_ms"] = time.Since(started).Milliseconds()
-		for k, v := range retryResetUpdates() {
-			rec.Updates[k] = v
+		for key, value := range retryResetUpdates() {
+			rec.Updates[key] = value
 		}
-		if err := tx.Model(&Document{}).Where("id = ?", doc.ID).Updates(rec.Updates).Error; err != nil {
+		if err := tx.Model(&Document{}).Where("id = ?", docID).Updates(rec.Updates).Error; err != nil {
 			return err
 		}
-		for _, model := range []any{&ExtractedField{}, &Appointment{}, &OCRPage{}} {
-			if err := tx.Where("document_id = ?", doc.ID).Delete(model).Error; err != nil {
+		for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
+			if err := tx.Where("document_id = ?", docID).Delete(model).Error; err != nil {
 				return err
 			}
 		}
 		for i := range rec.Fields {
-			rec.Fields[i].DocumentID = doc.ID
+			rec.Fields[i].DocumentID = docID
 		}
 		for i := range rec.Appointments {
-			rec.Appointments[i].DocumentID = doc.ID
+			rec.Appointments[i].DocumentID = docID
 		}
-		for i := range rec.OCRPages {
-			rec.OCRPages[i].DocumentID = doc.ID
+		for i := range rec.References {
+			rec.References[i].DocumentID = docID
 		}
 		if len(rec.Fields) > 0 {
 			if err := tx.Create(&rec.Fields).Error; err != nil {
@@ -2478,21 +2867,55 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 				return err
 			}
 		}
-		if len(rec.OCRPages) > 0 {
-			if err := tx.Create(&rec.OCRPages).Error; err != nil {
+		if len(rec.References) > 0 {
+			if err := tx.Create(&rec.References).Error; err != nil {
 				return err
 			}
 		}
-		return g.applyDirectoryMatchesTx(tx, doc.ID)
+		pageIDs := make(map[int]uint, len(rec.OCRPages))
+		for i := range rec.OCRPages {
+			rec.OCRPages[i].DocumentID = docID
+			if err := tx.Create(&rec.OCRPages[i]).Error; err != nil {
+				return err
+			}
+			pageIDs[rec.OCRPages[i].PageNo] = rec.OCRPages[i].ID
+		}
+		for i := range rec.OCRLines {
+			rec.OCRLines[i].DocumentID = docID
+			rec.OCRLines[i].OCRPageID = pageIDs[rec.OCRLines[i].PageNo]
+			if err := tx.Create(&rec.OCRLines[i]).Error; err != nil {
+				return err
+			}
+		}
+		var updated Document
+		if err := tx.First(&updated, docID).Error; err != nil {
+			return err
+		}
+		if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+			return err
+		}
+		if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
+			return err
+		}
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: "system", Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("engine=%s pages=%d fields=%d appointments=%d", result.Engine, len(rec.OCRPages), len(rec.Fields), len(rec.Appointments))}).Error
 	})
 }
 
-// RunStructuredImport คือ receiver ของ runStructuredImport เดิม (DOCX/XLSX/CSV) ที่ย้ายมาที่นี่ใน Task 11
-func (g gormExtractionJobs) RunStructuredImport(ctx context.Context, doc *Document, started time.Time) error {
-	return runStructuredImportFor(ctx, g.db, doc, started)
+// SaveStructured บันทึกผล DOCX/XLSX/CSV ทางเดียวกับ PDF (engine = structured-import)
+func (g gormExtractionJobs) SaveStructured(doc *Document, result workerResult, started time.Time) error {
+	return g.SaveExtraction(doc, structuredExtraction(result), started)
 }
 
-// DueForQueue ตามกฎใน spec: ดึง EXTRACTING/PREPARING ที่ค้างกลับเป็น QUEUED แล้วคืน id ที่ถึงเวลา
+// matchRecordAppointments จับคู่ชื่อกับ directory ก่อนเขียน; โหลด directory ไม่ได้ก็ข้ามการจับคู่
+func matchRecordAppointments(db *gorm.DB, appointments []Appointment) {
+	users, aliases, err := loadDirectory(db)
+	if err != nil {
+		return
+	}
+	matchAppointments(appointments, users, aliases)
+}
+
+// DueForQueue ตามกฎ spec: ดึง EXTRACTING/PREPARING ที่ค้างกลับเป็น QUEUED แล้วคืน id ที่ถึงเวลา
 func (g gormExtractionJobs) DueForQueue(now time.Time, startup bool) ([]uint, error) {
 	cutoff := staleBefore(now, g.timeout, startup)
 	if err := g.db.Model(&Document{}).
@@ -2513,30 +2936,29 @@ func (g gormExtractionJobs) DueForQueue(now time.Time, startup bool) ([]uint, er
 }
 ```
 
-หมายเหตุสำหรับผู้ implement:
-- `settingsThreshold()` อ่าน `ReviewThreshold` จาก `g.settings` (ถ้าอ่านไม่ได้ใช้ค่าเริ่มต้นเดิม) และ `applyDirectoryMatchesTx(tx, id)` คือการเรียก `applyDirectoryMatches` เดิมภายในทรานแซกชัน (ย้าย receiver มาที่ `gormExtractionJobs` ตาม Task 7 Step 5); `runStructuredImportFor(ctx, db, doc, started)` คือฟังก์ชันที่แยกมาจาก `runStructuredImport` เดิม ไม่ใช่ method ของ `DocumentProcessor`
-- ค่า `AuditLog.Details` ให้ตรวจว่ามี field นี้จริง ถ้าไม่มีให้ใช้ field ข้อความที่มีอยู่แทน
-- ตรวจว่า `ExtractedField`, `Appointment`, `OCRPage` มีคอลัมน์ `document_id` จริงก่อนลบ/สร้าง
+5. `backend/main.go`:
+   - ก่อนบรรทัด `processor := NewDocumentProcessor(db, logger)` ให้เขียน `ocrConfig := loadOCRAPIConfigFromEnv()` แล้วเปลี่ยนเป็น `processor := NewDocumentProcessor(db, logger, ocrConfig)`
+   - หลัง `processor` ถูกสร้างและก่อน `router.Run` ให้เพิ่ม `processor.Start(context.Background())` และ `processor.Recover()`
+   - ใน cron ใกล้ `IMPORT_CRON` เพิ่ม:
 
-- [ ] **Step 5: แก้ `backend/main.go`**
-
-- สร้าง processor ด้วย `ocrConfig := loadOCRAPIConfigFromEnv()` แล้วตั้ง `jobs: gormExtractionJobs{db, logger, settings, cfg.Timeout}`, `newExtractor: newExtractor`, `now: time.Now`, `queue: make(chan uint, 256)`
-- เรียก `processor.Start(ctx)` และ `processor.Recover()` หลังสร้าง processor และก่อน `router.Run`
-- เพิ่ม cron: `scheduler.AddFunc("* * * * *", processor.Sweep)` ตามรูปแบบ `scheduler.AddFunc` เดิม
-- ลบเรียก `Process` เดิมและ `Enqueue` ที่ไม่ได้ใช้
-
-- [ ] **Step 6: รันเทสต์ ต้อง PASS**
-
-```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go vet ./... && go test ./... -run 'ProcessOne|Sweep|Recover|StaleBefore' -v 2>&1 | tail -50 && go test ./... 2>&1 | tail -15
+```go
+	if _, err := scheduler.AddFunc("* * * * *", processor.Sweep); err != nil {
+		panic(fmt.Errorf("schedule sweep: %w", err))
+	}
 ```
 
-คาดหวัง: เทสต์ของ Task นี้ PASS ส่วนเทสต์รวมอาจเหลือ baseline `TestNewManualDirectoryUserStoresValidJSONPayload` ที่ล้มอยู่แล้ว
-
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: รันเทสต์ ต้อง PASS**
 
 ```sh
-git add backend/document_queue.go backend/document_queue_test.go backend/document_queue_store.go backend/document_processing.go backend/main.go && git commit -m "Add extraction queue with claim, retry sweep and startup recovery
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go vet ./... && go test ./... -run 'ProcessOne|Sweep|Recover|StaleBefore|StructuredExtraction|ThaiDateText' -v 2>&1 | tail -50 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
+```
+
+คาดหวัง: เทสต์ของ Task นี้ PASS (ไม่ต้องใช้ pdfinfo, python หรือไฟล์นอก `t.TempDir()`) และการรันเต็มชุดเหลือเฉพาะ baseline `TestNewManualDirectoryUserStoresValidJSONPayload` ถ้า `go vet` ฟ้องว่า `DocumentProcessor` ยังมีเมธอดเดิมซ้ำ ให้ลบเมธอดเดิมนั้น
+
+- [ ] **Step 6: Commit**
+
+```sh
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/document_queue.go backend/document_queue_test.go backend/document_queue_store.go backend/structured_extraction.go backend/structured_extraction_test.go backend/document_processing.go backend/main.go && git commit -m "Add extraction queue with claim, retry sweep and startup recovery
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -2546,20 +2968,22 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ## Task 8: การตั้งค่า OCR และ endpoint ทดสอบการเชื่อมต่อ
 
 **Files:**
-- Modify: `backend/settings.go` (`OCRSettings`, `Validate`, `mergeOCRSettings`, handler GET/PUT, ลบ `runOCRWorker` ไม่ทำใน task นี้ — ทำใน Task 11)
-- Modify: `backend/settings_test.go` (แก้เทสต์ที่คาด `one-ocr`)
+- Modify: `backend/settings.go` (เอนจินใหม่, `Validate` ตรวจ `APIURL`, `mergeOCRSettings` แปลง `one-ocr` และ URL ว่าง, `getOCRSettingsHandler(store, cfg)`, ลบ `testOCRSettingsHandler`, `summarizeOCRTest`, `ocrTestResult`)
+- Modify: `backend/settings_test.go` (เปลี่ยนค่า `one-ocr` ที่เทสต์เดิมคาดไว้ และ `settingsRouter`; ต่อท้ายเทสต์ใหม่)
 - Create: `backend/ocr_connection.go`
-- Create: `backend/ocr_connection_test.go`
-- Modify: `backend/main.go` (เปลี่ยน route `POST /api/v1/settings/ocr/test` ให้ใช้ `testOCRConnectionHandler`)
+- Create: `backend/ocr_connection_test.go` (มี helper `performRequest` และ `fakeRole` ที่ Task 9 ใช้ซ้ำ)
+- Modify: `backend/main.go` (route `POST /api/v1/settings/ocr/test` และ `GET /api/v1/settings/ocr`)
 
 **Interfaces:**
 - ผลิต: `type ocrConnectionResult struct { Status string \`json:"status"\`; Detail string \`json:"detail"\` }`
-- ผลิต: `func checkOCRConnection(ctx context.Context, client *http.Client, healthURL, apiKey string, thaidoc bool) ocrConnectionResult`
-- ผลิต: `func ocrHealthURL(engine, base string) (string, error)`
+- ผลิต: `func ocrHealthURL(engine, base string) (string, error)` (thaidoc: `{base}/health`; docflow-contract: origin + `/health`)
+- ผลิต: `func checkOCRConnection(ctx context.Context, client *http.Client, healthURL, apiKey string) ocrConnectionResult`
 - ผลิต: `func testOCRConnectionHandler(load func() (OCRSettings, error), cfg ocrAPIConfig) gin.HandlerFunc`
-- ผลิต: `GET` settings response: `{"data": settings, "ocrApiKeyConfigured": bool}`
+- ผลิต: `func getOCRSettingsHandler(store SettingsStore, cfg ocrAPIConfig) gin.HandlerFunc` ตอบ `{"data": settings, "ocrApiKeyConfigured": bool}` (แก้ signature นี้ พร้อม caller ใน `main.go` และ `settingsRouter` ใน `settings_test.go`)
+- ผลิต helper ใน `ocr_connection_test.go`: `performRequest(t *testing.T, method, route, requestPath string, body io.Reader, handlers ...gin.HandlerFunc) *httptest.ResponseRecorder`, `fakeRole(role string) gin.HandlerFunc`
+- ใช้ของเดิม: `OCRSettings.APIURL` (เพิ่มใน Task 4), `ocrBaseURL` (Task 4), `defaultOCRSettings`, `loadOCRSettingsOrDefault`
 
-- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/ocr_connection_test.go`**
+- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/ocr_connection_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
@@ -2567,12 +2991,39 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
+
+// performRequest ส่ง request หนึ่งครั้งผ่าน gin router ที่ mount handlers บน route (รองรับ :param)
+func performRequest(t *testing.T, method, route, requestPath string, body io.Reader, handlers ...gin.HandlerFunc) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Handle(method, route, handlers...)
+	req := httptest.NewRequest(method, requestPath, body)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+// fakeRole ตั้ง user และ role ใน context เหมือน middleware จริง (ดู auth.go)
+func fakeRole(role string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set(authUserKey, "tester")
+		c.Set(authRoleKey, role)
+		c.Next()
+	}
+}
 
 func TestOCRHealthURLPerEngine(t *testing.T) {
 	got, err := ocrHealthURL("thaidoc", "https://ocr.example:8443")
@@ -2589,25 +3040,24 @@ func TestCheckOCRConnectionStatuses(t *testing.T) {
 	cases := []struct {
 		name     string
 		handler  http.HandlerFunc
-		thaidoc  bool
 		wantStat string
 	}{
 		{"ok", func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"status":"ok","models_loaded":true}`))
-		}, true, "ok"},
-		{"unauthorized", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }, true, "unauthorized"},
-		{"forbidden", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }, true, "unauthorized"},
+		}, "ok"},
+		{"unauthorized", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }, "unauthorized"},
+		{"forbidden", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(403) }, "unauthorized"},
 		{"models loading", func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"status":"ok","models_loaded":false}`))
-		}, true, "unreachable"},
-		{"server error", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }, true, "unreachable"},
+		}, "unreachable"},
+		{"server error", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(503) }, "unreachable"},
 	}
 	for _, c := range cases {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			srv := httptest.NewServer(c.handler)
 			defer srv.Close()
-			got := checkOCRConnection(context.Background(), &http.Client{Timeout: time.Second}, srv.URL+"/health", "k", c.thaidoc)
+			got := checkOCRConnection(context.Background(), &http.Client{Timeout: time.Second}, srv.URL+"/health", "k")
 			if got.Status != c.wantStat || got.Detail == "" {
 				t.Fatalf("got %+v", got)
 			}
@@ -2622,7 +3072,7 @@ func TestCheckOCRConnectionSendsBearerKey(t *testing.T) {
 		_, _ = w.Write([]byte(`{"models_loaded":true}`))
 	}))
 	defer srv.Close()
-	checkOCRConnection(context.Background(), &http.Client{Timeout: time.Second}, srv.URL, "secret", true)
+	checkOCRConnection(context.Background(), &http.Client{Timeout: time.Second}, srv.URL, "secret")
 	if auth != "Bearer secret" {
 		t.Fatalf("Authorization = %q", auth)
 	}
@@ -2632,7 +3082,7 @@ func TestCheckOCRConnectionUnreachable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	u := srv.URL
 	srv.Close()
-	got := checkOCRConnection(context.Background(), &http.Client{Timeout: time.Second}, u+"/health", "", true)
+	got := checkOCRConnection(context.Background(), &http.Client{Timeout: time.Second}, u+"/health", "")
 	if got.Status != "unreachable" {
 		t.Fatalf("status = %q", got.Status)
 	}
@@ -2648,10 +3098,8 @@ func TestOCRConnectionHandlerUsesUnsavedValuesAndHidesKey(t *testing.T) {
 		return OCRSettings{Engine: "thaidoc", APIURL: "https://stored.example"}, nil
 	}
 	cfg := ocrAPIConfig{APIKey: "TOPSECRET-KEY", Timeout: time.Second}
-	h := testOCRConnectionHandler(load, cfg)
-
 	body := strings.NewReader(`{"engine":"thaidoc","apiUrl":"` + srv.URL + `"}`)
-	rec := performRequest(t, h, http.MethodPost, "/api/v1/settings/ocr/test", body)
+	rec := performRequest(t, http.MethodPost, "/api/v1/settings/ocr/test", "/api/v1/settings/ocr/test", body, testOCRConnectionHandler(load, cfg))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
@@ -2666,16 +3114,22 @@ func TestOCRConnectionHandlerUsesUnsavedValuesAndHidesKey(t *testing.T) {
 }
 ```
 
-หมายเหตุ: `performRequest(t, handler, method, path, body)` ให้เพิ่มใน `ocr_connection_test.go` เอง ใช้ `gin.SetMode(gin.TestMode)`, `gin.New()`, `r.POST(path, h)`, `httptest.NewRecorder()` และ `httptest.NewRequest`
+- [ ] **Step 2: แก้และต่อท้าย `backend/settings_test.go`** (ไฟล์มีอยู่แล้ว ใช้ `Edit` ไม่สร้างใหม่)
 
-- [ ] **Step 2: เขียนเทสต์ settings ใน `backend/settings_test.go`**
+แก้ค่าที่คาด `one-ocr` (ค่าเริ่มต้นเปลี่ยนเป็น `thaidoc`):
+- บรรทัด `if settings.Engine != "one-ocr" || ...` ใน `TestDefaultOCRSettingsReadEnvironment` → `"thaidoc"`
+- บรรทัด `body := ...{"engine":"one-ocr",...}` ใน `TestUpdateOCRSettingsSavesValidPayload` → `"engine":"thaidoc"`
+- บรรทัด `strings.NewReader(`{"engine":"one-ocr","dpi":123}`)` → `"engine":"thaidoc"`
+- ใน `TestGetOCRSettingsFallsBackToDefaultsWhenStoreFails` ค่า `"one-ocr"` → `"thaidoc"`
+- ใน `settingsRouter` บรรทัด `router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(store))` → `getOCRSettingsHandler(store, ocrAPIConfig{})`
 
-เพิ่มเทสต์ต่อไปนี้ และแก้เทสต์เดิมที่คาดค่า `one-ocr` ให้คาดค่า `thaidoc`:
+ต่อท้ายไฟล์:
 
 ```go
 func TestMergeOCRSettingsMapsLegacyOneOCRWithoutLosingImportSettings(t *testing.T) {
-	defaults := OCRSettings{Engine: "thaidoc", APIURL: "https://default.example", ReviewThreshold: 0.8}
-	stored := `{"engine":"one-ocr","reviewThreshold":0.7,"apiUrl":"https://kept.example"}`
+	defaults := defaultOCRSettings()
+	defaults.APIURL = "https://default.example"
+	stored := `{"engine":"one-ocr","reviewThreshold":0.7,"apiUrl":"https://kept.example","importIntervalMinutes":30}`
 	got, err := mergeOCRSettings(defaults, stored)
 	if err != nil {
 		t.Fatalf("mergeOCRSettings: %v", err)
@@ -2683,13 +3137,14 @@ func TestMergeOCRSettingsMapsLegacyOneOCRWithoutLosingImportSettings(t *testing.
 	if got.Engine != "thaidoc" {
 		t.Fatalf("Engine = %q, want thaidoc", got.Engine)
 	}
-	if got.APIURL != "https://kept.example" || got.ReviewThreshold != 0.7 {
+	if got.APIURL != "https://kept.example" || got.ReviewThreshold != 0.7 || got.ImportIntervalMinutes != 30 {
 		t.Fatalf("stored values were wiped: %+v", got)
 	}
 }
 
 func TestMergeOCRSettingsEmptyStoredURLFallsBackToDefault(t *testing.T) {
-	defaults := OCRSettings{Engine: "thaidoc", APIURL: "https://env.example"}
+	defaults := defaultOCRSettings()
+	defaults.APIURL = "https://env.example"
 	got, err := mergeOCRSettings(defaults, `{"engine":"thaidoc","apiUrl":""}`)
 	if err != nil {
 		t.Fatal(err)
@@ -2699,58 +3154,58 @@ func TestMergeOCRSettingsEmptyStoredURLFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestOCRSettingsValidateRejectsBadURL(t *testing.T) {
-	if err := (OCRSettings{Engine: "thaidoc", APIURL: "ftp://x"}).Validate(); err == nil {
-		t.Fatal("ftp scheme must be rejected")
+func TestOCRSettingsValidateChecksAPIURL(t *testing.T) {
+	base := defaultOCRSettings()
+	base.Engine = "thaidoc"
+	for _, bad := range []string{"ftp://x", "https://"} {
+		s := base
+		s.APIURL = bad
+		if err := s.Validate(); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
 	}
-	if err := (OCRSettings{Engine: "thaidoc", APIURL: "https://"}).Validate(); err == nil {
-		t.Fatal("empty host must be rejected")
+	for _, good := range []string{"", "https://ocr.example", "http://10.0.0.5:8000"} {
+		s := base
+		s.APIURL = good
+		if err := s.Validate(); err != nil {
+			t.Fatalf("%q rejected: %v", good, err)
+		}
 	}
-	if err := (OCRSettings{Engine: "thaidoc", APIURL: ""}).Validate(); err != nil {
-		t.Fatalf("empty url must be allowed: %v", err)
-	}
-	if err := (OCRSettings{Engine: "docflow-contract", APIURL: "http://10.0.0.5:8000"}).Validate(); err != nil {
-		t.Fatalf("http url must be allowed: %v", err)
-	}
-}
-
-func TestOCRSettingsRejectsUnknownEngine(t *testing.T) {
-	if err := (OCRSettings{Engine: "one-ocr"}).Validate(); err == nil {
+	s := base
+	s.Engine = "one-ocr"
+	if err := s.Validate(); err == nil {
 		t.Fatal("one-ocr must not be a valid engine after the change")
 	}
 }
-```
 
-- [ ] **Step 3: เขียนเทสต์ GET settings (ใน `settings_test.go`) ว่า key ไม่รั่ว**
-
-```go
 func TestGetOCRSettingsReportsKeyConfiguredWithoutValue(t *testing.T) {
-	h := getOCRSettingsHandler(fakeSettingsStore{}, ocrAPIConfig{APIKey: "SECRET-XYZ"})
-	rec := performRequest(t, h, http.MethodGet, "/api/v1/settings/ocr", nil)
+	h := getOCRSettingsHandler(&fakeSettingsStore{settings: defaultOCRSettings()}, ocrAPIConfig{APIKey: "SECRET-XYZ"})
+	rec := performRequest(t, http.MethodGet, "/api/v1/settings/ocr", "/api/v1/settings/ocr", nil, h)
 	if strings.Contains(rec.Body.String(), "SECRET-XYZ") {
 		t.Fatal("GET leaked the key")
 	}
 	var out struct {
-		Data                json.RawMessage `json:"data"`
-		OCRAPIKeyConfigured bool            `json:"ocrApiKeyConfigured"`
+		OCRAPIKeyConfigured bool `json:"ocrApiKeyConfigured"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || !out.OCRAPIKeyConfigured {
-		t.Fatalf("out = %+v err=%v", out, err)
+		t.Fatalf("body = %s err=%v", rec.Body.String(), err)
 	}
 }
 ```
 
-หมายเหตุ: `fakeSettingsStore` มีอยู่แล้วใน `settings_test.go` ตรวจ method ของมันก่อน และ `getOCRSettingsHandler` ให้ชื่อตามโค้ด handler เดิมของ GET settings (ถ้าชื่อต่างให้ปรับเทสต์)
+ต้องเพิ่ม import `"net/http"` หรือ `"encoding/json"` ใน `settings_test.go` ถ้ายังไม่มี (ไฟล์นี้มีทั้งสองอยู่แล้ว)
 
-- [ ] **Step 4: รันเทสต์ ต้อง FAIL**
+- [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'OCRHealthURL|CheckOCRConnection|OCRConnectionHandler|MergeOCRSettings|OCRSettingsValidate|OCRSettingsRejects|GetOCRSettings' 2>&1 | tail -20
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'OCRHealthURL|CheckOCRConnection|OCRConnectionHandler|MergeOCRSettings|OCRSettingsValidate|GetOCRSettings' 2>&1 | tail -20
 ```
 
-คาดหวัง: FAIL ตามที่เขียน (one-ocr ยังถูกยอมรับ, URL ยังไม่ validate, ไม่มี endpoint ใหม่)
+คาดหวัง: build fail ด้วย `undefined: ocrHealthURL`, `checkOCRConnection` (signature เดิมไม่มี) และ `getOCRSettingsHandler` (argument ไม่พอ)
 
-- [ ] **Step 5: implement `backend/ocr_connection.go`**
+- [ ] **Step 4: implement**
+
+1. `backend/ocr_connection.go` (ไฟล์ใหม่):
 
 ```go
 package main
@@ -2773,19 +3228,19 @@ type ocrConnectionResult struct {
 	Detail string `json:"detail"`
 }
 
-// ocrHealthURL: thaidoc ใช้ {base}/health; docflow-contract ใช้ origin + /health
+// ocrHealthURL: thaidoc ใช้ {base}/health; docflow-contract ใช้ origin + /health (ข้อที่ต่างจาก spec ข้อ 10)
 func ocrHealthURL(engine, base string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(base))
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("invalid url %q", base)
 	}
 	if engine == "thaidoc" {
-		return strings.TrimRight(base, "/") + "/health", nil
+		return strings.TrimRight(strings.TrimSpace(base), "/") + "/health", nil
 	}
 	return u.Scheme + "://" + u.Host + "/health", nil
 }
 
-func checkOCRConnection(ctx context.Context, client *http.Client, healthURL, apiKey string, thaidoc bool) ocrConnectionResult {
+func checkOCRConnection(ctx context.Context, client *http.Client, healthURL, apiKey string) ocrConnectionResult {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
 		return ocrConnectionResult{Status: "unreachable", Detail: "URL ไม่ถูกต้อง"}
@@ -2821,7 +3276,7 @@ type ocrConnectionRequest struct {
 	APIURL string `json:"apiUrl"`
 }
 
-// testOCRConnectionHandler ใช้ค่าที่ส่งมาถ้ามี ไม่เช่นนั้นใช้ค่าที่บันทึก key มาจาก env เท่านั้น
+// testOCRConnectionHandler ใช้ค่าที่ส่งมาถ้ามี ไม่เช่นนั้นใช้ค่าที่บันทึก; key มาจาก env/ไฟล์เท่านั้น ไม่ส่งกลับ
 func testOCRConnectionHandler(load func() (OCRSettings, error), cfg ocrAPIConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		settings, err := load()
@@ -2842,40 +3297,86 @@ func testOCRConnectionHandler(load func() (OCRSettings, error), cfg ocrAPIConfig
 		if req.APIURL != "" {
 			settings.APIURL = req.APIURL
 		}
-		base := strings.TrimSpace(settings.APIURL)
-		if base == "" {
-			base = cfg.DefaultURL
-		}
-		healthURL, err := ocrHealthURL(settings.Engine, base)
+		healthURL, err := ocrHealthURL(settings.Engine, ocrBaseURL(settings.APIURL, cfg.DefaultURL))
 		if err != nil {
 			c.JSON(http.StatusOK, ocrConnectionResult{Status: "unreachable", Detail: "ยังไม่ได้ตั้งค่า URL ของ OCR API"})
 			return
 		}
 		client := &http.Client{Timeout: 10 * time.Second}
-		c.JSON(http.StatusOK, checkOCRConnection(c.Request.Context(), client, healthURL, cfg.APIKey, settings.Engine == "thaidoc"))
+		c.JSON(http.StatusOK, checkOCRConnection(c.Request.Context(), client, healthURL, cfg.APIKey))
 	}
 }
 ```
 
-- [ ] **Step 6: implement การเปลี่ยนแปลงใน `backend/settings.go` และ route**
+2. `backend/settings.go`:
+   - `allowedOCREngines = map[string]bool{"one-ocr": true}` → `map[string]bool{"thaidoc": true, "docflow-contract": true}`
+   - ใน `defaultOCRSettings()` เปลี่ยน `Engine: "one-ocr"` เป็น `Engine: "thaidoc"`
+   - ใน `Validate()` ก่อน `return nil` สุดท้าย (หลังบล็อก `DriveFolderURL`) เพิ่ม:
 
-- `OCRSettings.Engine` ค่าเริ่มต้น `thaidoc`, `Validate` รับ `thaidoc` และ `docflow-contract` เท่านั้น, `APIURL` ว่างได้ ถ้ามีต้อง `url.Parse` แล้ว scheme เป็น `http` หรือ `https` และ `Host != ""`
-- `mergeOCRSettings`: ก่อน Validate ถ้า `Engine == "one-ocr"` ให้แทนด้วย `defaults.Engine`, ถ้า `APIURL == ""` ให้ใช้ `defaults.APIURL`
-- GET settings: ตอบ `gin.H{"data": settings, "ocrApiKeyConfigured": cfg.APIKey != ""}` (รับ `cfg ocrAPIConfig` เป็น dependency ของ handler)
-- ลบค่าที่เป็น key ออกจาก PUT body ถ้าส่งมา (ไม่บันทึก)
-- ใน `backend/main.go` เปลี่ยน route เดิม `router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRSettingsHandler())` เป็น `testOCRConnectionHandler(settingsStore.Load, ocrConfig)` โดยคง `requireRole("ADMIN")`
-- ลบ `testOCRSettingsHandler` และ `summarizeOCRTest` ใน `settings.go` พร้อมเทสต์ของมัน (การลบจริงทำใน Task นี้ได้เลยเพราะ route ไม่ใช้แล้ว แต่ `runOCRWorker` และ `renderArgs` ยังอยู่จนถึง Task 11)
-
-- [ ] **Step 7: รันเทสต์ ต้อง PASS**
-
-```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go vet ./... && go test ./... -run 'OCRHealthURL|CheckOCRConnection|OCRConnectionHandler|MergeOCRSettings|OCRSettingsValidate|OCRSettingsRejects|GetOCRSettings' -v 2>&1 | tail -60
+```go
+	if s.APIURL != "" {
+		parsed, err := url.Parse(s.APIURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return fmt.Errorf("URL ของ OCR API ต้องขึ้นต้นด้วย http:// หรือ https:// และมีชื่อโฮสต์")
+		}
+	}
 ```
 
-- [ ] **Step 8: Commit**
+   - แทนที่ `mergeOCRSettings` ทั้งฟังก์ชันด้วย:
+
+```go
+// mergeOCRSettings overlays stored JSON on the defaults. A broken or invalid stored value must
+// never stop document processing, so it returns the defaults. The retired "one-ocr" engine maps to
+// the default engine, and an empty stored apiUrl falls back to the default (env OCR_API_URL).
+func mergeOCRSettings(defaults OCRSettings, stored string) (OCRSettings, error) {
+	merged := defaults
+	if strings.TrimSpace(stored) == "" {
+		return defaults, nil
+	}
+	if err := json.Unmarshal([]byte(stored), &merged); err != nil {
+		return defaults, fmt.Errorf("อ่านค่าตั้งค่า OCR: %w", err)
+	}
+	if merged.Engine == "one-ocr" {
+		merged.Engine = defaults.Engine
+	}
+	if strings.TrimSpace(merged.APIURL) == "" {
+		merged.APIURL = defaults.APIURL
+	}
+	if err := merged.Validate(); err != nil {
+		return defaults, err
+	}
+	return merged, nil
+}
+```
+
+   - แทนที่ `getOCRSettingsHandler` ด้วย:
+
+```go
+func getOCRSettingsHandler(store SettingsStore, cfg ocrAPIConfig) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"data": loadOCRSettingsOrDefault(store), "ocrApiKeyConfigured": cfg.APIKey != ""})
+	}
+}
+```
+
+   - ลบ `type ocrTestResult struct` (บรรทัดประมาณ 288), `func testOCRSettingsHandler()` และ `func summarizeOCRTest(...)` ทั้งฟังก์ชัน; คง `hostOnly` และ `runOCRWorker` ไว้ (Task 11 ลบ)
+
+3. `backend/main.go`:
+   - `router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore))` → `getOCRSettingsHandler(settingsStore, ocrConfig)`
+   - `router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRSettingsHandler())` → `router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore.LoadOCR, ocrConfig))`
+
+- [ ] **Step 5: รันเทสต์ ต้อง PASS**
 
 ```sh
-git add backend/settings.go backend/settings_test.go backend/ocr_connection.go backend/ocr_connection_test.go backend/main.go && git commit -m "Map legacy one-ocr settings and add OCR connection test
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go vet ./... && go test ./... -run 'OCRHealthURL|CheckOCRConnection|OCRConnectionHandler|MergeOCRSettings|OCRSettingsValidate|GetOCRSettings|UpdateOCRSettings|DefaultOCRSettings' -v 2>&1 | tail -60 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
+```
+
+คาดหวัง: เทสต์ของ Task นี้ PASS และการรันเต็มชุดเหลือเฉพาะ baseline ถ้า `go vet` ฟ้อง `settings_test.go` ที่ยังมี `summarizeOCRTest` หรือ `testOCRSettingsHandler` ให้ลบเทสต์นั้น
+
+- [ ] **Step 6: Commit**
+
+```sh
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/settings.go backend/settings_test.go backend/ocr_connection.go backend/ocr_connection_test.go backend/main.go && git commit -m "Map legacy one-ocr settings and add OCR connection test
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -2892,10 +3393,12 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - ผลิต: `var errDocumentNotFound = errors.New("document not found")`, `var errReprocessNotAllowed = errors.New("reprocess not allowed")`
 - ผลิต: `type reprocessStore interface { RequestReprocess(id uint, actor string, now time.Time) error }`
-- ผลิต: `type gormReprocessStore struct{ db *gorm.DB }` ที่ implement `reprocessStore`
+- ผลิต: `type gormReprocessStore struct{ db *gorm.DB }` implement `reprocessStore`
 - ผลิต: `func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.HandlerFunc`
+- ใช้: `currentUserID(c *gin.Context) string` ใน `auth.go` (ไม่ต้องสร้าง helper ชื่อผู้ใช้ใหม่)
+- ใช้ helper ของ Task 8: `performRequest`, `fakeRole` (อยู่ใน `ocr_connection_test.go`; ห้ามประกาศซ้ำ)
 
-- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/reprocess_test.go`**
+- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `backend/reprocess_test.go`** (ไฟล์ใหม่)
 
 ```go
 package main
@@ -2905,8 +3408,6 @@ import (
 	"net/http"
 	"testing"
 	"time"
-
-	"github.com/gin-gonic/gin"
 )
 
 type fakeReprocessStore struct {
@@ -2925,12 +3426,12 @@ func TestReprocessHandlerAcceptedEnqueuesDocument(t *testing.T) {
 	store := &fakeReprocessStore{}
 	var enqueued []uint
 	h := reprocessDocumentHandler(store, func(id uint) { enqueued = append(enqueued, id) })
-	rec := performRequestWithParam(t, h, "/api/v1/documents/:id/reprocess", "/api/v1/documents/12/reprocess", "12")
+	rec := performRequest(t, http.MethodPost, "/api/v1/documents/:id/reprocess", "/api/v1/documents/12/reprocess", nil, fakeRole("ADMIN"), h)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if len(enqueued) != 1 || enqueued[0] != 12 || store.calledID != 12 {
-		t.Fatalf("enqueued=%v store=%d", enqueued, store.calledID)
+	if len(enqueued) != 1 || enqueued[0] != 12 || store.calledID != 12 || store.actor != "tester" {
+		t.Fatalf("enqueued=%v store=%+v", enqueued, store)
 	}
 }
 
@@ -2950,7 +3451,7 @@ func TestReprocessHandlerStatusMapping(t *testing.T) {
 			h := reprocessDocumentHandler(&fakeReprocessStore{err: c.err}, func(uint) {
 				t.Fatal("must not enqueue on error")
 			})
-			rec := performRequestWithParam(t, h, "/api/v1/documents/:id/reprocess", "/api/v1/documents/3/reprocess", "3")
+			rec := performRequest(t, http.MethodPost, "/api/v1/documents/:id/reprocess", "/api/v1/documents/3/reprocess", nil, fakeRole("ADMIN"), h)
 			if rec.Code != c.want {
 				t.Fatalf("status = %d, want %d", rec.Code, c.want)
 			}
@@ -2960,32 +3461,37 @@ func TestReprocessHandlerStatusMapping(t *testing.T) {
 
 func TestReprocessHandlerRejectsBadID(t *testing.T) {
 	h := reprocessDocumentHandler(&fakeReprocessStore{}, func(uint) {})
-	rec := performRequestWithParam(t, h, "/api/v1/documents/:id/reprocess", "/api/v1/documents/abc/reprocess", "abc")
+	rec := performRequest(t, http.MethodPost, "/api/v1/documents/:id/reprocess", "/api/v1/documents/abc/reprocess", nil, fakeRole("ADMIN"), h)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 
-func TestReprocessRouteRejectsViewer(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	r := gin.New()
-	r.POST("/api/v1/documents/:id/reprocess", fakeRoleGuard("VIEWER", requireRole("ADMIN", "STAFF")), reprocessDocumentHandler(&fakeReprocessStore{}, func(uint) {}))
-	rec := performRequest(t, r, http.MethodPost, "/api/v1/documents/1/reprocess", nil)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("VIEWER status = %d, want 403", rec.Code)
+func TestReprocessRouteRejectsViewerAndAllowsStaff(t *testing.T) {
+	route := "/api/v1/documents/:id/reprocess"
+	handler := func() func(uint) { return func(uint) {} }
+	viewer := performRequest(t, http.MethodPost, route, "/api/v1/documents/1/reprocess", nil,
+		fakeRole("VIEWER"), requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(&fakeReprocessStore{}, handler()))
+	if viewer.Code != http.StatusForbidden {
+		t.Fatalf("VIEWER status = %d, want 403", viewer.Code)
+	}
+	staff := performRequest(t, http.MethodPost, route, "/api/v1/documents/1/reprocess", nil,
+		fakeRole("STAFF"), requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(&fakeReprocessStore{}, handler()))
+	if staff.Code != http.StatusAccepted {
+		t.Fatalf("STAFF status = %d, want 202", staff.Code)
 	}
 }
 ```
 
-หมายเหตุ: `performRequestWithParam(t, h, routePattern, requestPath, id)` และ `fakeRoleGuard(role, mw)` ให้เขียนในไฟล์เทสต์เองโดยดูวิธี `requireRole` เดิมใน `main.go`/middleware ว่าอ่าน role จาก context หรือ header อย่างไร และให้ `performRequest` จาก Task 8 ใช้ซ้ำ ถ้า `requireRole` ผูกกับ session จริง ให้เขียน fake ที่ set ค่าเดียวกันใน context
-
 - [ ] **Step 2: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run 'Reprocess' 2>&1 | tail -10
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'Reprocess' 2>&1 | tail -10
 ```
 
-- [ ] **Step 3: implement `backend/reprocess.go`**
+คาดหวัง: build fail ด้วย `undefined: reprocessDocumentHandler`, `errDocumentNotFound`, `errReprocessNotAllowed`
+
+- [ ] **Step 3: implement `backend/reprocess.go`** (ไฟล์ใหม่)
 
 ```go
 package main
@@ -3001,8 +3507,8 @@ import (
 )
 
 var (
-	errDocumentNotFound     = errors.New("document not found")
-	errReprocessNotAllowed  = errors.New("reprocess not allowed")
+	errDocumentNotFound    = errors.New("document not found")
+	errReprocessNotAllowed = errors.New("reprocess not allowed")
 )
 
 type reprocessStore interface {
@@ -3032,13 +3538,14 @@ func (s gormReprocessStore) RequestReprocess(id uint, actor string, now time.Tim
 			"ocr_error":             "",
 			"processing_started_at": nil,
 		}
-		for k, v := range retryResetUpdates() {
-			updates[k] = v
+		for key, value := range retryResetUpdates() {
+			updates[key] = value
 		}
 		if err := tx.Model(&Document{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
-		return tx.Create(&AuditLog{Action: "DOCUMENT_REPROCESS_REQUESTED", EntityType: "document", EntityID: id, Actor: actor, CreatedAt: now}).Error
+		docID := id
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: actor, Action: "DOCUMENT_REPROCESS_REQUESTED", CreatedAt: now}).Error
 	})
 }
 
@@ -3049,8 +3556,7 @@ func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.Hand
 			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
 			return
 		}
-		actor := currentUserName(c)
-		if err := store.RequestReprocess(uint(id), actor, time.Now()); err != nil {
+		if err := store.RequestReprocess(uint(id), currentUserID(c), time.Now()); err != nil {
 			switch {
 			case errors.Is(err, errDocumentNotFound):
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
@@ -3067,26 +3573,24 @@ func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.Hand
 }
 ```
 
-หมายเหตุ: `AuditLog` struct และฟิลด์ (`Action`, `EntityType`, `EntityID`, `Actor`, `CreatedAt`) และ `currentUserName(c)` ให้ตรวจชื่อจริงด้วย grep (ค้นการเรียก `AuditLog{` ในไฟล์ handler เดิม) แล้วใช้วิธีดึงชื่อผู้ใช้เดียวกับ `replaceDocumentFile` ถ้าชื่อฟังก์ชันต่างจาก `currentUserName` ให้แก้ให้ตรง ห้ามสร้าง helper ซ้ำ
-
-- [ ] **Step 4: เพิ่ม route ใน `backend/main.go`**
+- [ ] **Step 4: เพิ่ม route ใน `backend/main.go`** วางใกล้ `POST /api/v1/documents/:id/file`:
 
 ```go
-router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(gormReprocessStore{db: db}, processor.Enqueue))
+	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(gormReprocessStore{db: db}, processor.Enqueue))
 ```
-
-วางใกล้ route `POST /api/v1/documents/:id/file`
 
 - [ ] **Step 5: รันเทสต์ ต้อง PASS**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go vet ./... && go test ./... -run 'Reprocess' -v 2>&1 | tail -30
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go vet ./... && go test ./... -run 'Reprocess' -v 2>&1 | tail -30 && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)"
 ```
+
+คาดหวัง: เทสต์ของ Task นี้ PASS และการรันเต็มชุดเหลือเฉพาะ baseline `gormReprocessStore` ไม่มีเทสต์ unit (ไม่มี test DB) ความถูกต้องของ SQL ตรวจใน Task 12
 
 - [ ] **Step 6: Commit**
 
 ```sh
-git add backend/reprocess.go backend/reprocess_test.go backend/main.go && git commit -m "Add reprocess endpoint for failed and waiting documents
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/reprocess.go backend/reprocess_test.go backend/main.go && git commit -m "Add reprocess endpoint for failed and waiting documents
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -3096,40 +3600,38 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ## Task 10: หน้าเว็บ (frontend)
 
 **Files:**
-- Modify: `src/lib/api.ts` (type `Document` เพิ่ม `extractionAttempts`, `nextAttemptAt`; `OCRSettings` เพิ่ม `apiUrl`; เพิ่ม `testOCRConnection`, `reprocessDocument`; ลบ `testOCRSettings`, `OCRTestResult`)
 - Create: `src/lib/processing-status.ts`
 - Create: `src/lib/processing-status.test.ts`
-- Modify: `src/lib/member-review.ts` (`matchState` เพิ่ม case `EX_OFFICIO`, เพิ่ม `personLabel`)
-- Modify: `src/lib/member-review.test.ts` (เทสต์ EX_OFFICIO)
-- Modify: `src/app/settings/ocr/page.tsx` (เอนจินสองค่า, ซ่อนช่อง, การ์ดทดสอบการเชื่อมต่อ, คำเตือน https)
-- Modify: `src/components/document-workspace.tsx` (แสดงหมายเหตุ, ปุ่มประมวลผลใหม่)
-- Modify: `src/components/app-shell.tsx` หรือไฟล์รายการเอกสาร (ตามที่ใช้แสดง "กำลังคำนวณ") ให้ใช้ `confidenceLabel`
-- Modify: `src/app/page.tsx` (รายการเอกสาร) ถ้า confidence แสดงที่นี่
+- Modify: `src/lib/member-review.ts` (เพิ่ม `personLabel`, เพิ่มกรณี `EX_OFFICIO` ใน `matchState`)
+- Modify: `src/lib/member-review.test.ts` (**มีไฟล์อยู่แล้ว ต่อท้ายและแก้บรรทัด import เดิม ห้ามสร้างใหม่**)
+- Modify: `src/lib/api.ts` (`ApiDocument` เพิ่มสองฟิลด์; `OCRSettings` เพิ่ม `apiUrl`; เพิ่ม `OCRConnectionResult`, `testOCRConnection`, `reprocessDocument`; ลบ `OCRTestResult` และ `testOCRSettings`)
+- Modify: `src/app/settings/ocr/page.tsx` (เอนจินสองค่า, ซ่อนช่อง, การ์ดการเชื่อมต่อ, คำเตือน https; ลบการ์ดทดสอบด้วยไฟล์ตัวอย่างและ state ที่เกี่ยวข้อง)
+- Modify: `src/components/document-workspace.tsx` (แสดงหมายเหตุ, ปุ่มประมวลผลใหม่, ป้ายกรรมการโดยตำแหน่งในรายการ blocker)
+- Modify: `src/app/documents/page.tsx` (คอลัมน์ความมั่นใจใช้ `confidenceLabel` และแสดง `processingNote`)
 
 **Interfaces:**
-- ผลิต: `export function processingNote(doc: ProcessingDoc): string | null`
-- ผลิต: `export function canReprocess(doc: ProcessingDoc): boolean`
-- ผลิต: `export function confidenceLabel(doc: ProcessingDoc): string`
-- ผลิต: `export function personLabel(row: { fullName: string; position: string }): string`
-- ผลิต: `type ProcessingDoc = { status: string; processingStage?: string; extractionAttempts?: number; nextAttemptAt?: string | null; ocrError?: string; confidence: number }`
+- ผลิต (`processing-status.ts`): `type ProcessingDoc = { status: string; processingStage?: string; extractionAttempts?: number; nextAttemptAt?: string | null; ocrError?: string; confidence: number }`, `processingNote(doc: ProcessingDoc): string | null`, `canReprocess(doc: ProcessingDoc): boolean`, `confidenceLabel(doc: ProcessingDoc): string`, `isInsecureURL(url: string): boolean`
+- ผลิต (`member-review.ts`): `personLabel(row: { fullName: string; position: string }): string` (ไม่อยู่ใน `processing-status.ts`)
+- ผลิต (`api.ts`): `OCRConnectionResult`, `testOCRConnection(body: { engine?: string; apiUrl?: string })`, `reprocessDocument(id: number)`
+- ใช้ของเดิม: `apiFetch<T>(path, init)` ใน `api.ts` (ไม่มี helper ชื่อ `request`), `ApiDocument` (ไม่มี type ชื่อ `Document`), `useMe()` จาก `@/components/me-context`, `can(role, key)` จาก `@/lib/permissions`, สเกล `confidence` 0–1 (`document-workspace.tsx:314` ใช้ `× 100`)
 
-- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `src/lib/processing-status.test.ts`**
+- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลว `src/lib/processing-status.test.ts`** (ไฟล์ใหม่)
 
 ```ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canReprocess, confidenceLabel, processingNote } from "./processing-status.ts";
+import { canReprocess, confidenceLabel, isInsecureURL, processingNote } from "./processing-status.ts";
 
 const base = { status: "PROCESSING", confidence: 0 };
 
-test("RETRY_WAIT shows attempt count and Bangkok time", () => {
+test("RETRY_WAIT shows the upcoming attempt number and Bangkok time", () => {
   const note = processingNote({
     ...base,
     processingStage: "RETRY_WAIT",
-    extractionAttempts: 2,
+    extractionAttempts: 1,
     nextAttemptAt: "2026-10-11T02:30:00Z",
   });
-  assert.equal(note, "รอลองใหม่ ครั้งที่ 2/5 เวลา 09:30");
+  assert.equal(note, "รอลองใหม่ ครั้งที่ 2 เวลา 09:30");
 });
 
 test("FAILED shows failure note", () => {
@@ -3155,33 +3657,43 @@ test("processing documents show calculating label", () => {
   assert.equal(confidenceLabel({ status: "PROCESSING", processingStage: "EXTRACTING", confidence: 0 }), "กำลังคำนวณ");
 });
 
-test("known confidence is shown as percent", () => {
+test("known confidence is shown as percent (confidence is 0-1)", () => {
   assert.equal(confidenceLabel({ status: "REVIEW", processingStage: "EXTRACTED", confidence: 0.87 }), "87%");
+});
+
+test("http url is flagged as insecure", () => {
+  assert.equal(isInsecureURL("http://10.0.0.5:8000"), true);
+  assert.equal(isInsecureURL("https://ocr.example"), false);
+  assert.equal(isInsecureURL(""), false);
 });
 ```
 
-และเพิ่มใน `src/lib/member-review.test.ts`:
+- [ ] **Step 2: แก้ `src/lib/member-review.test.ts`** (ไฟล์มีอยู่แล้ว)
+
+- แก้บรรทัด import เดิม `import { countByFilter, filterMembers, groupByDepartment, matchState, rosterRows, summarizeDepartments } from "./member-review.ts";` ให้เพิ่ม `personLabel` ในวงเล็บเดียวกัน
+- ต่อท้ายไฟล์:
 
 ```ts
-import { personLabel } from "./member-review.ts";
-
 test("ex-officio row without name is labelled by position", () => {
   assert.equal(personLabel({ fullName: "", position: "เลขานุการ" }), "เลขานุการ (โดยตำแหน่ง)");
   assert.equal(personLabel({ fullName: "สมชาย", position: "ผอ." }), "สมชาย");
 });
+
+test("ex-officio row waits for a reviewer to choose the person", () => {
+  const row = appointment({ id: 6, fullName: "", position: "เลขานุการ", nameMatchMethod: "EX_OFFICIO" });
+  assert.equal(matchState(row).label, "รอผู้ตรวจเลือกบุคคล");
+});
 ```
 
-หมายเหตุ: ตรวจว่า `member-review.test.ts` มี `import { test } from "node:test"` และ `assert` อยู่แล้วหรือไม่ก่อนเพิ่ม และ `confidence` ที่เป็น 0.87 ตามสเกลที่หน้าเว็บใช้จริง (ตรวจด้วย grep `confidence` ใน `document-workspace.tsx` และ `src/app/page.tsx`) ถ้าหน้าเดิมใช้สเกล 0–100 ให้แก้เทสต์ตามนั้น
-
-- [ ] **Step 2: รันเทสต์ ต้อง FAIL**
+- [ ] **Step 3: รันเทสต์ ต้อง FAIL**
 
 ```sh
-cd /Users/kit/kku/kku-order && npm test 2>&1 | tail -20
+cd /Users/kit/kku/kku-order-thaidoc && npm test 2>&1 | tail -20
 ```
 
-คาดหวัง: FAIL เพราะไฟล์ `processing-status.ts` ยังไม่มี
+คาดหวัง: FAIL เพราะ `processing-status.ts` และ `personLabel` ยังไม่มี
 
-- [ ] **Step 3: เขียน `src/lib/processing-status.ts`**
+- [ ] **Step 4: implement `src/lib/processing-status.ts`** (ไฟล์ใหม่)
 
 ```ts
 export type ProcessingDoc = {
@@ -3200,11 +3712,12 @@ const timeFormat = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Bangkok",
 });
 
+// n คือครั้งที่จะลองถัดไป (spec: "รอลองใหม่ ครั้งที่ n เวลา hh:mm") จึงบวก 1 จากจำนวนครั้งที่เริ่มแล้ว
 export function processingNote(doc: ProcessingDoc): string | null {
   if (doc.processingStage === "RETRY_WAIT") {
-    const attempts = doc.extractionAttempts ?? 0;
+    const upcoming = (doc.extractionAttempts ?? 0) + 1;
     const when = doc.nextAttemptAt ? timeFormat.format(new Date(doc.nextAttemptAt)) : "-";
-    return `รอลองใหม่ ครั้งที่ ${attempts}/5 เวลา ${when}`;
+    return `รอลองใหม่ ครั้งที่ ${upcoming} เวลา ${when}`;
   }
   if (doc.processingStage === "FAILED") {
     return "ประมวลผลไม่สำเร็จ";
@@ -3216,14 +3729,21 @@ export function canReprocess(doc: ProcessingDoc): boolean {
   return doc.processingStage === "FAILED" || doc.processingStage === "RETRY_WAIT";
 }
 
+// confidence 0 เมื่อยังประมวลผลอยู่ = กำลังคำนวณ; 0 เมื่อประมวลผลเสร็จแล้ว = ไม่ระบุ (ไม่ค้างที่ "กำลังคำนวณ")
 export function confidenceLabel(doc: ProcessingDoc): string {
   if (doc.status === "PROCESSING") return "กำลังคำนวณ";
   if (doc.confidence === 0) return "ไม่ระบุ";
   return `${Math.round(doc.confidence * 100)}%`;
 }
+
+export function isInsecureURL(url: string): boolean {
+  return url.trim().toLowerCase().startsWith("http://");
+}
 ```
 
-- [ ] **Step 4: เพิ่ม `personLabel` และ EX_OFFICIO ใน `src/lib/member-review.ts`**
+- [ ] **Step 5: `src/lib/member-review.ts`**
+
+- เพิ่มฟังก์ชัน:
 
 ```ts
 export function personLabel(row: { fullName: string; position: string }): string {
@@ -3231,72 +3751,71 @@ export function personLabel(row: { fullName: string; position: string }): string
 }
 ```
 
-และใน `matchState` เพิ่ม case `"EX_OFFICIO"` ที่คืนสถานะ "รอผู้ตรวจเลือกบุคคล" (ข้อความไทย) โดยไม่ตัดสินว่าจับคู่ได้เอง ดูโครงสร้าง switch เดิมก่อนแก้
+- ใน `matchState` ภายในบล็อก `if (!isLinked(row)) {` ก่อนบรรทัด fallback `return { label: "ไม่พบในระบบ"...}` ให้เพิ่ม:
 
-- [ ] **Step 5: รันเทสต์ ต้อง PASS**
-
-```sh
-cd /Users/kit/kku/kku-order && npm test 2>&1 | tail -30
+```ts
+    if (method === "EX_OFFICIO") return { label: "รอผู้ตรวจเลือกบุคคล", detail: "กรรมการโดยตำแหน่งที่ไม่มีชื่อ ต้องให้ผู้ตรวจเลือกบุคคล", tone: "warning" };
 ```
 
-- [ ] **Step 6: แก้ `src/lib/api.ts`**
+รัน `npm test` ต้อง PASS
 
-- `Document`: เพิ่ม `extractionAttempts?: number; nextAttemptAt?: string | null; processingStage?: string`
-- `OCRSettings`: เพิ่ม `apiUrl: string` และลบ field ของ one-ocr ที่ไม่ใช้แล้ว (เช่น language/dpi ใช้ได้ต่อ ไม่ลบ field ใน type ถ้ายังส่งกลับจาก API)
-- เพิ่ม:
+- [ ] **Step 6: `src/lib/api.ts`**
+
+- ใน `export type ApiDocument = {` เพิ่ม `extractionAttempts?: number; nextAttemptAt?: string | null;` (มี `processingStage`, `ocrError`, `confidence` อยู่แล้ว)
+- ใน `export type OCRSettings = {` เพิ่ม `apiUrl: string;`
+- `getOCRSettings` ให้มี type ตอบเป็น `apiFetch<{ data: OCRSettings; ocrApiKeyConfigured: boolean }>("/api/v1/settings/ocr")`
+- ลบ `export type OCRTestResult = ...` (บรรทัด ~365) และ `export async function testOCRSettings(file: File, settings: OCRSettings)` ทั้งฟังก์ชัน
+- เพิ่ม (รูปแบบเดียวกับ `updateOCRSettings`):
 
 ```ts
 export type OCRConnectionResult = { status: "ok" | "unauthorized" | "unreachable"; detail: string };
 
-export function testOCRConnection(body: { engine?: string; apiUrl?: string }) {
-  return request<OCRConnectionResult>("/api/v1/settings/ocr/test", { method: "POST", body: JSON.stringify(body) });
+export async function testOCRConnection(body: { engine?: string; apiUrl?: string }) {
+  return apiFetch<OCRConnectionResult>("/api/v1/settings/ocr/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
-export function reprocessDocument(id: number) {
-  return request<{ id: number; processingStage: string }>(`/api/v1/documents/${id}/reprocess`, { method: "POST" });
+export async function reprocessDocument(id: number) {
+  return apiFetch<{ id: number; processingStage: string }>(`/api/v1/documents/${id}/reprocess`, { method: "POST" });
 }
 ```
 
-- ลบ `testOCRSettings` และ `OCRTestResult` พร้อม import ที่ใช้ที่อื่นในหน้า settings (ค้นด้วย `grep -rn "testOCRSettings\|OCRTestResult" src`)
+- [ ] **Step 7: `src/app/settings/ocr/page.tsx`**
 
-หมายเหตุ: ชื่อฟังก์ชัน `request` ให้ตรงกับ helper ที่ไฟล์ใช้อยู่จริง
+- บรรทัด import `import { OCRSettings, OCRTestResult, getOCRSettings, getSystemSettings, testOCRSettings, updateOCRSettings } from "@/lib/api";` ให้เหลือ `import { OCRSettings, getOCRSettings, getSystemSettings, testOCRConnection, updateOCRSettings } from "@/lib/api";` และเพิ่ม `import { isInsecureURL } from "@/lib/processing-status";`
+- รายการเอนจิน: แทน `one-ocr` ด้วย `thaidoc` (ป้าย "thaidoc-extract") และ `docflow-contract` (ป้าย "DocFlow contract") ลบ one-ocr ออก
+- ซ่อนแถวภาษา, DPI, ขนาดภาพสูงสุด, preprocess (ไม่ลบ field ใน state หรือ payload ที่ส่ง `updateOCRSettings`)
+- คง input `reviewThreshold`
+- ลบการ์ด "ทดสอบด้วยไฟล์ตัวอย่าง" และ state `sample`, `result` ที่เกี่ยวข้อง
+- เพิ่มการ์ด "การเชื่อมต่อ OCR API": input `apiUrl` (ผูกกับ state `form.apiUrl`), แถว "API key: ตั้งค่าแล้ว/ยังไม่ได้ตั้งค่า" จาก `ocrApiKeyConfigured`, คำเตือนสีเหลืองเมื่อ `isInsecureURL(form.apiUrl)` (ข้อความ: "การเชื่อมต่อไม่ได้เข้ารหัส แนะนำให้ใช้ https://"), ปุ่ม "ทดสอบการเชื่อมต่อ" ที่เรียก `testOCRConnection({ engine: form.engine, apiUrl: form.apiUrl })` และแสดง `detail` พร้อมไอคอนตาม `status`
+- ตรวจ `getOCRSettings` ที่ใช้ใน page ให้เก็บ `ocrApiKeyConfigured` ลง state
 
-- [ ] **Step 7: แก้หน้า settings `src/app/settings/ocr/page.tsx`**
+- [ ] **Step 8: `src/components/document-workspace.tsx`**
 
-- ตัวเลือกเอนจิน: `thaidoc` (ป้าย "thaidoc-extract") และ `docflow-contract` (ป้าย "DocFlow contract") ไม่มี one-ocr
-- ซ่อนแถวภาษา, DPI, ขนาดภาพสูงสุด, preprocess (ไม่ลบ field ใน state หรือ payload)
-- คง input ค่า `reviewThreshold`
-- แทนการ์ด "ทดสอบด้วยไฟล์ตัวอย่าง" ด้วยการ์ด "การเชื่อมต่อ OCR API": input `apiUrl`, แถว "API key: ตั้งค่าแล้ว/ยังไม่ได้ตั้งค่า" จาก `ocrApiKeyConfigured`, คำเตือนสีเหลืองเมื่อ URL ขึ้นต้นด้วย `http://` (ข้อความ: "การเชื่อมต่อไม่ได้เข้ารหัส แนะนำให้ใช้ https://"), ปุ่ม "ทดสอบการเชื่อมต่อ" ที่เรียก `testOCRConnection({ engine, apiUrl })` และแสดงผล `detail` พร้อมไอคอนตามสถานะ
-
-ไม่ต้องมีเทสต์แยกสำหรับหน้านี้ แต่ตรรกะคำเตือน https ให้แยกเป็นฟังก์ชัน `isInsecureURL(url: string): boolean` ใน `src/lib/processing-status.ts` และเพิ่มเทสต์ก่อนเขียน:
-
-```ts
-test("http url is flagged as insecure", () => {
-  assert.equal(isInsecureURL("http://10.0.0.5:8000"), true);
-  assert.equal(isInsecureURL("https://ocr.example"), false);
-  assert.equal(isInsecureURL(""), false);
-});
-```
-
-- [ ] **Step 8: แก้ `src/components/document-workspace.tsx` และรายการเอกสาร**
-
+- เพิ่ม import: `import { useMe } from "@/components/me-context";`, `import { can } from "@/lib/permissions";`, `import { canReprocess, processingNote } from "@/lib/processing-status";`, `import { reprocessDocument } from "@/lib/api";` (รวมกับ import จาก `@/lib/api` เดิม) และ `personLabel` จาก `@/lib/member-review` (รวมกับ import เดิม)
 - แสดง `processingNote(doc)` และ `doc.ocrError` ใต้หัวเอกสาร
-- ปุ่ม "ประมวลผลใหม่" แสดงเมื่อ `can(role, "import") && canReprocess(doc)`; role ได้จาก `useMe()` (ตรวจชื่อ hook จริงในโค้ดเดิม); เมื่อกดให้เรียก `reprocessDocument(doc.id)` แล้วโหลดเอกสารใหม่ด้วยวิธีเดียวกับ flow อัปโหลดทับไฟล์เดิม
-- ในรายการเอกสาร: แทนการแสดง confidence เดิมด้วย `confidenceLabel(doc)` และแสดง `processingNote(doc)` เป็นข้อความรอง
-- ในรายการ blocker/สมาชิก: ใช้ `personLabel(row)` แทนการแสดง FullName ตรง ๆ
+- ปุ่ม "ประมวลผลใหม่" แสดงเมื่อ `can(role, "import") && canReprocess(doc)` โดย `role` มาจาก `useMe()` (ดูการใช้งานที่ `src/app/settings/ocr/page.tsx`) เมื่อกดให้เรียก `reprocessDocument(doc.id)` แล้วโหลดเอกสารใหม่ด้วยวิธีเดียวกับ flow อัปโหลดทับไฟล์เดิม (`replaceDocumentFile`)
+- รายการ blocker ที่แสดงชื่อ ให้ใช้ `personLabel(row)` แทน `fullName` ตรง ๆ (ค้นด้วย `grep -n "fullName" src/components/document-workspace.tsx` แล้วเลือกจุดที่เป็นรายการ blocker)
 
-- [ ] **Step 9: รันเทสต์และ typecheck**
+- [ ] **Step 9: `src/app/documents/page.tsx`**
+
+- ค้น `กำลังคำนวณ` (พบที่บรรทัดตาราง ~43) แล้วแทนการแสดงความมั่นใจด้วย `confidenceLabel(doc)` และแสดง `processingNote(doc)` เป็นข้อความรองใต้สถานะ
+
+- [ ] **Step 10: รันเทสต์และ typecheck ต้อง PASS**
 
 ```sh
-cd /Users/kit/kku/kku-order && npm test 2>&1 | tail -30 && npx tsc --noEmit 2>&1 | tail -20 && npm run lint 2>&1 | tail -15
+cd /Users/kit/kku/kku-order-thaidoc && npm test 2>&1 | tail -30 && npx tsc --noEmit 2>&1 | tail -20 && npm run lint 2>&1 | tail -15
 ```
 
-คาดหวัง: เทสต์ PASS, tsc ไม่มี error, lint ไม่มี error ใหม่
+คาดหวัง: เทสต์ PASS, `tsc` ไม่มี error, lint ไม่มี error ใหม่
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```sh
-git add src/lib src/app src/components && git commit -m "Show retry state, reprocess button and OCR connection test in the UI
+cd /Users/kit/kku/kku-order-thaidoc && git add src/lib/processing-status.ts src/lib/processing-status.test.ts src/lib/member-review.ts src/lib/member-review.test.ts src/lib/api.ts src/app/settings/ocr/page.tsx src/components/document-workspace.tsx src/app/documents/page.tsx && git commit -m "Show retry state, reprocess button and OCR connection test in the UI
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -3306,86 +3825,70 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ## Task 11: ถอด one-ocr ออกจากเส้นทาง PDF
 
 **Files:**
-- Modify: `backend/document_processing.go` (ลบ `runOCRWorker` ที่ใช้ one-ocr สำหรับ PDF, `extractCommandMetadata*`, `groupOCRRows`, `parseAppointmentRow`, `fixedSampleProfile*` และฟังก์ชันที่ใช้เฉพาะเส้นทางนี้; คง `parseThaiDate`, `inferOrderType`, `findOrderYear`; ย้าย `parseThaiDate` ไปไฟล์ที่ไม่ถูกลบถ้าต้องการ)
-- Modify: `backend/settings.go` (ลบ `renderArgs`, `workerArgs`, `runOCRWorker`, ค่าที่เกี่ยวกับ one-ocr)
-- Modify: `backend/sync.go` หรือไฟล์ที่มี `fixedSampleProfile` (ตรวจด้วย grep)
-- Modify: `backend/sync_test.go` (ลบ `TestExtractAppointmentsJoinsFixedSampleRowColumns`, `TestFixedSampleProfileKeepsOnlyTableRegion`)
+- Modify: `backend/document_processing.go` (รวม `extractCommandMetadataWithProfile` เป็น `extractCommandMetadata(pages, fullText)` ที่ไม่มี profile; ลบ `extractCommandMetadataForDocument`, `fixedSampleProfile`, `fixedSampleProfileFor`, `fixedSampleRows`; ลบฟังก์ชันที่เหลือไม่มีผู้เรียกหลังแก้)
+- Modify: `backend/directory_matching.go` (ลบ `applyDirectoryMatches` เพราะไม่มีผู้เรียกหลัง Task 7)
+- Modify: `backend/settings.go` (ลบ `preprocessMode`, `renderArgs`, `workerArgs`, `runOCRWorker`)
 - Modify: `backend/settings_test.go` (ลบ `TestOCRSettingsBuildWorkerArguments`)
-- Modify: `backend/ocr_worker.py` (import `oneocr` และ PIL เฉพาะตอน OCR ภาพ)
-- Modify: `backend/Dockerfile` (ลบ `COPY one-ocr`, `pip install -e /app/one-ocr`, `OCR_MODELS_DIR`)
+- Modify: `backend/sync_test.go` (ลบ `TestExtractAppointmentsJoinsFixedSampleRowColumns`, `TestFixedSampleProfileKeepsOnlyTableRegion`)
+- Modify: `backend/ocr_worker.py` (ย้าย `import oneocr` และ PIL ไปเฉพาะตอน OCR ภาพ)
+- Modify: `backend/Dockerfile` (ลบ `one-ocr` และ `OCR_MODELS_DIR`)
 - Modify: `backend/.dockerignore` (เพิ่ม `one-ocr`)
 
 **Interfaces:**
-- ไม่มี interface ใหม่ ผลคือ `runStructuredImport` (DOCX/XLSX/CSV) ใช้ `extractCommandMetadata(pages, fullText)` แบบไม่มี profile และตั้ง `ocr_provider = "structured-import"`
+- ไม่มี interface ใหม่ `runStructuredImport` (method ของ `DocumentProcessor`) ไม่ต้องแก้: การแปลงผล DOCX/XLSX/CSV ทำใน `structuredExtraction` (Task 7) ซึ่งเรียก `extractCommandMetadata(pages, fullText)` แบบไม่มี profile
+- ผลลัพธ์พฤติกรรม: `extractCommandMetadata` ที่ไม่มี profile ใช้เส้นทาง `groupOCRRows` เดิม (เหมือนที่ไฟล์ที่ไม่ใช่ตัวอย่างใช้อยู่แล้ว)
 
-- [ ] **Step 1: เขียนเทสต์ที่ล้มเหลวสำหรับ structured import**
+- [ ] **Step 1: เทสต์พฤติกรรมเดิมเป็นตัวกันถอย (regression guard) ต้อง PASS ก่อนลบ**
 
-ใน `backend/document_processing_test.go` (สร้างถ้ายังไม่มี) เพิ่ม:
-
-```go
-package main
-
-import "testing"
-
-func TestStructuredImportSetsProviderWithoutOneOCR(t *testing.T) {
-	result := workerResult{Pages: []workerPage{{PageNo: 1, FullText: "คำสั่งแต่งตั้ง"}}}
-	provider := structuredImportProvider()
-	if provider != "structured-import" {
-		t.Fatalf("provider = %q", provider)
-	}
-	md := extractCommandMetadata(result.Pages, result.Pages[0].FullText)
-	_ = md
-}
-```
-
-หมายเหตุ: ปรับเทสต์ให้ทดสอบพฤติกรรมจริงของ `runStructuredImport` เมื่อเปลี่ยนเสร็จ ค่าคงที่ `structuredImportProvider()` ให้เพิ่มเป็นฟังก์ชันคืนสตริง `"structured-import"` ในไฟล์ที่ `runStructuredImport` อยู่
-
-- [ ] **Step 2: รันเทสต์ ต้อง FAIL**
+ไม่มีเทสต์ใหม่ เพราะเป็นงานลบโค้ดที่พฤติกรรมไม่ควรเปลี่ยน ใช้เทสต์เดิมที่ assert พฤติกรรมจริง ได้แก่ `TestExtractCommandMetadataFromThaiOCR`, `TestExtractCommandMetadataNormalizesThaiDigits`, `TestExtractAppointmentsRebuildsTableRowsWithoutPhantomRoles` (ใน `sync_test.go`) และ `TestStructuredExtractionTagsEngineAndKeepsPageSizes` จาก Task 7
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && go test ./... -run StructuredImport 2>&1 | tail -10
+cd /Users/kit/kku/kku-order-thaidoc/backend && go test ./... -run 'ExtractCommandMetadata|ExtractAppointments|StructuredExtraction' -v 2>&1 | grep -E "^(--- |ok|FAIL)"
 ```
 
-- [ ] **Step 3: ลบโค้ดและเทสต์ตามรายการ**
+คาดหวัง: ทุกเทสต์ที่ระบุ PASS ก่อนเริ่มลบ และต้อง PASS อีกครั้งหลังลบใน Step 4
 
-ตรวจการเรียกก่อนลบด้วย:
+- [ ] **Step 2: หาผู้เรียกก่อนลบ**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && grep -rn "runOCRWorker\|renderArgs\|workerArgs\|fixedSampleProfile\|groupOCRRows\|parseAppointmentRow\|extractCommandMetadataWithProfile\|extractAppointments" --include=*.go .
+cd /Users/kit/kku/kku-order-thaidoc/backend && grep -rn --include='*.go' -e 'runOCRWorker' -e 'renderArgs' -e 'workerArgs' -e 'preprocessMode' -e 'fixedSampleProfile' -e 'fixedSampleRows' -e 'extractCommandMetadataForDocument' -e 'extractCommandMetadataWithProfile' -e 'applyDirectoryMatches' -e 'groupOCRRows' -e 'parseAppointmentRow' .
 ```
 
-- ลบฟังก์ชันและ type ที่เฉพาะเส้นทาง one-ocr (ตามรายการใน Files)
-- ใน `runStructuredImport` (DOCX/XLSX/CSV) เรียก `extractCommandMetadataForDocument(pages, fullText, filename)` โดยไม่ส่ง profile และตั้ง `OCRProvider = structuredImportProvider()`
-- ลบเทสต์ `TestExtractAppointmentsJoinsFixedSampleRowColumns`, `TestFixedSampleProfileKeepsOnlyTableRegion`, `TestOCRSettingsBuildWorkerArguments`
+คาดหวัง: `groupOCRRows` และ `parseAppointmentRow` ยังมีผู้เรียกจาก `extractCommandMetadata` จึง**ไม่ลบ** (ข้อแก้ไขจากรายการเดิมของ spec-แผน); `runOCRWorker` เรียกจาก `settings.go` และ `testOCRSettingsHandler` (ลบแล้วใน Task 8) เท่านั้น
 
-- [ ] **Step 4: แก้ `backend/ocr_worker.py`**
+- [ ] **Step 3: ลบและแก้โค้ด**
 
-ย้าย `import oneocr` และ `from PIL import ...` ไปไว้ในฟังก์ชันที่ทำ OCR ภาพเท่านั้น เพื่อให้ `--input-file` สำหรับ DOCX/XLSX/CSV ทำงานได้โดยไม่มี one-ocr และ PIL
+1. `backend/document_processing.go`:
+   - ลบ `func extractCommandMetadataForDocument(...)` ทั้งฟังก์ชัน, `type fixedSampleProfile struct {...}`, `func fixedSampleProfileFor(...)` ทั้งฟังก์ชัน และ `func fixedSampleRows(...)` ทั้งฟังก์ชัน
+   - ลบฟังก์ชัน wrapper `func extractCommandMetadata(pages []workerPage, fullText string) commandMetadata { return extractCommandMetadataWithProfile(pages, fullText, nil) }`
+   - เปลี่ยนชื่อ `extractCommandMetadataWithProfile(pages []workerPage, fullText string, profile *fixedSampleProfile) commandMetadata` เป็น `extractCommandMetadata(pages []workerPage, fullText string) commandMetadata`
+   - ในลูปที่เดิมเรียก `for _, row := range fixedSampleRows(page, profile) {` ให้เปลี่ยนเป็น `for _, row := range groupOCRRows(page) {`
+   - หลังแก้ ให้ค้นฟังก์ชันที่ไม่มีผู้เรียกแล้ว (`grep -n` ชื่อนั้นทั้ง `backend`) และลบเฉพาะที่ไม่มีผู้เรียกเลย (คอมไพเลอร์ไม่แจ้งฟังก์ชันที่ไม่ได้ใช้ จึงต้องตรวจเอง)
+2. `backend/directory_matching.go`: ลบ `func (p *DocumentProcessor) applyDirectoryMatches(...)` ทั้งฟังก์ชัน (คง `matchAppointments` และ `applyMatchToAppointment`)
+3. `backend/settings.go`: ลบ `func (s OCRSettings) preprocessMode() string`, `func (s OCRSettings) renderArgs() []string`, `func (s OCRSettings) workerArgs(...)`, `func runOCRWorker(...)` ทั้งหมด ลบ import ที่ไม่ได้ใช้ (`go vet` จะแจ้ง) ค่าฟิลด์ `Preprocess`, `DPI`, `MaxSide`, `Language` ใน `OCRSettings` คงไว้เพื่อให้ JSON เดิมอ่านได้
+4. `backend/settings_test.go`: ลบ `func TestOCRSettingsBuildWorkerArguments(t *testing.T)` ทั้งฟังก์ชัน
+5. `backend/sync_test.go`: ลบ `func TestExtractAppointmentsJoinsFixedSampleRowColumns` และ `func TestFixedSampleProfileKeepsOnlyTableRegion` ทั้งสองฟังก์ชัน (ท้ายไฟล์)
+6. `backend/ocr_worker.py`: ย้าย `import oneocr` และ `from PIL import ...` ที่อยู่ระดับ module ไปไว้ในฟังก์ชันที่ทำ OCR ภาพเท่านั้น เพื่อให้ `--input-file` สำหรับ DOCX/XLSX/CSV รันได้โดยไม่มี one-ocr หรือ PIL
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && python3 -I -c "import ast,sys; ast.parse(open('ocr_worker.py').read()); print('syntax ok')" && grep -n "^import oneocr\|^from oneocr\|^from PIL\|^import PIL" ocr_worker.py
+cd /Users/kit/kku/kku-order-thaidoc/backend && grep -n "^import \|^from " ocr_worker.py
 ```
 
-คาดหวัง: `syntax ok` และไม่มีบรรทัด import ระดับ module ของ oneocr/PIL
+7. `backend/Dockerfile`: ลบบรรทัด `COPY one-ocr /app/one-ocr`, `pip install ... -e /app/one-ocr` และ ENV `OCR_MODELS_DIR`; ปรับ `RUN` ให้เหลือ `mkdir -p /app/storage && chown -R app:app /app`
+8. `backend/.dockerignore`: เพิ่มบรรทัด `one-ocr` (ไม่ลบโฟลเดอร์ `backend/one-ocr` ออกจากดิสก์)
 
-- [ ] **Step 5: แก้ `backend/Dockerfile` และ `backend/.dockerignore`**
-
-- ลบบรรทัด `COPY one-ocr /app/one-ocr`, `RUN pip install ... -e /app/one-ocr`, ENV `OCR_MODELS_DIR`
-- ปรับ `RUN` ให้เหลือ `mkdir -p /app/storage && chown -R app:app /app`
-- เพิ่ม `one-ocr` ใน `backend/.dockerignore` (ไม่ลบโฟลเดอร์ `backend/one-ocr`)
-
-- [ ] **Step 6: รันเทสต์ ต้อง PASS**
+- [ ] **Step 4: ตรวจ ต้องผ่าน**
 
 ```sh
-cd /Users/kit/kku/kku-order/backend && gofmt -l . ; go vet ./... && go test ./... -v 2>&1 | grep -E "^(--- FAIL|FAIL|ok|PASS)" | head -30
+cd /Users/kit/kku/kku-order-thaidoc/backend && gofmt -l . ; go vet ./... && go test ./... -run 'ExtractCommandMetadata|ExtractAppointments|StructuredExtraction' -v 2>&1 | grep -E "^(--- |ok|FAIL)" && go test ./... 2>&1 | grep -E "^(--- FAIL|FAIL|ok)" && python3 -I -c "import ast; ast.parse(open('ocr_worker.py').read()); print('syntax ok')"
 ```
 
-คาดหวัง: ไม่มี FAIL ใหม่ มีแค่ baseline `TestNewManualDirectoryUserStoresValidJSONPayload` ที่ล้มอยู่แล้ว
+คาดหวัง: ทุกเทสต์ที่ระบุ PASS, การรันเต็มชุดเหลือเฉพาะ baseline `TestNewManualDirectoryUserStoresValidJSONPayload`, `syntax ok`
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 5: Commit**
 
 ```sh
-git add backend && git commit -m "Remove one-ocr PDF path and heuristics; keep structured import
+cd /Users/kit/kku/kku-order-thaidoc && git add backend/document_processing.go backend/directory_matching.go backend/settings.go backend/settings_test.go backend/sync_test.go backend/ocr_worker.py backend/Dockerfile backend/.dockerignore && git commit -m "Remove one-ocr PDF path and heuristics; keep structured import
 
 Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 ```
@@ -3439,7 +3942,7 @@ networks:
 - [ ] **Step 3: ตรวจไฟล์ compose**
 
 ```sh
-cd /Users/kit/kku/kku-order && docker compose -f docker-compose.yml -f docker-compose.ocr-net.yml config >/dev/null; echo "exit=$?"
+cd /Users/kit/kku/kku-order-thaidoc && docker compose -f docker-compose.yml -f docker-compose.ocr-net.yml config >/dev/null; echo "exit=$?"
 ```
 
 คาดหวัง: exit 0 (ถ้า network `docflow-ocr` ยังไม่มีบนเครื่องนี้ ให้ใช้ `config` ที่ไม่ตรวจการมีอยู่จริง และบันทึกไว้)
@@ -3455,7 +3958,7 @@ Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>"
 - [ ] **Step 5: ส่งโค้ดขึ้น VM (remote/manual)**
 
 ```sh
-cd /Users/kit/kku/kku-order && git archive HEAD | ssh project@10.198.200.62 'mkdir -p ~/docflow/kku-order && tar -x -C ~/docflow/kku-order'
+cd /Users/kit/kku/kku-order-thaidoc && git archive HEAD | ssh project@10.198.200.62 'mkdir -p ~/docflow/kku-order && tar -x -C ~/docflow/kku-order'
 ```
 
 - [ ] **Step 6: ตั้งค่า `.env` บน VM (remote/manual)**
@@ -3489,7 +3992,7 @@ ssh project@10.198.200.62 'cd ~/docflow/kku-order && docker compose logs api | g
 1. เปิดหน้า settings OCR ด้วย ADMIN แล้วกด "ทดสอบการเชื่อมต่อ" คาดหวัง `ok` และคำเตือน "ไม่ได้เข้ารหัส" เพราะ URL เป็น http
 2. อัปโหลด `~/kku-order-ocr/docs-samples/kku.pdf` คาดหวังสถานะ `QUEUED` → `EXTRACTING` → `NEEDS_REVIEW` และมีแถว appointment
 3. ตรวจ DB ว่า `extraction_attempts = 1` และ `ocr_provider = thaidoc`
-4. หยุด proxy ด้วย `ssh project@10.198.200.62 'cd ~/docflow/ocr && docker compose stop proxy'` อัปโหลดไฟล์ใหม่ คาดหวัง `RETRY_WAIT` พร้อมข้อความ "รอลองใหม่ ครั้งที่ 1/5"
+4. หยุด proxy ด้วย `ssh project@10.198.200.62 'cd ~/docflow/ocr && docker compose stop proxy'` อัปโหลดไฟล์ใหม่ คาดหวัง `RETRY_WAIT` พร้อมข้อความ "รอลองใหม่ ครั้งที่ 2 เวลา hh:mm" (ครั้งที่ 1 ล้มเหลวแล้ว จึงแสดงครั้งถัดไป)
 5. เปิด proxy กลับ แล้วกด "ประมวลผลใหม่" คาดหวังไปถึง `NEEDS_REVIEW`
 6. บันทึกผลในรายงาน: เวลาประมวลผลจริง, ผลการตรวจ, และสิ่งที่ผิดปกติ
 
@@ -3512,13 +4015,17 @@ ssh project@10.198.200.62 'cd ~/docflow/kku-order && docker compose logs api | g
 
 **ความสอดคล้องของชื่อ:** `ExtractionResult`, `ExtractError`, `Extractor`, `httpExtractor`, `failurePlan`, `planExtractionFailure`, `retryResetUpdates`, `extractionJobs`, `markExtractionFailed`, `processingNote`, `canReprocess`, `confidenceLabel`, `personLabel` ใช้ชื่อเดียวกันทุก Task ที่อ้างถึง
 
-**สิ่งที่ยังต้องยืนยันขณะทำงาน (ไม่ใช่ placeholder แต่เป็นจุดที่แผนพึ่งการตรวจโค้ดจริง):** ชื่อ field ของ `ExtractedField`, `Appointment`, `OCRPage`, `OCRLine`; ชื่อ `AuditLog` และ helper ชื่อผู้ใช้; ชื่อ hook `useMe`; สเกล `confidence` ในหน้าเว็บ; ชื่อฟังก์ชันนับหน้า PDF ที่ Task 4 Step 1 ต้องค้นหา ทุกจุดให้ตรวจด้วย grep ก่อนเขียนโค้ดและปรับให้ตรง
+**ยืนยันกับโค้ดจริงแล้ว (รอบแก้ไข 2026-10-11):** ชื่อ field ของ `ExtractedField` (`FieldKey`, `FieldLabel`), `Appointment`, `OCRPage`, `OCRLine` (`OCRPageID`), `AuditLog` (`DocumentID *uint`, `UserID`), `DocumentReference`; `currentUserID`; `ApiDocument`, `apiFetch`, `useMe`, `can`; สเกล `confidence` 0–1; `detectPDFPageCount` ใช้เป็น `pageCounter`; `truncateRunes` (ใช้ของเดิม). ยังต้องตรวจตอนลงมือ: ชื่อคอลัมน์ `extraction_*` (ตรวจด้วย DB จริงใน Task 12 เพราะไม่มี test DB) และ import ที่ไม่ได้ใช้ใน `document_processing.go` หลังลบ (`go vet`)
 
 **Placeholder scan:** ไม่มี "TBD" หรือ "เพิ่ม error handling" ทั่วไป ทุก Task มี test ที่เขียนจริงสำหรับ logic ที่มีเงื่อนไข; งานที่ทดสอบไม่ได้ด้วย unit test (DB store, UI, deploy) ระบุวิธีตรวจที่รันได้จริง
 
 **Known gap:** `gormExtractionJobs` ไม่มีเทสต์ unit เพราะไม่มี test DB (ตาม Global Constraints) ความถูกต้องของ SQL ตรวจใน Task 12 Step 8 ด้วยเอกสารจริง
 
 ## ความเสี่ยงที่ควรรู้
+
+- ผลจริง (ผู้ควบคุมรายงาน): ไฟล์คำสั่งจริง `kku.pdf` ผ่าน thaidoc ได้ 119 สมาชิก, 31 คนที่ชื่อว่าง (กรรมการโดยตำแหน่ง เก็บเฉพาะตำแหน่ง), ใช้เวลา 15.5 วินาทีสำหรับ 7 หน้าบน CPU ของ VM
+- DOCX/XLSX/CSV ไม่มีรายชื่อสมาชิกจากเส้นทาง `extractCommandMetadata` ที่ไม่มี profile (เหมือนเดิมสำหรับไฟล์ที่ไม่ใช่ตัวอย่าง) ต้องพิจารณาในงานถัดไป
+- หน้า `src/app/upload/page.tsx` และ `src/app/page.tsx` ยังมีข้อความ "one-ocr" ในคำอธิบาย แผนนี้ไม่แก้ข้อความเหล่านั้น
 
 - thaidoc ทดสอบบนเอกสาร TOR เท่านั้น ยังไม่รู้ความแม่นยำกับคำสั่งแต่งตั้ง
 - ค่า `confidence` เป็น nil ทั้งหมดจาก thaidoc ทุกเอกสารจึงเป็น NEEDS_REVIEW (ตามที่ spec ตั้งใจ)
