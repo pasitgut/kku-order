@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -92,57 +91,52 @@ type StoredCommitteeMember struct {
 
 func (StoredCommitteeMember) TableName() string { return "committee_members" }
 
-// createDocumentBundle reserves one document id while holding a MySQL named
-// lock, then creates the required order row before the document row. The
-// supplied initial schema makes documents.id reference orders.document_id.
+// createDocumentBundle writes the core document, its required order and the
+// workflow row in one transaction. Every id is the one the database assigns on
+// insert; none is predicted from information_schema, which MySQL caches.
+//
+// documents.id references orders.document_id, but the order needs the document
+// id, so the document row goes first with foreign key checks relaxed for this
+// session only. The checks are restored before the transaction ends, and a
+// failure rolls back all three rows.
 func createDocumentBundle(db *gorm.DB, core *StoredDocument, workflow *Document) error {
-	const lockName = "docflow:document-order-insert"
-	return db.Transaction(func(tx *gorm.DB) error {
-		var locked sql.NullInt64
-		if err := tx.Raw("SELECT GET_LOCK(?, 10)", lockName).Scan(&locked).Error; err != nil {
-			return fmt.Errorf("lock document id allocation: %w", err)
-		}
-		if !locked.Valid || locked.Int64 != 1 {
-			return fmt.Errorf("could not lock document id allocation")
+	return db.Transaction(func(tx *gorm.DB) (err error) {
+		if err := tx.Exec("SET FOREIGN_KEY_CHECKS = 0").Error; err != nil {
+			return fmt.Errorf("relax foreign key checks: %w", err)
 		}
 		defer func() {
-			var released sql.NullInt64
-			_ = tx.Raw("SELECT RELEASE_LOCK(?)", lockName).Scan(&released).Error
+			if restoreErr := tx.Exec("SET FOREIGN_KEY_CHECKS = 1").Error; restoreErr != nil && err == nil {
+				err = fmt.Errorf("restore foreign key checks: %w", restoreErr)
+			}
 		}()
-
-		var nextID sql.NullInt64
-		if err := tx.Raw(`SELECT AUTO_INCREMENT FROM information_schema.TABLES
-			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'documents'`).Scan(&nextID).Error; err != nil {
-			return fmt.Errorf("read next document id: %w", err)
-		}
-		if !nextID.Valid || nextID.Int64 < 1 {
-			return fmt.Errorf("database did not return the next document id")
-		}
-		documentID := uint64(nextID.Int64)
 
 		orderType := StoredOrderType{Name: "PENDING"}
 		if err := tx.Where("name = ?", orderType.Name).FirstOrCreate(&orderType).Error; err != nil {
 			return fmt.Errorf("create pending order type: %w", err)
 		}
-		now := time.Now()
-		order := StoredOrder{
-			DocumentID: documentID, OrderTypeID: orderType.ID,
-			OrderNumber: fmt.Sprintf("PENDING-%d", documentID), OrderYear: now.Year() + 543,
-			Title: truncateRunes(workflow.Title, 255), CreatedAt: now, UpdatedAt: now,
-		}
-		if err := tx.Create(&order).Error; err != nil {
-			return fmt.Errorf("create required order row: %w", err)
-		}
-		core.ID = documentID
 		if err := tx.Create(core).Error; err != nil {
 			return fmt.Errorf("create core document row: %w", err)
 		}
-		workflow.ID = uint(documentID)
+		order := pendingOrderForDocument(core.ID, orderType.ID, workflow, time.Now())
+		if err := tx.Create(&order).Error; err != nil {
+			return fmt.Errorf("create required order row: %w", err)
+		}
+		workflow.ID = uint(core.ID)
 		if err := tx.Create(workflow).Error; err != nil {
 			return fmt.Errorf("create document workflow row: %w", err)
 		}
 		return nil
 	})
+}
+
+// pendingOrderForDocument builds the placeholder order that every document
+// carries until its order details are confirmed.
+func pendingOrderForDocument(documentID, orderTypeID uint64, workflow *Document, now time.Time) StoredOrder {
+	return StoredOrder{
+		DocumentID: documentID, OrderTypeID: orderTypeID,
+		OrderNumber: fmt.Sprintf("PENDING-%d", documentID), OrderYear: now.Year() + 543,
+		Title: truncateRunes(workflow.Title, 255), CreatedAt: now, UpdatedAt: now,
+	}
 }
 
 func syncCoreOrderFromWorkflow(tx *gorm.DB, document *Document) error {
