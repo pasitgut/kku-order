@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info, MagnifyingGlass, MapPin, PencilSimple, Trash, UploadSimple, UserPlus, UsersThree, WarningCircle } from "@phosphor-icons/react";
 import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useMe } from "@/components/me-context";
@@ -10,15 +10,17 @@ import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, 
 import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 
-type PanelView = "roster" | "members" | "metadata" | "duties";
+type PanelView = "original" | "roster" | "members" | "metadata" | "duties" | "history";
 
 const metadataKeys = ["order_type", "order_no", "order_year_be", "committee_name", "issued_date", "effective_date", "expiry_date", "signer_name", "signer_position"];
 
 const panelTabs: { value: PanelView; label: string }[] = [
+  { value: "original", label: "ต้นฉบับเอกสาร" },
   { value: "roster", label: "รายชื่อทั้งหมด" },
-  { value: "members", label: "รายนาม" },
+  { value: "members", label: "ตรวจรายชื่อ" },
   { value: "metadata", label: "ข้อมูลคำสั่ง" },
   { value: "duties", label: "หน้าที่รับผิดชอบ" },
+  { value: "history", label: "ประวัติการแก้ไข" },
 ];
 
 const memberFilters: { value: MemberFilter; label: string }[] = [
@@ -46,7 +48,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [revisions, setRevisions] = useState<DocumentRevision[]>([]);
   const [selectedPage, setSelectedPage] = useState(1);
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
-  const [panel, setPanel] = useState<PanelView>("members");
+  const [panel, setPanel] = useState<PanelView>("original");
+  const tabRefs = useRef<Partial<Record<PanelView, HTMLButtonElement | null>>>({});
+  const panelRef = useRef<HTMLDivElement>(null);
   const [memberFilter, setMemberFilter] = useState<MemberFilter>("all");
   const [memberQuery, setMemberQuery] = useState("");
   const [departmentFilter, setDepartmentFilter] = useState("");
@@ -220,7 +224,30 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     }
   };
 
-  const locateAppointment = (id: number, pageNo: number) => { setSelectedAppointmentId(id); setSelectedPage(Math.max(1, pageNo || 1)); };
+  const locateAppointment = (id: number, pageNo: number) => {
+    setSelectedAppointmentId(id);
+    setSelectedPage(Math.min(document.pageCount || Math.max(1, pageNo), Math.max(1, pageNo || 1)));
+    setPanel("original");
+    window.requestAnimationFrame(() => {
+      panelRef.current?.focus();
+      panelRef.current?.scrollIntoView({ block: "start" });
+    });
+  };
+
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, value: PanelView) => {
+    const index = panelTabs.findIndex((tab) => tab.value === value);
+    let next = index;
+    if (event.key === "ArrowRight") next = (index + 1) % panelTabs.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + panelTabs.length) % panelTabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = panelTabs.length - 1;
+    else return;
+    event.preventDefault();
+    const selected = panelTabs[next].value;
+    setPanel(selected);
+    tabRefs.current[selected]?.focus();
+    tabRefs.current[selected]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
   const toggleRow = (id: number, open: boolean) => setOpenRows((rows) => ({ ...rows, [id]: !open }));
   const showWarnings = () => { setPanel("members"); setMemberFilter("warning"); setDepartmentFilter(""); setMemberQuery(""); setOpenRows({}); };
 
@@ -347,16 +374,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       <p id="cancel-document-error" role={cancelError ? "alert" : undefined} className="text-sm text-[var(--danger)]">{cancelError}</p>
       <div className="flex flex-wrap justify-end gap-2"><button type="button" disabled={cancelling} onClick={() => setCancelOpen(false)} className="focus-ring h-11 rounded-md border border-[var(--line)] px-4 text-sm">กลับไปตรวจสอบ</button><button type="submit" disabled={cancelling || !cancelReason.trim()} className="focus-ring h-11 rounded-md bg-[var(--danger)] px-4 text-sm font-medium text-white disabled:opacity-50">{cancelling ? "กำลังยกเลิก..." : "ยืนยันยกเลิกเอกสาร"}</button></div>
     </form>}
-    <div className="grid items-stretch gap-6 xl:grid-cols-2">
-      <section className="flex min-h-[420px] flex-col overflow-hidden rounded-[10px] bg-[#e9eef3] xl:min-h-[720px] shadow-[var(--shadow-card)]">
-        <div className="flex items-center justify-between border-b border-[var(--line)] bg-white py-3 pl-5 pr-3"><div><p className="text-sm font-semibold text-[var(--navy)]">ต้นฉบับเอกสาร</p><p className="mt-0.5 text-xs font-light text-[var(--muted)]">{document.pageCount || "-"} หน้า · {formatFileSize(document.fileSizeBytes)} · {document.ocrProvider || "นำเข้าข้อมูลโดยตรง"}</p></div><div className="flex items-center gap-1"><button type="button" onClick={() => setSelectedPage((page) => Math.max(1, page - 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)]" aria-label="หน้าก่อนหน้า"><CaretLeft size={17} /></button><span className="px-1.5 text-[13px]">หน้า {selectedPage} / {document.pageCount || 1}</span><button type="button" onClick={() => setSelectedPage((page) => Math.min(document.pageCount || 1, page + 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)]" aria-label="หน้าถัดไป"><CaretRight size={17} /></button></div></div>
-        <div className="shell-scrollbar flex flex-1 items-start justify-center overflow-auto p-6">{document.sourceType.toLowerCase() === "pdf" ? <div className="relative w-full max-w-[600px] overflow-hidden bg-white shadow-[0_8px_28px_rgba(17,40,62,0.14)]"><img src={getDocumentPageImageUrl(document.id, selectedPage)} alt={`หน้า ${selectedPage} ของ ${document.title}`} className="block h-auto w-full" /><div className="pointer-events-none absolute inset-0">{(selectedOCRPage?.lines ?? []).map((line) => { const box = parseBox(line.boundingBox); return box ? <span key={line.id} title={line.text} className="absolute border border-sky-400/50 bg-sky-300/5" style={box} /> : null; })}{appointments.filter((item) => item.pageNo === selectedPage).map((item) => { const box = parseBox(item.boundingBox); return box ? <span key={`appointment-${item.id}`} title={item.fullName} className={`absolute ${selectedAppointmentId === item.id ? "z-10 border-2 border-dashed border-[var(--highlight)] bg-[rgba(240,72,20,0.1)]" : "border-2 border-amber-500 bg-amber-300/20"}`} style={box} /> : null; })}{fields.filter((field) => field.pageNo === selectedPage).map((field) => { const box = parseBox(field.boundingBox); return box ? <span key={`field-${field.id}`} title={field.fieldLabel} className="absolute border-2 border-emerald-500 bg-emerald-300/20" style={box} /> : null; })}</div></div> : <div className="min-h-[660px] w-full max-w-[600px] whitespace-pre-wrap bg-white p-7 font-mono text-xs leading-6 shadow-[0_8px_28px_rgba(17,40,62,0.14)]">{document.ocrText || "กำลังเตรียมตัวอย่างข้อมูล..."}</div>}</div>
-        <div className="border-t border-[var(--line)] bg-white px-5 py-2.5 text-[11px] text-[var(--muted)]">กรอบฟ้า = OCR · กรอบเหลือง = รายชื่อ · กรอบเขียว = ฟิลด์สกัด · กรอบส้มเส้นประ = รายการที่เลือก</div>
-      </section>
-
-      <section className="card flex min-w-0 flex-col overflow-hidden">
+    <section className="card overflow-hidden">
         <div className="space-y-3 px-5 pb-4 pt-5 lg:px-6">
-          <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-[var(--navy)]">ตรวจสอบข้อมูลเอกสาร</h2><span className="text-xs text-[var(--muted)]">{editable ? "ข้อมูลจากการสกัด · แก้ไขได้ทุกช่อง" : "ข้อมูลจากการสกัด · ดูย้อนหลัง"}</span></div>
+          <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-[var(--navy)]">ภาพรวมการตรวจสอบ</h2><span className="text-xs text-[var(--muted)]">{editable ? "แก้ไขข้อมูลได้ในแต่ละแท็บ" : "ข้อมูลจากการสกัด · ดูย้อนหลัง"}</span></div>
           {!cancelled && document.processingStage === "FAILED" && <div role="alert" className="flex flex-col gap-3 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning-soft)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-start gap-2"><WarningCircle size={18} className="mt-0.5 shrink-0 text-[var(--warning)]" /><div className="min-w-0"><p className="text-sm font-medium text-[var(--navy)]">ประมวลผลเอกสารไม่สำเร็จ จึงยังไม่มีข้อมูลให้ตรวจ</p>{can(me?.role ?? "", "settings") && document.ocrError && <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">สาเหตุ: {document.ocrError}</p>}</div></div>{can(me?.role ?? "", "edit") && <button type="button" disabled={reprocessing} onClick={retryProcessing} className="focus-ring inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-60"><ArrowCounterClockwise size={15} className={reprocessing ? "animate-spin" : ""} />{reprocessing ? "กำลังส่งเข้าคิว..." : "ลองประมวลผลอีกครั้ง"}</button>}</div>}
           {!cancelled && (document.processingStage === "QUEUED" || document.processingStage === "PREPARING") && <p role="status" className="rounded-lg bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--navy)]">กำลังประมวลผลเอกสาร ระบบจะอัปเดตข้อมูลให้อัตโนมัติ</p>}
           <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -366,9 +386,18 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
             {filterCounts.warning > 0 && <button type="button" onClick={showWarnings} className="focus-ring h-8 whitespace-nowrap rounded text-xs font-medium text-[var(--accent)] hover:underline">ดูรายการที่ต้องแก้ →</button>}
           </div>
         </div>
-
-        <div role="tablist" aria-label="ส่วนของข้อมูลเอกสาร" className="flex overflow-x-auto border-y border-[var(--line)] px-3">{panelTabs.map((tab) => <button key={tab.value} type="button" role="tab" aria-selected={panel === tab.value} onClick={() => setPanel(tab.value)} className={`focus-ring flex h-12 items-center gap-2 whitespace-nowrap px-3.5 text-sm transition ${panel === tab.value ? "font-medium text-[var(--accent)] shadow-[inset_0_-3px_0_var(--accent)]" : "text-[var(--muted)] hover:text-[var(--ink)]"}`}>{tab.label}{tab.value === "roster" && <span className={`rounded-full px-2 py-0.5 text-[11px] ${panel === tab.value ? "bg-[var(--accent-soft)]" : "bg-[var(--line-soft)]"}`}>{appointments.length}</span>}</button>)}</div>
-
+      <div role="tablist" aria-label="ส่วนของเอกสาร" aria-orientation="horizontal" className="shell-scrollbar flex overflow-x-auto border-t border-[var(--line)] px-3">{panelTabs.map((tab) => <button key={tab.value} ref={(button) => { tabRefs.current[tab.value] = button; }} id={`document-tab-${tab.value}`} type="button" role="tab" aria-selected={panel === tab.value} aria-controls="document-tab-panel" tabIndex={panel === tab.value ? 0 : -1} onClick={() => setPanel(tab.value)} onKeyDown={(event) => onTabKeyDown(event, tab.value)} className={`focus-ring flex h-14 shrink-0 items-center gap-2 whitespace-nowrap px-4 text-sm transition ${panel === tab.value ? "font-medium text-[var(--accent)] shadow-[inset_0_-3px_0_var(--accent)]" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}>{tab.label}{(tab.value === "roster" || tab.value === "members" || tab.value === "history") && <span className={`rounded-full px-2 py-0.5 text-[11px] ${panel === tab.value ? "bg-[var(--accent-soft)]" : "bg-[var(--line-soft)]"}`}>{tab.value === "history" ? revisions.length : appointments.length}</span>}</button>)}</div>
+    </section>
+    <div ref={panelRef} id="document-tab-panel" role="tabpanel" aria-labelledby={`document-tab-${panel}`} tabIndex={0} className="focus-ring min-w-0 scroll-mt-5 rounded-lg">
+      {panel === "original" && (
+      <section className="flex min-h-[420px] flex-col overflow-hidden rounded-[10px] bg-[#e9eef3] min-h-[560px] shadow-[var(--shadow-card)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-white py-3 pl-5 pr-3"><div><p className="text-sm font-semibold text-[var(--navy)]">ต้นฉบับเอกสาร</p><p className="mt-0.5 text-xs font-light text-[var(--muted)]">{document.pageCount || "-"} หน้า · {formatFileSize(document.fileSizeBytes)} · {document.ocrProvider || "นำเข้าข้อมูลโดยตรง"}</p></div><div className="flex items-center gap-1"><button type="button" disabled={selectedPage <= 1} onClick={() => setSelectedPage((page) => Math.max(1, page - 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)] disabled:cursor-not-allowed disabled:opacity-40" aria-label="หน้าก่อนหน้า"><CaretLeft size={17} /></button><span className="px-1.5 text-[13px]">หน้า {selectedPage} / {document.pageCount || 1}</span><button type="button" disabled={selectedPage >= (document.pageCount || 1)} onClick={() => setSelectedPage((page) => Math.min(document.pageCount || 1, page + 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)] disabled:cursor-not-allowed disabled:opacity-40" aria-label="หน้าถัดไป"><CaretRight size={17} /></button></div></div>
+        <div className="shell-scrollbar flex flex-1 items-start justify-center overflow-auto p-6">{document.sourceType.toLowerCase() === "pdf" ? <div className="relative w-full max-w-[900px] overflow-hidden bg-white shadow-[0_8px_28px_rgba(17,40,62,0.14)]"><img src={getDocumentPageImageUrl(document.id, selectedPage)} alt={`หน้า ${selectedPage} ของ ${document.title}`} className="block h-auto w-full" /><div className="pointer-events-none absolute inset-0">{(selectedOCRPage?.lines ?? []).map((line) => { const box = parseBox(line.boundingBox); return box ? <span key={line.id} title={line.text} className="absolute border border-sky-400/50 bg-sky-300/5" style={box} /> : null; })}{appointments.filter((item) => item.pageNo === selectedPage).map((item) => { const box = parseBox(item.boundingBox); return box ? <span key={`appointment-${item.id}`} title={item.fullName} className={`absolute ${selectedAppointmentId === item.id ? "z-10 border-2 border-dashed border-[var(--highlight)] bg-[rgba(240,72,20,0.1)]" : "border-2 border-amber-500 bg-amber-300/20"}`} style={box} /> : null; })}{fields.filter((field) => field.pageNo === selectedPage).map((field) => { const box = parseBox(field.boundingBox); return box ? <span key={`field-${field.id}`} title={field.fieldLabel} className="absolute border-2 border-emerald-500 bg-emerald-300/20" style={box} /> : null; })}</div></div> : <div className="min-h-[660px] w-full max-w-[900px] whitespace-pre-wrap bg-white p-7 font-mono text-xs leading-6 shadow-[0_8px_28px_rgba(17,40,62,0.14)]">{document.ocrText || "กำลังเตรียมตัวอย่างข้อมูล..."}</div>}</div>
+        <div className="border-t border-[var(--line)] bg-white px-5 py-2.5 text-[11px] text-[var(--muted)]">กรอบฟ้า = OCR · กรอบเหลือง = รายชื่อ · กรอบเขียว = ฟิลด์สกัด · กรอบส้มเส้นประ = รายการที่เลือก</div>
+      </section>
+      )}
+      {panel !== "original" && panel !== "history" && <section className="card flex min-w-0 flex-col overflow-hidden">
+        <div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">{panelTabs.find((tab) => tab.value === panel)?.label}</h2></div>
         {panel === "roster" && <div className="flex-1">
           <div className="flex items-baseline justify-between px-5 py-3.5 lg:px-6"><p className="text-sm font-semibold text-[var(--navy)]">รายชื่อทั้งหมดในคำสั่ง</p><p className="text-xs text-[var(--muted)]">{appointments.length} รายชื่อ · {departmentSummary.length} ฝ่าย</p></div>
           <div className="overflow-x-auto"><table className="data-grid w-full min-w-[520px] text-left text-sm"><thead><tr><th className="w-12 px-5 py-2.5 lg:pl-6">#</th><th className="px-3 py-2.5">ชื่อ</th><th className="px-3 py-2.5">ฝ่าย</th><th className="px-5 py-2.5 lg:pr-6">ตำแหน่ง</th></tr></thead><tbody>{roster.map((row) => <tr key={row.id}><td className="px-5 py-3 text-xs text-[var(--subtle)] lg:pl-6">{row.no}</td><td className="px-3 py-3 font-medium">{row.fullName || "-"}</td><td className="px-3 py-3">{row.department}</td><td className="px-5 py-3 text-[var(--muted)] lg:pr-6">{row.position || "-"}</td></tr>)}{roster.length === 0 && <tr><td colSpan={4} className="px-5 py-12 text-center text-sm text-[var(--muted)]">ยังไม่มีรายชื่อจากเอกสาร</td></tr>}</tbody></table></div>
@@ -420,18 +449,16 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
           })}{departmentGroups.length === 0 && <div className="p-10 text-center text-sm text-[var(--muted)]">ไม่พบรายการตามตัวกรอง</div>}</div>
         </div>}
 
-        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input disabled={!editable} value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
+        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input disabled={!editable} value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
 
         {panel === "duties" && <div className="flex-1 space-y-5 p-5 lg:p-6"><label className="block"><span className="text-sm font-medium text-[var(--navy)]">หน้าที่รับผิดชอบของคณะกรรมการ</span><textarea readOnly={!editable} value={document.responsibilities} onChange={(event) => setDocument((current) => ({ ...current, responsibilities: event.target.value }))} rows={8} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /><span className="mt-1 block text-xs text-[var(--muted)]">แก้ไขข้อความจากเอกสารได้ แล้วกดบันทึกฉบับร่าง</span></label><label className="block"><span className="text-sm font-medium text-[var(--navy)]">การอ้างอิงประกาศเพิ่มเติม</span><textarea readOnly={!editable} value={document.additionalReferences} onChange={(event) => setDocument((current) => ({ ...current, additionalReferences: event.target.value }))} rows={4} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /></label></div>}
-
-        {editable && <div className="flex flex-col gap-3 border-t border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 lg:px-6">
+      </section>}
+    {panel === "history" && <section className="card overflow-hidden"><div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">ประวัติการแก้ไข</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">บันทึกการเปลี่ยนแปลงข้อมูลและการยกเลิกเอกสาร</p></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-6 py-3">ฟิลด์</th><th className="px-4 py-3">ค่าเดิม</th><th className="px-4 py-3">ค่าที่แก้ไข</th><th className="px-6 py-3">ผู้แก้ไข / เวลา</th></tr></thead><tbody>{revisions.map((revision) => <tr key={revision.id}><td className="px-6 py-3 font-medium">{revision.fieldKey === "cancellation_reason" ? "เหตุผลที่ยกเลิก" : revision.fieldKey === "status" ? "สถานะเอกสาร" : revision.fieldKey}</td><td className="max-w-[180px] truncate px-4 py-3 text-[var(--muted)]">{revision.fieldKey === "status" ? statusLabel(revision.oldValue) : revision.oldValue || "-"}</td><td className="max-w-[180px] truncate px-4 py-3">{revision.fieldKey === "status" ? statusLabel(revision.newValue) : revision.newValue || "-"}</td><td className="px-6 py-3 text-xs text-[var(--muted)]">{revision.changedBy}<br />{formatThaiDate(revision.changedAt)}</td></tr>)}{revisions.length === 0 && <tr><td colSpan={4} className="px-6 py-12 text-center text-[var(--muted)]">ยังไม่มีประวัติการแก้ไขเอกสาร</td></tr>}</tbody></table></div></section>}
+    </div>
+        {editable && <div className="card flex flex-col gap-3 border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 lg:px-6">
           <div className="flex items-start gap-2 text-[13px] leading-5">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : unlinkedAppointments.length > 0 ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="font-medium text-[var(--danger)]">เหลือ {unlinkedAppointments.length} รายชื่อที่ยังไม่ได้ผูกกับบุคคล</span></> : document.status === "CONFIRMED" ? <><CheckCircle size={18} weight="fill" className="shrink-0 text-[var(--success)]" /><span>ยืนยันข้อมูลแล้วโดย {document.confirmedBy || "เจ้าหน้าที่"}</span></> : <><Info size={18} className="shrink-0 text-[var(--accent)]" /><span className="text-[var(--muted)]">ระบบจะไม่ถือเป็นข้อมูลสมบูรณ์จนกว่าจะยืนยัน</span></>}</div>
           <div className="flex flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || document.status === "CONFIRMED" || unlinkedAppointments.length > 0} title={unlinkedAppointments.length > 0 ? `ยังมี ${unlinkedAppointments.length} รายชื่อที่ยังไม่ได้ผูกกับบุคคลในระบบ` : undefined} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></div>
         </div>}
-      </section>
-    </div>
-
-    {revisions.length > 0 && <section className="card overflow-hidden"><div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">ประวัติการแก้ไข</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">ตรวจสอบย้อนหลังได้จากตาราง `document_revisions`</p></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-6 py-3">ฟิลด์</th><th className="px-4 py-3">ค่าเดิม</th><th className="px-4 py-3">ค่าที่แก้ไข</th><th className="px-6 py-3">ผู้แก้ไข / เวลา</th></tr></thead><tbody>{revisions.map((revision) => <tr key={revision.id}><td className="px-6 py-3 font-medium">{revision.fieldKey === "cancellation_reason" ? "เหตุผลที่ยกเลิก" : revision.fieldKey === "status" ? "สถานะเอกสาร" : revision.fieldKey}</td><td className="max-w-[180px] truncate px-4 py-3 text-[var(--muted)]">{revision.fieldKey === "status" ? statusLabel(revision.oldValue) : revision.oldValue || "-"}</td><td className="max-w-[180px] truncate px-4 py-3">{revision.fieldKey === "status" ? statusLabel(revision.newValue) : revision.newValue || "-"}</td><td className="px-6 py-3 text-xs text-[var(--muted)]">{revision.changedBy}<br />{formatThaiDate(revision.changedAt)}</td></tr>)}</tbody></table></div></section>}
 
     {editable && compare && <CandidateCompareDialog compare={compare} onSelect={(userId) => setCompare({ ...compare, selected: userId })} onClose={() => setCompare(null)} onConfirm={(candidate) => linkAppointment(compare.appointment.id, candidate.userId, candidate.fullName, candidate.positionTitle)} onCreate={() => { const row = compare.appointment; setCompare(null); openDraft(row); }} />}
   </div></AppShell>;
