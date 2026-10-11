@@ -72,13 +72,15 @@ func checkOCRConnection(ctx context.Context, client *http.Client, healthURL, api
 type ocrConnectionRequest struct {
 	Engine string `json:"engine"`
 	APIURL string `json:"apiUrl"`
+	// APIKey is optional and unsaved: when set, it is used for this test only.
+	APIKey string `json:"apiKey"`
 }
 
-// testOCRConnectionHandler checks the engine using the submitted (unsaved) engine and URL,
-// falling back to the saved values. The API key comes from the environment and is never returned.
-func testOCRConnectionHandler(load func() (OCRSettings, error), cfg ocrAPIConfig) gin.HandlerFunc {
+// testOCRConnectionHandler checks the engine using the submitted (unsaved) engine, URL and API key,
+// falling back to the saved values and the effective key. The key is never returned.
+func testOCRConnectionHandler(store SettingsStore, cfg ocrAPIConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		settings, err := load()
+		settings, err := store.LoadOCR()
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "อ่านค่าตั้งค่าไม่ได้"})
 			return
@@ -87,6 +89,15 @@ func testOCRConnectionHandler(load func() (OCRSettings, error), cfg ocrAPIConfig
 		if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "รูปแบบคำขอไม่ถูกต้อง"})
 			return
+		}
+		apiKey, _ := effectiveOCRAPIKey(store, cfg)
+		if strings.TrimSpace(req.APIKey) != "" {
+			key, err := validateOCRAPIKey(req.APIKey)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			apiKey = key
 		}
 		if req.Engine != "" {
 			settings.Engine = req.Engine
@@ -108,6 +119,6 @@ func testOCRConnectionHandler(load func() (OCRSettings, error), cfg ocrAPIConfig
 			return
 		}
 		client := &http.Client{Timeout: 10 * time.Second}
-		c.JSON(http.StatusOK, checkOCRConnection(c.Request.Context(), client, healthURL, cfg.APIKey))
+		c.JSON(http.StatusOK, checkOCRConnection(c.Request.Context(), client, healthURL, apiKey))
 	}
 }

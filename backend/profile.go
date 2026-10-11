@@ -70,6 +70,8 @@ var activityLabels = map[string]string{
 	"DOCUMENT_CONFIRMED":           "ยืนยัน",
 	"DIRECTORY_USER_CREATED":       "เพิ่มบุคคล",
 	"SETTINGS_OCR_UPDATED":         "ตั้งค่า OCR",
+	"OCR_API_KEY_UPDATED":          "ตั้งค่า API key OCR",
+	"OCR_API_KEY_REMOVED":          "ลบ API key OCR",
 	"DOCUMENT_RESCAN_REQUESTED":    "สแกนใหม่",
 	"DOCUMENT_REPROCESS_REQUESTED": "ประมวลผลใหม่",
 	"DOCUMENT_EXTRACTION_FAILED":   "ประมวลผลไม่สำเร็จ",

@@ -111,7 +111,7 @@ func (p *DocumentProcessor) processOne(ctx context.Context, id uint) {
 		p.markExtractionFailed(doc, ExtractError{Message: "อ่านค่าตั้งค่า OCR ไม่ได้"}, started)
 		return
 	}
-	extractor, err := p.newExtractor(settings, p.ocrConfig)
+	extractor, err := p.buildExtractor(settings)
 	if err != nil {
 		p.markExtractionFailed(doc, asExtractError(err), started)
 		return

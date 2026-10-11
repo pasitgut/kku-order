@@ -193,6 +193,12 @@ func importDue(lastScan, now time.Time, intervalMinutes int) bool {
 type SettingsStore interface {
 	LoadOCR() (OCRSettings, error)
 	SaveOCR(settings OCRSettings, userID string) error
+	// LoadWebAPIKey returns the decrypted key saved from the web, or "" when none is saved.
+	LoadWebAPIKey() (string, error)
+	SaveWebAPIKey(apiKey, userID string) error
+	DeleteWebAPIKey(userID string) error
+	// APIKeyWritable reports whether SETTINGS_ENCRYPTION_KEY is usable, which saving from the web needs.
+	APIKeyWritable() bool
 }
 
 type AppSetting struct {
@@ -204,9 +210,14 @@ type AppSetting struct {
 
 func (AppSetting) TableName() string { return "app_settings" }
 
-type dbSettingsStore struct{ db *gorm.DB }
+type dbSettingsStore struct {
+	db  *gorm.DB
+	box *secretBox
+}
 
-func NewSettingsStore(db *gorm.DB) SettingsStore { return &dbSettingsStore{db: db} }
+func NewSettingsStore(db *gorm.DB) SettingsStore {
+	return &dbSettingsStore{db: db, box: newSecretBoxFromEnv()}
+}
 
 func (s *dbSettingsStore) LoadOCR() (OCRSettings, error) {
 	defaults := defaultOCRSettings()
@@ -235,6 +246,58 @@ func (s *dbSettingsStore) SaveOCR(settings OCRSettings, userID string) error {
 	})
 }
 
+func (s *dbSettingsStore) APIKeyWritable() bool { return s.box != nil }
+
+func (s *dbSettingsStore) LoadWebAPIKey() (string, error) {
+	var row AppSetting
+	err := s.db.Where("setting_key = ?", ocrAPIKeySettingKey).Take(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if s.box == nil {
+		return "", errors.New("SETTINGS_ENCRYPTION_KEY is not set, so the saved key cannot be decrypted")
+	}
+	var encoded string
+	if err := json.Unmarshal([]byte(row.Value), &encoded); err != nil {
+		return "", errors.New("saved OCR API key row is malformed")
+	}
+	return s.box.open(encoded)
+}
+
+func (s *dbSettingsStore) SaveWebAPIKey(apiKey, userID string) error {
+	if s.box == nil {
+		return errors.New(errAPIKeyNotWritableMessage)
+	}
+	encoded, err := s.box.seal(apiKey)
+	if err != nil {
+		return err
+	}
+	value, err := json.Marshal(encoded)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	row := AppSetting{SettingKey: ocrAPIKeySettingKey, Value: string(value), UpdatedBy: userID, UpdatedAt: now}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
+			return err
+		}
+		return tx.Create(&AuditLog{UserID: userID, Action: "OCR_API_KEY_UPDATED", Details: ocrAPIKeyAuditDetails(apiKey), CreatedAt: now}).Error
+	})
+}
+
+func (s *dbSettingsStore) DeleteWebAPIKey(userID string) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("setting_key = ?", ocrAPIKeySettingKey).Delete(&AppSetting{}).Error; err != nil {
+			return err
+		}
+		return tx.Create(&AuditLog{UserID: userID, Action: "OCR_API_KEY_REMOVED", CreatedAt: time.Now()}).Error
+	})
+}
+
 // loadOCRSettingsOrDefault never fails: processing keeps working on .env values.
 func loadOCRSettingsOrDefault(store SettingsStore) OCRSettings {
 	if store == nil {
@@ -247,10 +310,17 @@ func loadOCRSettingsOrDefault(store SettingsStore) OCRSettings {
 	return settings
 }
 
-// getOCRSettingsHandler reports whether the API key is configured, never its value.
+// getOCRSettingsHandler reports where the API key comes from and its last four characters, never the key.
 func getOCRSettingsHandler(store SettingsStore, cfg ocrAPIConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": loadOCRSettingsOrDefault(store), "ocrApiKeyConfigured": cfg.APIKey != ""})
+		key, source := effectiveOCRAPIKey(store, cfg)
+		c.JSON(http.StatusOK, gin.H{
+			"data":                loadOCRSettingsOrDefault(store),
+			"ocrApiKeyConfigured": key != "",
+			"ocrApiKeySource":     source,
+			"ocrApiKeyHint":       ocrAPIKeyHint(key),
+			"ocrApiKeyWritable":   store != nil && store.APIKeyWritable(),
+		})
 	}
 }
 

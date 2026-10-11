@@ -363,7 +363,9 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	settingsStore := NewSettingsStore(db)
 	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore, ocrConfig))
 	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
-	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore.LoadOCR, ocrConfig))
+	router.PUT("/api/v1/settings/ocr/api-key", requireRole("ADMIN"), saveOCRAPIKeyHandler(settingsStore))
+	router.DELETE("/api/v1/settings/ocr/api-key", requireRole("ADMIN"), deleteOCRAPIKeyHandler(settingsStore))
+	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore, ocrConfig))
 	router.GET("/api/v1/settings/drive/status", requireRole("ADMIN", "STAFF", "DEVELOPER"), getDriveAutomationStatus(db, settingsStore))
 	router.POST("/api/v1/settings/drive/test", requireRole("ADMIN"), func(c *gin.Context) {
 		if driveImporter == nil {

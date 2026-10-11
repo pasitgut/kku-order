@@ -412,8 +412,27 @@ export type MyActivity = {
   items: { id: number; action: string; label: string; documentId?: number; documentTitle: string; details: string; createdAt: string }[];
 };
 
+export type OCRAPIKeyState = {
+  ocrApiKeyConfigured: boolean;
+  ocrApiKeySource: "web" | "env" | "none";
+  ocrApiKeyHint: string;
+  ocrApiKeyWritable: boolean;
+};
+
 export async function getOCRSettings() {
-  return apiFetch<{ data: OCRSettings; ocrApiKeyConfigured: boolean }>("/api/v1/settings/ocr");
+  return apiFetch<{ data: OCRSettings } & OCRAPIKeyState>("/api/v1/settings/ocr");
+}
+
+export async function saveOCRAPIKey(apiKey: string) {
+  return apiFetch<{ ok: boolean }>("/api/v1/settings/ocr/api-key", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ apiKey }),
+  });
+}
+
+export async function deleteOCRAPIKey() {
+  return apiFetch<{ ok: boolean }>("/api/v1/settings/ocr/api-key", { method: "DELETE" });
 }
 
 export async function updateOCRSettings(settings: OCRSettings) {
@@ -424,7 +443,7 @@ export async function updateOCRSettings(settings: OCRSettings) {
   });
 }
 
-export async function testOCRConnection(body: { engine?: string; apiUrl?: string }) {
+export async function testOCRConnection(body: { engine?: string; apiUrl?: string; apiKey?: string }) {
   return apiFetch<{ data: OCRConnectionResult }>("/api/v1/settings/ocr/test", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

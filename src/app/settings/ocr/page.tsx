@@ -2,13 +2,17 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ArrowRight, FolderSimple, Info } from "@phosphor-icons/react";
+import { ArrowRight, Eye, EyeSlash, FolderSimple, Info } from "@phosphor-icons/react";
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { useToast } from "@/components/toast";
-import { OCRConnectionResult, OCRSettings, getOCRSettings, getSystemSettings, testOCRConnection, updateOCRSettings } from "@/lib/api";
+import { OCRAPIKeyState, OCRConnectionResult, OCRSettings, deleteOCRAPIKey, getOCRSettings, getSystemSettings, saveOCRAPIKey, testOCRConnection, updateOCRSettings } from "@/lib/api";
+import { ocrAPIKeyPlaceholder } from "@/lib/ocr-api-key";
 import { can } from "@/lib/permissions";
 import { isInsecureURL } from "@/lib/processing-status";
+
+// Same text as the server's refusal (ocr_api_key.go), shown before the admin tries to save.
+const apiKeyNotWritableMessage = "ต้องตั้งค่า SETTINGS_ENCRYPTION_KEY บนเซิร์ฟเวอร์ก่อน จึงจะบันทึก API key จากหน้าเว็บได้";
 
 const engines = [
   { id: "thaidoc", name: "thaidoc-extract", description: "ส่งไฟล์ PDF ไปอ่านที่ thaidoc-extract ผ่าน API ต้องมี URL และ API key" },
@@ -42,12 +46,15 @@ export default function OCRSettingsPage() {
   const [importDir, setImportDir] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+  const [keyState, setKeyState] = useState<OCRAPIKeyState | null>(null);
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [savingKey, setSavingKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [connection, setConnection] = useState<OCRConnectionResult | null>(null);
 
   useEffect(() => {
-    getOCRSettings().then((response) => { setSaved(response.data); setForm(response.data); setApiKeyConfigured(response.ocrApiKeyConfigured); }).catch((reason: Error) => setError(reason.message));
+    getOCRSettings().then((response) => { setSaved(response.data); setForm(response.data); setKeyState(response); }).catch((reason: Error) => setError(reason.message));
     getSystemSettings().then((response) => setImportDir(response.data.importDir)).catch(() => setImportDir(""));
   }, []);
 
@@ -70,12 +77,47 @@ export default function OCRSettingsPage() {
     }
   };
 
+  const reloadKeyState = async () => {
+    setKeyState(await getOCRSettings());
+  };
+
+  const saveApiKey = async () => {
+    const apiKey = apiKeyInput.trim();
+    if (!apiKey) return;
+    setSavingKey(true);
+    try {
+      await saveOCRAPIKey(apiKey);
+      setApiKeyInput("");
+      setShowApiKey(false);
+      await reloadKeyState();
+      toast("บันทึก API key แล้ว · ใช้กับเอกสารที่ประมวลผลต่อจากนี้");
+    } catch (reason) {
+      toast(reason instanceof Error ? reason.message : "บันทึก API key ไม่สำเร็จ", { kind: "error" });
+    } finally {
+      setSavingKey(false);
+    }
+  };
+
+  const removeApiKey = async () => {
+    if (!window.confirm("ลบ API key ที่ตั้งจากหน้าเว็บ ระบบจะใช้ค่าจากไฟล์ .env แทน ยืนยันหรือไม่")) return;
+    setSavingKey(true);
+    try {
+      await deleteOCRAPIKey();
+      await reloadKeyState();
+      toast("ลบ API key ที่ตั้งจากหน้าเว็บแล้ว");
+    } catch (reason) {
+      toast(reason instanceof Error ? reason.message : "ลบ API key ไม่สำเร็จ", { kind: "error" });
+    } finally {
+      setSavingKey(false);
+    }
+  };
+
   const runConnectionTest = async () => {
     if (!form) return;
     setTesting(true);
     setConnection(null);
     try {
-      const response = await testOCRConnection({ engine: form.engine, apiUrl: form.apiUrl });
+      const response = await testOCRConnection({ engine: form.engine, apiUrl: form.apiUrl, apiKey: apiKeyInput.trim() || undefined });
       setConnection(response.data);
     } catch (reason) {
       toast(reason instanceof Error ? reason.message : "ทดสอบการเชื่อมต่อไม่สำเร็จ", { kind: "error" });
@@ -87,6 +129,9 @@ export default function OCRSettingsPage() {
   if (!form) return <SettingsFrame note="เปลี่ยนค่าในหน้านี้ได้โดยไม่ต้องแก้ .env">{error ? <div role="alert" className="rounded-lg bg-[var(--danger-soft)] p-4 text-sm font-medium text-[var(--danger)]">{error}</div> : <div className="card p-8"><div className="skeleton h-6 w-48" /><div className="skeleton mt-3 h-4 w-72" /></div>}</SettingsFrame>;
 
   const threshold = Math.round(form.reviewThreshold * 100);
+  const keySource = keyState?.ocrApiKeySource ?? "none";
+  const keyPlaceholder = keyState ? ocrAPIKeyPlaceholder(keySource, keyState.ocrApiKeyHint) : "";
+  const keyWritable = keyState?.ocrApiKeyWritable ?? false;
 
   return <SettingsFrame note="เปลี่ยนค่าในหน้านี้ได้โดยไม่ต้องแก้ .env ค่าที่บันทึกจะใช้กับเอกสารที่นำเข้าหลังจากนี้">
     {!editable && <div className="flex items-center gap-3 rounded-lg border border-[var(--line)] bg-white px-4 py-3 text-[13px] text-[var(--muted)]"><Info size={18} className="shrink-0 text-[var(--accent)]" />ดูค่าได้อย่างเดียว เฉพาะผู้ดูแลระบบ (ADMIN) ที่แก้ไขและทดสอบได้</div>}
@@ -108,7 +153,22 @@ export default function OCRSettingsPage() {
       <SettingsCard title="การเชื่อมต่อ OCR API" description="ที่อยู่ของบริการอ่านเอกสาร ใช้กับเอ็นจิน thaidoc-extract และ DocFlow contract">
         {isInsecureURL(form.apiUrl) && <div role="alert" className="mx-5 mt-5 flex items-center gap-2 rounded-lg bg-[var(--warning-soft)] px-4 py-3 text-[13px] text-[var(--warning)] lg:mx-6"><StatusDot tone="warn" />การเชื่อมต่อไม่ได้เข้ารหัส แนะนำให้ใช้ https://</div>}
         <Row title="API URL" hint="เช่น https://ocr.example.ac.th" htmlFor="api-url"><input id="api-url" type="url" value={form.apiUrl} disabled={!editable} onChange={(event) => patch({ apiUrl: event.target.value.trim() })} placeholder="https://..." className="focus-ring h-10 w-full rounded-md border border-[var(--line-strong)] px-3 text-[13px] disabled:opacity-60 sm:w-[340px]" /></Row>
-        <Row title="API key" hint="ตั้งค่าที่ OCR_API_KEY ในไฟล์ .env ไม่แสดงในหน้านี้"><span className="inline-flex items-center gap-1.5 text-[13px] text-[var(--muted)]"><StatusDot tone={apiKeyConfigured ? "good" : "idle"} />{apiKeyConfigured ? "ตั้งค่าแล้ว" : "ยังไม่ได้ตั้งค่า"}</span></Row>
+        <Row title="API key" hint="บันทึกจากหน้านี้ได้ ค่าจะถูกเข้ารหัสและไม่แสดงกลับมา ถ้าไม่ได้ตั้งจากหน้านี้ จะใช้ OCR_API_KEY ในไฟล์ .env" htmlFor={editable ? "api-key" : undefined}>
+          {keyState && <div className="flex w-full flex-col gap-2 sm:w-[340px]">
+            <span className="inline-flex items-center gap-1.5 text-[13px] text-[var(--muted)]"><StatusDot tone={keySource === "none" ? "idle" : "good"} />{keyPlaceholder}</span>
+            {editable && <>
+              <div className="flex gap-2">
+                <div className="relative min-w-0 flex-1">
+                  <input id="api-key" type={showApiKey ? "text" : "password"} autoComplete="off" spellCheck={false} value={apiKeyInput} disabled={!keyWritable || savingKey} onChange={(event) => setApiKeyInput(event.target.value)} placeholder={keyPlaceholder} className="focus-ring h-10 w-full rounded-md border border-[var(--line-strong)] px-3 pr-10 font-mono text-[13px] disabled:opacity-60" />
+                  <button type="button" onClick={() => setShowApiKey((current) => !current)} aria-label={showApiKey ? "ซ่อน API key" : "แสดง API key"} className="focus-ring absolute right-1 top-1 flex h-8 w-8 items-center justify-center rounded text-[var(--muted)] hover:text-[var(--navy)]">{showApiKey ? <EyeSlash size={16} /> : <Eye size={16} />}</button>
+                </div>
+                <button type="button" disabled={!keyWritable || !apiKeyInput.trim() || savingKey} onClick={saveApiKey} className="focus-ring h-10 shrink-0 rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{savingKey ? "กำลังบันทึก..." : "บันทึก key"}</button>
+              </div>
+              {!keyWritable && <p className="text-xs text-[var(--warning)]">{apiKeyNotWritableMessage}</p>}
+              {keySource === "web" && <button type="button" disabled={savingKey} onClick={removeApiKey} className="focus-ring self-start rounded text-xs text-[var(--danger)] underline underline-offset-2 disabled:opacity-50">ลบ key ที่ตั้งจากหน้าเว็บ</button>}
+            </>}
+          </div>}
+        </Row>
         <Row title="ทดสอบการเชื่อมต่อ" hint={connection ? <span className="inline-flex items-center gap-1.5"><StatusDot tone={connectionTone[connection.status]} />{connection.detail}</span> : "ตรวจว่าเข้าถึง API และ API key ใช้ได้หรือไม่"}><button type="button" disabled={!editable || testing} onClick={runConnectionTest} className="focus-ring h-10 rounded-md border border-[var(--line-strong)] bg-white px-4 text-sm hover:bg-[var(--line-soft)] disabled:cursor-not-allowed disabled:opacity-50">{testing ? "กำลังทดสอบ..." : "ทดสอบการเชื่อมต่อ"}</button></Row>
       </SettingsCard>
 

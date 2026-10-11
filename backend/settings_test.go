@@ -137,9 +137,14 @@ func TestSystemSettingsShowTheDefaultSyncHost(t *testing.T) {
 }
 
 type fakeSettingsStore struct {
-	settings OCRSettings
-	savedBy  string
-	err      error
+	settings   OCRSettings
+	savedBy    string
+	err        error
+	webKey     string
+	webKeyErr  error
+	writable   bool
+	keySavedBy string
+	keyRemoved bool
 }
 
 func (s *fakeSettingsStore) LoadOCR() (OCRSettings, error) { return s.settings, s.err }
@@ -148,6 +153,18 @@ func (s *fakeSettingsStore) SaveOCR(settings OCRSettings, userID string) error {
 	s.savedBy = userID
 	return s.err
 }
+func (s *fakeSettingsStore) LoadWebAPIKey() (string, error) { return s.webKey, s.webKeyErr }
+func (s *fakeSettingsStore) SaveWebAPIKey(apiKey, userID string) error {
+	s.webKey = apiKey
+	s.keySavedBy = userID
+	return nil
+}
+func (s *fakeSettingsStore) DeleteWebAPIKey(string) error {
+	s.webKey = ""
+	s.keyRemoved = true
+	return nil
+}
+func (s *fakeSettingsStore) APIKeyWritable() bool { return s.writable }
 
 func settingsRouter(store SettingsStore, role string) *gin.Engine {
 	gin.SetMode(gin.TestMode)

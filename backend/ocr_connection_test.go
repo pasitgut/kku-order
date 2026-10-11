@@ -106,12 +106,10 @@ func TestOCRConnectionHandlerUsesUnsavedValuesAndHidesKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	load := func() (OCRSettings, error) {
-		return OCRSettings{Engine: "thaidoc", APIURL: "https://stored.example"}, nil
-	}
+	store := &fakeSettingsStore{settings: OCRSettings{Engine: "thaidoc", APIURL: "https://stored.example"}}
 	cfg := ocrAPIConfig{APIKey: "TOPSECRET-KEY", Timeout: time.Second}
 	body := strings.NewReader(`{"engine":"thaidoc","apiUrl":"` + srv.URL + `"}`)
-	rec := performRequest(t, http.MethodPost, "/api/v1/settings/ocr/test", "/api/v1/settings/ocr/test", body, testOCRConnectionHandler(load, cfg))
+	rec := performRequest(t, http.MethodPost, "/api/v1/settings/ocr/test", "/api/v1/settings/ocr/test", body, testOCRConnectionHandler(store, cfg))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
@@ -126,9 +124,9 @@ func TestOCRConnectionHandlerUsesUnsavedValuesAndHidesKey(t *testing.T) {
 }
 
 func TestOCRConnectionHandlerRejectsRetiredEngine(t *testing.T) {
-	load := func() (OCRSettings, error) { return defaultOCRSettings(), nil }
+	store := &fakeSettingsStore{settings: defaultOCRSettings()}
 	body := strings.NewReader(`{"engine":"one-ocr"}`)
-	rec := performRequest(t, http.MethodPost, "/api/v1/settings/ocr/test", "/api/v1/settings/ocr/test", body, testOCRConnectionHandler(load, ocrAPIConfig{}))
+	rec := performRequest(t, http.MethodPost, "/api/v1/settings/ocr/test", "/api/v1/settings/ocr/test", body, testOCRConnectionHandler(store, ocrAPIConfig{}))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s, want 400", rec.Code, rec.Body.String())
 	}

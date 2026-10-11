@@ -75,6 +75,13 @@ func NewDocumentProcessor(db *gorm.DB, logger *log.Logger, cfg ocrAPIConfig) *Do
 	return p
 }
 
+// buildExtractor reads the effective API key at call time, so a key saved from the web applies without a restart.
+func (p *DocumentProcessor) buildExtractor(settings OCRSettings) (Extractor, error) {
+	cfg := p.ocrConfig
+	cfg.APIKey, _ = effectiveOCRAPIKey(p.settings, p.ocrConfig)
+	return p.newExtractor(settings, cfg)
+}
+
 func (p *DocumentProcessor) runStructuredImport(ctx context.Context, documentPath, sourceType string) (workerResult, error) {
 	tempDir, err := os.MkdirTemp("", "docflow-import-")
 	if err != nil {
