@@ -4,9 +4,11 @@ import { useRouter } from "next/navigation";
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info, MagnifyingGlass, MapPin, PencilSimple, Trash, UploadSimple, UserPlus, UsersThree, WarningCircle } from "@phosphor-icons/react";
 import { AppShell, StatusBadge } from "@/components/app-shell";
+import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, rosterRows, summarizeDepartments } from "@/lib/member-review";
+import { can } from "@/lib/permissions";
 
 type PanelView = "roster" | "members" | "metadata" | "duties";
 
@@ -37,6 +39,7 @@ const smallButton = "focus-ring inline-flex h-9 items-center gap-1.5 whitespace-
 export function DocumentWorkspace({ document: initialDocument }: { document: ApiDocument }) {
   const router = useRouter();
   const toast = useToast();
+  const { me } = useMe();
   const [document, setDocument] = useState(initialDocument);
   const [fields, setFields] = useState(initialDocument.fields ?? []);
   const [appointments, setAppointments] = useState(initialDocument.appointments ?? []);
@@ -57,6 +60,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [restorePoints, setRestorePoints] = useState<Record<number, RestorePoint>>({});
   const [replaceArmed, setReplaceArmed] = useState(false);
   const [replacing, setReplacing] = useState(false);
+  const [reprocessing, setReprocessing] = useState(false);
   // เกณฑ์เดียวกับที่ backend ใช้ตัดสินว่าเอกสารต้องตรวจสอบ ปรับได้ที่หน้าตั้งค่า OCR
   const [reviewThreshold, setReviewThreshold] = useState(0.9);
   const replaceInputRef = useRef<HTMLInputElement>(null);
@@ -94,6 +98,22 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   useEffect(() => {
     getDocumentRevisions(document.id).then((response) => setRevisions(response.data)).catch(() => setRevisions([]));
   }, [document.id]);
+
+  useEffect(() => {
+    if (document.processingStage !== "QUEUED" && document.processingStage !== "PREPARING") return;
+    let active = true;
+    const timer = window.setInterval(() => {
+      getDocument(document.id).then(({ data }) => {
+        if (!active) return;
+        setDocument(data);
+        if (data.processingStage === "EXTRACTED" || data.processingStage === "FAILED") {
+          setFields(data.fields ?? []);
+          setAppointments(data.appointments ?? []);
+        }
+      }).catch(() => {});
+    }, 2000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [document.id, document.processingStage]);
 
   const showError = (reason: unknown, fallback: string) => toast(reason instanceof Error ? reason.message : fallback, { kind: "error" });
 
@@ -237,6 +257,19 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     }
   };
 
+  const retryProcessing = async () => {
+    setReprocessing(true);
+    try {
+      await reprocessDocument(document.id);
+      setDocument((current) => ({ ...current, status: "PROCESSING", processingStage: "QUEUED", ocrError: "" }));
+      toast("ส่งเอกสารเข้าคิวประมวลผลใหม่แล้ว");
+    } catch (reason) {
+      showError(reason, "ส่งเอกสารเข้าคิวใหม่ไม่สำเร็จ");
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
   const removeDocument = async () => {
     if (!deleteArmed) {
       setDeleteArmed(true);
@@ -273,6 +306,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       <section className="card flex min-w-0 flex-col overflow-hidden">
         <div className="space-y-3 px-5 pb-4 pt-5 lg:px-6">
           <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-[var(--navy)]">ตรวจสอบข้อมูลเอกสาร</h2><span className="text-xs text-[var(--muted)]">ข้อมูลจากการสกัด · แก้ไขได้ทุกช่อง</span></div>
+          {document.processingStage === "FAILED" && <div role="alert" className="flex flex-col gap-3 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning-soft)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-start gap-2"><WarningCircle size={18} className="mt-0.5 shrink-0 text-[var(--warning)]" /><div className="min-w-0"><p className="text-sm font-medium text-[var(--navy)]">ประมวลผลเอกสารไม่สำเร็จ จึงยังไม่มีข้อมูลให้ตรวจ</p>{can(me?.role ?? "", "settings") && document.ocrError && <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">สาเหตุ: {document.ocrError}</p>}</div></div>{can(me?.role ?? "", "edit") && <button type="button" disabled={reprocessing} onClick={retryProcessing} className="focus-ring inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-60"><ArrowCounterClockwise size={15} className={reprocessing ? "animate-spin" : ""} />{reprocessing ? "กำลังส่งเข้าคิว..." : "ลองประมวลผลอีกครั้ง"}</button>}</div>}
+          {(document.processingStage === "QUEUED" || document.processingStage === "PREPARING") && <p role="status" className="rounded-lg bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--navy)]">กำลังประมวลผลเอกสาร ระบบจะอัปเดตข้อมูลให้อัตโนมัติ</p>}
           <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="min-w-[180px] flex-1"><p className="text-xs text-[var(--muted)]">ตรวจแล้ว <span className="font-medium text-[var(--ink)]">{verifiedCount}</span> จาก {appointments.length} รายชื่อ</p><span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${appointments.length ? Math.round((verifiedCount / appointments.length) * 100) : 0}%` }} /></span></div>
             {unlinkedAppointments.length > 0 && <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs"><span className="h-2 w-2 rounded-full bg-[var(--highlight)]" />ยังไม่ผูก {unlinkedAppointments.length}</span>}

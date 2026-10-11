@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -83,7 +84,7 @@ type ExtractedField struct {
 	SourceText      string     `json:"sourceText" gorm:"type:text"`
 	Confidence      float32    `json:"confidence"`
 	PageNo          int        `json:"pageNo"`
-	BoundingBoxJSON string     `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string     `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	Verified        bool       `json:"verified"`
 	VerifiedBy      string     `json:"verifiedBy" gorm:"size:255"`
 	VerifiedAt      *time.Time `json:"verifiedAt"`
@@ -113,7 +114,7 @@ type OCRLine struct {
 	LineIndex       int       `json:"lineIndex"`
 	Text            string    `json:"text" gorm:"type:longtext;not null"`
 	Confidence      float32   `json:"confidence"`
-	BoundingBoxJSON string    `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string    `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	RawJSON         string    `json:"-" gorm:"type:json"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
@@ -150,7 +151,7 @@ type Appointment struct {
 	NameMatchScore  float32              `json:"nameMatchScore"`
 	Confidence      float32              `json:"confidence"`
 	PageNo          int                  `json:"pageNo"`
-	BoundingBoxJSON string               `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string               `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	Verified        bool                 `json:"verified"`
 	VerifiedBy      string               `json:"verifiedBy" gorm:"size:255"`
 	VerifiedAt      *time.Time           `json:"verifiedAt"`
@@ -164,7 +165,7 @@ type DocumentReference struct {
 	ReferenceType   string    `json:"referenceType" gorm:"size:100"`
 	ReferenceText   string    `json:"referenceText" gorm:"type:text"`
 	PageNo          int       `json:"pageNo"`
-	BoundingBoxJSON string    `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string    `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }
@@ -359,8 +360,9 @@ func main() {
 	if driveErr != nil {
 		logger.Printf("Google Drive sync disabled: %v", driveErr)
 	} else if driveImporter != nil {
-		runGoogleDriveSync(driveImporter, logger, "initial")
+		go runGoogleDriveSync(driveImporter, logger, "initial")
 	}
+	go runDriveOCRQueue(db, processor, logger)
 	scheduler := cron.New(cron.WithLocation(location), cron.WithChain(cron.DelayIfStillRunning(cron.DefaultLogger), cron.Recover(cron.DefaultLogger)))
 	if _, err := scheduler.AddFunc(getenv("USER_SYNC_CRON", "0 5 * * *"), func() {
 		result, syncErr := userSync.SyncUsers(context.Background())
@@ -391,11 +393,14 @@ func main() {
 		panic(fmt.Errorf("configure folder import schedule: %w", err))
 	}
 	if driveImporter != nil {
-		if _, err := scheduler.AddFunc(getenv("GOOGLE_DRIVE_SYNC_CRON", "*/5 * * * *"), func() {
+		if _, err := scheduler.AddFunc("* * * * *", func() {
 			runGoogleDriveSync(driveImporter, logger, "scheduled")
 		}); err != nil {
 			panic(fmt.Errorf("configure Google Drive sync schedule: %w", err))
 		}
+	}
+	if _, err := scheduler.AddFunc("* * * * *", func() { runDriveOCRQueue(db, processor, logger) }); err != nil {
+		panic(fmt.Errorf("configure Drive processing queue: %w", err))
 	}
 	refreshExpiryNotifications(db, logger)
 	scheduler.Start()
@@ -416,6 +421,36 @@ func main() {
 	router.GET("/api/v1/documents/:id", getDocument(db))
 	router.GET("/api/v1/documents/:id/file", documentFile(db))
 	router.GET("/api/v1/documents/:id/pages/:page/image", documentPageImage(db))
+	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), func(c *gin.Context) {
+		documentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil || documentID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
+			return
+		}
+		result := db.Model(&Document{}).Where("id = ? AND processing_stage = ?", documentID, "FAILED").Updates(map[string]any{
+			"status": "PROCESSING", "processing_stage": "QUEUED", "ocr_error": "",
+			"processing_started_at": nil, "processing_finished_at": nil, "processing_duration_ms": 0,
+		})
+		if result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถส่งเอกสารเข้าคิวประมวลผลได้"})
+			return
+		}
+		if result.RowsAffected == 0 {
+			var count int64
+			if err := db.Model(&Document{}).Where("id = ?", documentID).Count(&count).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบสถานะเอกสารได้"})
+				return
+			}
+			if count == 0 {
+				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
+				return
+			}
+			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารนี้ไม่ได้อยู่ในสถานะที่ประมวลผลซ้ำได้"})
+			return
+		}
+		processor.Enqueue(uint(documentID))
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"id": documentID, "status": "PROCESSING", "processingStage": "QUEUED"}})
+	})
 	router.GET("/api/v1/documents/:id/revisions", listDocumentRevisions(db))
 	router.GET("/api/v1/documents/:id/audit", listDocumentAuditLogs(db))
 	router.POST("/api/v1/documents", requireRole("ADMIN", "STAFF"), uploadDocument(db, processor))
@@ -428,7 +463,45 @@ func main() {
 	settingsStore := NewSettingsStore(db)
 	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore))
 	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
+	router.GET("/api/v1/settings/drive/status", requireRole("ADMIN", "STAFF", "DEVELOPER"), getDriveAutomationStatus(db, settingsStore))
 	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRSettingsHandler())
+	router.POST("/api/v1/settings/drive/test", requireRole("ADMIN"), func(c *gin.Context) {
+		if driveImporter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			return
+		}
+		var request struct {
+			FolderURL string `json:"folderUrl"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุลิงก์โฟลเดอร์ Google Drive"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+		defer cancel()
+		folderName, err := driveImporter.TestConnection(ctx, request.FolderURL)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"folderName": folderName, "accessible": true}})
+	})
+	router.POST("/api/v1/settings/drive/sync", requireRole("ADMIN"), func(c *gin.Context) {
+		if driveImporter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			return
+		}
+		run, err := driveImporter.StartNow()
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, errDriveBusy) {
+				status = http.StatusConflict
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"runId": run.ID, "status": run.Status}})
+	})
 	router.GET("/api/v1/settings/system", requireRole("ADMIN", "STAFF", "DEVELOPER"), systemSettingsHandler())
 	router.GET("/api/v1/me", meHandler(db))
 	router.GET("/api/v1/me/activity", myActivityHandler(db))

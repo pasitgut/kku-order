@@ -239,6 +239,10 @@ export async function getDocument(id: string | number) {
   return apiFetch<{ data: ApiDocument }>(`/api/v1/documents/${id}`);
 }
 
+export async function reprocessDocument(id: string | number) {
+  return apiFetch<{ data: { id: number; status: string; processingStage: string } }>(`/api/v1/documents/${id}/reprocess`, { method: "POST" });
+}
+
 export async function getDocumentRevisions(id: string | number) {
   return apiFetch<{ data: DocumentRevision[] }>(`/api/v1/documents/${id}/revisions`);
 }
@@ -360,6 +364,8 @@ export type OCRSettings = {
   importIntervalMinutes: number;
   driveFolderUrl: string;
   driveAfterImport: "move" | "keep";
+  driveSyncTime: string;
+  driveTimezone: string;
 };
 
 export type OCRTestResult = { confidence: number; seconds: number; lineCount: number; lines: { text: string; confidence: number }[] };
@@ -376,6 +382,7 @@ export type SystemSettings = {
   smtpConfigured: boolean;
   importDir: string;
   authRequired: boolean;
+  googleDriveCredentialsConfigured: boolean;
 };
 
 export type Me = {
@@ -416,6 +423,45 @@ export async function testOCRSettings(file: File, settings: OCRSettings) {
 
 export async function getSystemSettings() {
   return apiFetch<{ data: SystemSettings }>("/api/v1/settings/system");
+}
+
+export async function testGoogleDriveConnection(folderUrl: string) {
+  return apiFetch<{ data: { folderName: string; accessible: boolean } }>("/api/v1/settings/drive/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folderUrl }),
+  });
+}
+
+export async function syncGoogleDriveNow() {
+  return apiFetch<{ data: { runId: number; status: string } }>("/api/v1/settings/drive/sync", { method: "POST" });
+}
+
+export type DriveSyncRun = {
+  id: number;
+  rootId: string;
+  folderName: string;
+  status: "RUNNING" | "COMPLETED" | "PARTIAL";
+  triggerType: "MANUAL" | "SCHEDULED";
+  startedAt: string;
+  finishedAt: string | null;
+  retryAt: string | null;
+  lastError: string;
+};
+
+export type DriveAutomationStatus = {
+  serviceAccountEmail: string;
+  credentialsConfigured: boolean;
+  nextSyncAt: string | null;
+  run: DriveSyncRun | null;
+  counts: Record<string, number>;
+  folderCounts: Record<string, number>;
+  issues: { fileName: string; status: string; attempts: number; lastError: string }[];
+  history: DriveSyncRun[];
+};
+
+export async function getDriveAutomationStatus() {
+  return apiFetch<{ data: DriveAutomationStatus }>("/api/v1/settings/drive/status");
 }
 
 export async function getMe() {

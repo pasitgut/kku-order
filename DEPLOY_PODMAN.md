@@ -107,12 +107,12 @@ BACKEND_INTERNAL_URL ต้องเป็น http://api:8080 เพราะ We
 หากต้องการเปิด Google Drive sync ให้สร้าง `deploy/secrets/google-drive-service-account.json` บนเครื่อง deploy แล้วตั้งค่าในไฟล์ `.env` ที่ใช้กับ compose:
 
 ~~~env
-GOOGLE_DRIVE_FOLDER_ID=1HAQQhmzVq9Ch0_UZKWSnhrJmY-5t1SUr
 GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-service-account.json
-GOOGLE_DRIVE_SYNC_CRON=*/5 * * * *
 ~~~
 
-แชร์โฟลเดอร์ให้ service account มีสิทธิ์ Viewer จากนั้นเพิ่ม `deploy/podman-compose.drive.yml` เป็น compose file เพิ่มเติม คำสั่งตัวอย่าง:
+ถ้ายังไม่มี service account ให้ติดตั้ง Google Cloud CLI บนเครื่องผู้ดูแล ลงชื่อเข้าใช้ด้วย `gcloud auth login` แล้วรัน `./scripts/setup-google-drive.ps1 -ProjectId YOUR_PROJECT_ID` จาก root ของโปรเจกต์ สคริปต์สร้างบัญชีและแสดงอีเมลสำหรับแชร์โฟลเดอร์ จากนั้นนำ key ไปวางใน `deploy/secrets/` ตามด้านบน ([ขั้นตอนทั้งหมด](README.md#นำเข้าไฟล์จาก-google-drive-อัตโนมัติ))
+
+ตั้งลิงก์โฟลเดอร์และเวลาดึงรายวันได้ในหน้า ตั้งค่า → Google Drive ค่าเริ่มต้น 05:00 Asia/Bangkok แชร์โฟลเดอร์ให้ service account มีสิทธิ์ Viewer ทดสอบการเข้าถึง และกดดึงไฟล์ตอนนี้เพื่อเริ่มรอบแรก จากนั้นเพิ่ม `deploy/podman-compose.drive.yml` เป็น compose file เพิ่มเติม คำสั่งตัวอย่าง:
 
 ~~~bash
 cd /opt/docflow
@@ -120,6 +120,8 @@ podman-compose -f podman-compose.yml -f podman-compose.drive.yml up -d
 ~~~
 
 Compose override จะ mount JSON แบบ read-only เข้า API container; ไฟล์ key ต้องอ่านได้โดยผู้ใช้ `app` ใน container และห้ามใส่ใน image หรือส่งไปกับ image bundle
+
+backend ใช้ migration `0008_google_drive_automation.sql` สร้างคิวและประวัติใน MySQL อัตโนมัติเมื่อเริ่มระบบ สำรอง MySQL และ storage volume ร่วมกัน งานขนาดใหญ่ทำต่อจาก checkpoint หลังรีสตาร์ต คิวรายละเอียดเก็บ 10 รอบล่าสุดต่อต้นทาง ส่วนบัญชี Drive file ID เก็บต่อเนื่องเพื่อป้องกันการดึงซ้ำ
 
 ## 3. ทดสอบก่อนส่งขึ้น server
 

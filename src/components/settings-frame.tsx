@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowsClockwise, Scan, UsersThree } from "@phosphor-icons/react";
+import { ArrowsClockwise, GoogleDriveLogo, Scan, UsersThree } from "@phosphor-icons/react";
 import { AppShell } from "@/components/app-shell";
 
 const sections = [
   { group: "ผู้ใช้งาน", items: [{ href: "/settings", label: "ผู้ใช้งานและสิทธิ์", icon: UsersThree }] },
-  { group: "การทำงานของระบบ", items: [{ href: "/settings/ocr", label: "OCR และการนำเข้า", icon: Scan }, { href: "/settings/system", label: "sync และการแจ้งเตือน", icon: ArrowsClockwise }] },
+  { group: "การทำงานของระบบ", items: [{ href: "/settings/ocr", label: "OCR และการนำเข้า", icon: Scan }, { href: "/settings/drive", label: "Google Drive", icon: GoogleDriveLogo }, { href: "/settings/system", label: "sync และการแจ้งเตือน", icon: ArrowsClockwise }] },
 ];
 
 export function SettingsFrame({ children, actions, note }: { children: React.ReactNode; actions?: React.ReactNode; note: string }) {

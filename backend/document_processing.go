@@ -57,6 +57,15 @@ func NewDocumentProcessor(db *gorm.DB, logger *log.Logger) *DocumentProcessor {
 
 func (p *DocumentProcessor) Enqueue(documentID uint) {
 	go func() {
+		var queued Document
+		if err := p.db.Select("id", "import_source").First(&queued, documentID).Error; err != nil {
+			p.logger.Printf("load queued document %d: %v", documentID, err)
+			return
+		}
+		if queued.ImportSource == "GOOGLE_DRIVE" {
+			runDriveOCRQueue(p.db, p, p.logger)
+			return
+		}
 		if err := p.Process(context.Background(), documentID); err != nil {
 			p.logger.Printf("document %d processing failed: %v", documentID, err)
 		}
