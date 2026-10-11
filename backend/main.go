@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -322,6 +321,97 @@ type ExpiryNotification struct {
 
 var allowedExtensions = map[string]bool{".pdf": true, ".docx": true, ".xlsx": true, ".csv": true}
 
+// apiRouteDeps holds the long-lived services the HTTP routes are wired to.
+type apiRouteDeps struct {
+	db            *gorm.DB
+	processor     *DocumentProcessor
+	ocrConfig     ocrAPIConfig
+	userSync      *UserSyncService
+	driveImporter *GoogleDriveImporter
+}
+
+// newAPIRouter builds the Gin engine exactly as the server runs it. main() and
+// the route tests share it, so a duplicate registration panics in go test too.
+func newAPIRouter(deps apiRouteDeps) *gin.Engine {
+	db, processor, ocrConfig, userSync, driveImporter := deps.db, deps.processor, deps.ocrConfig, deps.userSync, deps.driveImporter
+	router := gin.Default()
+	router.MaxMultipartMemory = 50 << 20
+	router.Use(corsMiddleware())
+	router.Use(authMiddleware())
+	router.GET("/health", healthHandler(db))
+	router.GET("/api/v1/dashboard", dashboardHandler(db))
+	router.GET("/api/v1/notifications/expiry", listExpiryNotifications(db))
+	router.GET("/api/v1/search", searchDocuments(db))
+	router.GET("/api/v1/reports/workload", workloadReport(db))
+	router.GET("/api/v1/directory-users", listDirectoryUsers(db))
+	router.POST("/api/v1/directory-users", requireRole("ADMIN", "STAFF"), createDirectoryUser(db))
+	router.GET("/api/v1/documents", listDocuments(db))
+	router.GET("/api/v1/documents/:id", getDocument(db))
+	router.GET("/api/v1/documents/:id/file", documentFile(db))
+	router.GET("/api/v1/documents/:id/pages/:page/image", documentPageImage(db))
+	router.GET("/api/v1/documents/:id/revisions", listDocumentRevisions(db))
+	router.GET("/api/v1/documents/:id/audit", listDocumentAuditLogs(db))
+	router.POST("/api/v1/documents", requireRole("ADMIN", "STAFF"), uploadDocument(db, processor))
+	router.POST("/api/v1/documents/:id/file", requireRole("ADMIN", "STAFF"), replaceDocumentFile(db, processor))
+	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(gormReprocessStore{db: db}, processor.Enqueue))
+	router.PATCH("/api/v1/documents/:id", requireRole("ADMIN", "STAFF"), updateDocument(db))
+	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
+	router.POST("/api/v1/documents/:id/cancel", requireRole("ADMIN", "STAFF"), cancelDocument(db))
+	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
+	router.POST("/api/v1/sync/users", requireRole("ADMIN", "STAFF"), userSyncHandler(userSync))
+	router.GET("/api/v1/sync/runs", listSyncRuns(db))
+	settingsStore := NewSettingsStore(db)
+	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore, ocrConfig))
+	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
+	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore.LoadOCR, ocrConfig))
+	router.GET("/api/v1/settings/drive/status", requireRole("ADMIN", "STAFF", "DEVELOPER"), getDriveAutomationStatus(db, settingsStore))
+	router.POST("/api/v1/settings/drive/test", requireRole("ADMIN"), func(c *gin.Context) {
+		if driveImporter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			return
+		}
+		var request struct {
+			FolderURL string `json:"folderUrl"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุลิงก์โฟลเดอร์ Google Drive"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+		defer cancel()
+		folderName, err := driveImporter.TestConnection(ctx, request.FolderURL)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"folderName": folderName, "accessible": true}})
+	})
+	router.POST("/api/v1/settings/drive/sync", requireRole("ADMIN"), func(c *gin.Context) {
+		if driveImporter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			return
+		}
+		run, err := driveImporter.StartNow()
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, errDriveBusy) {
+				status = http.StatusConflict
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"runId": run.ID, "status": run.Status}})
+	})
+	router.GET("/api/v1/settings/system", requireRole("ADMIN", "STAFF", "DEVELOPER"), systemSettingsHandler())
+	router.GET("/api/v1/me", meHandler(db))
+	router.GET("/api/v1/me/activity", myActivityHandler(db))
+	router.GET("/api/v1/me/photo", getMyPhotoHandler(db))
+	router.PUT("/api/v1/me/photo", uploadMyPhotoHandler(db))
+	router.DELETE("/api/v1/me/photo", deleteMyPhotoHandler(db))
+
+	return router
+}
+
 func main() {
 	logger := log.New(os.Stdout, "[docflow] ", log.LstdFlags|log.LUTC)
 	if err := loadLocalEnvironment(); err != nil {
@@ -423,111 +513,7 @@ func main() {
 	scheduler.Start()
 	defer scheduler.Stop()
 
-	router := gin.Default()
-	router.MaxMultipartMemory = 50 << 20
-	router.Use(corsMiddleware())
-	router.Use(authMiddleware())
-	router.GET("/health", healthHandler(db))
-	router.GET("/api/v1/dashboard", dashboardHandler(db))
-	router.GET("/api/v1/notifications/expiry", listExpiryNotifications(db))
-	router.GET("/api/v1/search", searchDocuments(db))
-	router.GET("/api/v1/reports/workload", workloadReport(db))
-	router.GET("/api/v1/directory-users", listDirectoryUsers(db))
-	router.POST("/api/v1/directory-users", requireRole("ADMIN", "STAFF"), createDirectoryUser(db))
-	router.GET("/api/v1/documents", listDocuments(db))
-	router.GET("/api/v1/documents/:id", getDocument(db))
-	router.GET("/api/v1/documents/:id/file", documentFile(db))
-	router.GET("/api/v1/documents/:id/pages/:page/image", documentPageImage(db))
-	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), func(c *gin.Context) {
-		documentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
-		if err != nil || documentID == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
-			return
-		}
-		result := db.Model(&Document{}).Where("id = ? AND processing_stage = ? AND status <> ?", documentID, "FAILED", documentCancelled).Updates(map[string]any{
-			"status": "PROCESSING", "processing_stage": "QUEUED", "ocr_error": "",
-			"processing_started_at": nil, "processing_finished_at": nil, "processing_duration_ms": 0,
-		})
-		if result.Error != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถส่งเอกสารเข้าคิวประมวลผลได้"})
-			return
-		}
-		if result.RowsAffected == 0 {
-			var count int64
-			if err := db.Model(&Document{}).Where("id = ?", documentID).Count(&count).Error; err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบสถานะเอกสารได้"})
-				return
-			}
-			if count == 0 {
-				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
-				return
-			}
-			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารนี้ไม่ได้อยู่ในสถานะที่ประมวลผลซ้ำได้"})
-			return
-		}
-		processor.Enqueue(uint(documentID))
-		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"id": documentID, "status": "PROCESSING", "processingStage": "QUEUED"}})
-	})
-	router.GET("/api/v1/documents/:id/revisions", listDocumentRevisions(db))
-	router.GET("/api/v1/documents/:id/audit", listDocumentAuditLogs(db))
-	router.POST("/api/v1/documents", requireRole("ADMIN", "STAFF"), uploadDocument(db, processor))
-	router.POST("/api/v1/documents/:id/file", requireRole("ADMIN", "STAFF"), replaceDocumentFile(db, processor))
-	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(gormReprocessStore{db: db}, processor.Enqueue))
-	router.PATCH("/api/v1/documents/:id", requireRole("ADMIN", "STAFF"), updateDocument(db))
-	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
-	router.POST("/api/v1/documents/:id/cancel", requireRole("ADMIN", "STAFF"), cancelDocument(db))
-	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
-	router.POST("/api/v1/sync/users", requireRole("ADMIN", "STAFF"), userSyncHandler(userSync))
-	router.GET("/api/v1/sync/runs", listSyncRuns(db))
-	settingsStore := NewSettingsStore(db)
-	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore, ocrConfig))
-	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
-	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore.LoadOCR, ocrConfig))
-	router.GET("/api/v1/settings/drive/status", requireRole("ADMIN", "STAFF", "DEVELOPER"), getDriveAutomationStatus(db, settingsStore))
-	router.POST("/api/v1/settings/drive/test", requireRole("ADMIN"), func(c *gin.Context) {
-		if driveImporter == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
-			return
-		}
-		var request struct {
-			FolderURL string `json:"folderUrl"`
-		}
-		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุลิงก์โฟลเดอร์ Google Drive"})
-			return
-		}
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
-		defer cancel()
-		folderName, err := driveImporter.TestConnection(ctx, request.FolderURL)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"folderName": folderName, "accessible": true}})
-	})
-	router.POST("/api/v1/settings/drive/sync", requireRole("ADMIN"), func(c *gin.Context) {
-		if driveImporter == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
-			return
-		}
-		run, err := driveImporter.StartNow()
-		if err != nil {
-			status := http.StatusBadGateway
-			if errors.Is(err, errDriveBusy) {
-				status = http.StatusConflict
-			}
-			c.JSON(status, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"runId": run.ID, "status": run.Status}})
-	})
-	router.GET("/api/v1/settings/system", requireRole("ADMIN", "STAFF", "DEVELOPER"), systemSettingsHandler())
-	router.GET("/api/v1/me", meHandler(db))
-	router.GET("/api/v1/me/activity", myActivityHandler(db))
-	router.GET("/api/v1/me/photo", getMyPhotoHandler(db))
-	router.PUT("/api/v1/me/photo", uploadMyPhotoHandler(db))
-	router.DELETE("/api/v1/me/photo", deleteMyPhotoHandler(db))
-
+	router := newAPIRouter(apiRouteDeps{db: db, processor: processor, ocrConfig: ocrConfig, userSync: userSync, driveImporter: driveImporter})
 	port := getenv("PORT", "8080")
 	_ = router.Run(":" + port)
 }

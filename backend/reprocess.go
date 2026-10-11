@@ -27,11 +27,15 @@ type gormReprocessStore struct {
 func (s gormReprocessStore) RequestReprocess(id uint, actor string, now time.Time) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		var doc Document
-		if err := tx.Select("id", "processing_stage").First(&doc, id).Error; err != nil {
+		if err := tx.Select("id", "processing_stage", "status").First(&doc, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errDocumentNotFound
 			}
 			return err
+		}
+		// A cancelled document stays cancelled; reprocessing it would restore workflow state.
+		if doc.Status == documentCancelled {
+			return errDocumentCancelled
 		}
 		if doc.ProcessingStage != "FAILED" && doc.ProcessingStage != "RETRY_WAIT" {
 			return errReprocessNotAllowed
@@ -64,6 +68,8 @@ func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.Hand
 			switch {
 			case errors.Is(err, errDocumentNotFound):
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
+			case errors.Is(err, errDocumentCancelled):
+				c.JSON(http.StatusConflict, gin.H{"error": "เอกสารถูกยกเลิกแล้ว ไม่สามารถประมวลผลใหม่ได้", "status": documentCancelled})
 			case errors.Is(err, errReprocessNotAllowed):
 				c.JSON(http.StatusConflict, gin.H{"error": "ประมวลผลใหม่ได้เฉพาะเอกสารที่ล้มเหลวหรือรอลองใหม่"})
 			default:
