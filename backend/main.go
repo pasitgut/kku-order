@@ -348,7 +348,15 @@ func main() {
 		panic(fmt.Errorf("migrate database: %w", err))
 	}
 
-	processor := NewDocumentProcessor(db, logger)
+	ocrConfig := loadOCRAPIConfigFromEnv()
+	processor := NewDocumentProcessor(db, logger, ocrConfig)
+	// Recover must run before anything can Enqueue: it resets rows still marked
+	// EXTRACTING/PREPARING from a previous process, which would otherwise hit
+	// documents this process is already working on.
+	workerCtx, stopWorkers := context.WithCancel(context.Background())
+	defer stopWorkers()
+	processor.Start(workerCtx)
+	processor.Recover()
 	userSync := NewUserSyncService(db, logger)
 	logger.Printf("external users endpoint: %s (api key configured=%t)", userSync.baseURL, strings.TrimSpace(userSync.apiKey) != "")
 	location := loadTimezone(getenv("USER_SYNC_TZ", "Asia/Bangkok"), logger)
@@ -392,6 +400,9 @@ func main() {
 		}
 	}); err != nil {
 		panic(fmt.Errorf("configure folder import schedule: %w", err))
+	}
+	if _, err := scheduler.AddFunc("* * * * *", processor.Sweep); err != nil {
+		panic(fmt.Errorf("schedule sweep: %w", err))
 	}
 	if driveImporter != nil {
 		if _, err := scheduler.AddFunc(getenv("GOOGLE_DRIVE_SYNC_CRON", "*/5 * * * *"), func() {

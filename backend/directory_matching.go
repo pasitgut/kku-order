@@ -191,17 +191,6 @@ func matchAppointments(appointments []Appointment, users []DirectoryUser, aliase
 	return weak
 }
 
-func (p *DocumentProcessor) applyDirectoryMatches(metadata *commandMetadata) {
-	users, aliases, err := loadDirectory(p.db)
-	if err != nil {
-		p.logger.Printf("directory matching skipped: %v", err)
-		return
-	}
-	if matchAppointments(metadata.appointments, users, aliases) {
-		metadata.lowConfidence = true
-	}
-}
-
 func applyMatchToAppointment(appointment *Appointment, match directoryMatch) {
 	appointment.NameMatchMethod = match.Method
 	appointment.Candidates = match.Candidates

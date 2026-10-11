@@ -20,9 +20,16 @@ import (
 )
 
 type DocumentProcessor struct {
-	db       *gorm.DB
-	logger   *log.Logger
-	settings SettingsStore
+	db               *gorm.DB
+	logger           *log.Logger
+	settings         SettingsStore
+	jobs             extractionJobs
+	ocrConfig        ocrAPIConfig
+	newExtractor     func(OCRSettings, ocrAPIConfig) (Extractor, error)
+	pageCount        pageCounter
+	importStructured func(ctx context.Context, path, sourceType string) (workerResult, error)
+	now              func() time.Time
+	queue            chan uint
 }
 
 type workerResult struct {
@@ -51,80 +58,21 @@ type workerWord struct {
 	BoundingBox []float64 `json:"boundingBox"`
 }
 
-func NewDocumentProcessor(db *gorm.DB, logger *log.Logger) *DocumentProcessor {
-	return &DocumentProcessor{db: db, logger: logger, settings: NewSettingsStore(db)}
-}
-
-func (p *DocumentProcessor) Enqueue(documentID uint) {
-	go func() {
-		if err := p.Process(context.Background(), documentID); err != nil {
-			p.logger.Printf("document %d processing failed: %v", documentID, err)
-		}
-	}()
-}
-
-func (p *DocumentProcessor) Process(ctx context.Context, documentID uint) error {
-	started := time.Now()
-	var document Document
-	if err := p.db.First(&document, documentID).Error; err != nil {
-		return fmt.Errorf("load document: %w", err)
+func NewDocumentProcessor(db *gorm.DB, logger *log.Logger, cfg ocrAPIConfig) *DocumentProcessor {
+	settings := NewSettingsStore(db)
+	p := &DocumentProcessor{
+		db:           db,
+		logger:       logger,
+		settings:     settings,
+		ocrConfig:    cfg,
+		newExtractor: newExtractor,
+		pageCount:    detectPDFPageCount,
+		now:          time.Now,
+		queue:        make(chan uint, 256),
 	}
-	if err := p.db.Model(&document).Updates(map[string]any{
-		"status": "PROCESSING", "processing_stage": "PREPARING", "processing_started_at": started,
-		"ocr_error": "", "ocr_provider": "one-ocr",
-	}).Error; err != nil {
-		return fmt.Errorf("mark processing started: %w", err)
-	}
-
-	result, err := p.runOCR(ctx, document.StoragePath, document.SourceType)
-	if err != nil {
-		finished := time.Now()
-		_ = p.db.Model(&document).Updates(map[string]any{
-			"status": "NEEDS_REVIEW", "processing_stage": "FAILED", "processing_finished_at": finished,
-			"processing_duration_ms": finished.Sub(started).Milliseconds(), "ocr_error": err.Error(),
-		}).Error
-		return err
-	}
-
-	if err := p.persistOCRResult(&document, result, started); err != nil {
-		finished := time.Now()
-		_ = p.db.Model(&document).Updates(map[string]any{
-			"status": "NEEDS_REVIEW", "processing_stage": "FAILED", "processing_finished_at": finished,
-			"processing_duration_ms": finished.Sub(started).Milliseconds(), "ocr_error": err.Error(),
-		}).Error
-		return err
-	}
-	return nil
-}
-
-func (p *DocumentProcessor) runOCR(ctx context.Context, documentPath, sourceType string) (workerResult, error) {
-	if strings.ToLower(sourceType) != "pdf" {
-		return p.runStructuredImport(ctx, documentPath, sourceType)
-	}
-	if _, err := os.Stat(documentPath); err != nil {
-		return workerResult{}, fmt.Errorf("ไม่พบไฟล์ต้นฉบับ: %w", err)
-	}
-	tempDir, err := os.MkdirTemp("", "docflow-ocr-")
-	if err != nil {
-		return workerResult{}, fmt.Errorf("สร้างพื้นที่ประมวลผล: %w", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	pdfPages := detectPDFPageCount(ctx, documentPath)
-	if pdfPages > 100 {
-		return workerResult{}, fmt.Errorf("เอกสารมี %d หน้า เกินขอบเขตสูงสุด 100 หน้า", pdfPages)
-	}
-	settings := loadOCRSettingsOrDefault(p.settings)
-	renderArgs := settings.renderArgs()
-	if pdfPages > 0 {
-		renderArgs = append(renderArgs, "-l", strconv.Itoa(pdfPages))
-	}
-	renderArgs = append(renderArgs, documentPath, filepath.Join(tempDir, "page"))
-	if output, err := exec.CommandContext(ctx, getenv("PDFTOPPM_BIN", "pdftoppm"), renderArgs...).CombinedOutput(); err != nil {
-		return workerResult{}, fmt.Errorf("render PDF เป็นภาพ: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-
-	return runOCRWorker(ctx, settings, tempDir)
+	p.jobs = gormExtractionJobs{db: db, logger: logger, settings: settings, timeout: cfg.Timeout}
+	p.importStructured = p.runStructuredImport
+	return p
 }
 
 func (p *DocumentProcessor) runStructuredImport(ctx context.Context, documentPath, sourceType string) (workerResult, error) {
@@ -154,122 +102,6 @@ func (p *DocumentProcessor) runStructuredImport(ctx context.Context, documentPat
 		return workerResult{}, errors.New("ไม่พบข้อมูลในไฟล์นำเข้า")
 	}
 	return result, nil
-}
-
-func (p *DocumentProcessor) persistOCRResult(document *Document, result workerResult, started time.Time) error {
-	allLines := make([]workerLine, 0)
-	allText := make([]string, 0, len(result.Pages))
-	for _, page := range result.Pages {
-		allText = append(allText, page.FullText)
-		allLines = append(allLines, page.Lines...)
-	}
-	fullText := strings.TrimSpace(strings.Join(allText, "\n"))
-	metadata := extractCommandMetadataForDocument(result.Pages, fullText, document.OriginalFilename)
-	p.applyDirectoryMatches(&metadata)
-	if len(metadata.appointments) > 1000 {
-		return fmt.Errorf("เอกสารมีรายชื่อ %d รายการ เกินขอบเขตสูงสุด 1,000 รายการ", len(metadata.appointments))
-	}
-	averageConfidence := averageOCRConfidence(result.Pages)
-	finished := time.Now()
-	threshold := loadOCRSettingsOrDefault(p.settings).ReviewThreshold
-	status := "REVIEW"
-	if needsReview(averageConfidence, lowConfidenceAt(metadata, threshold), threshold) {
-		status = "NEEDS_REVIEW"
-	}
-
-	return p.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("document_id = ?", document.ID).Delete(&OCRLine{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("document_id = ?", document.ID).Delete(&OCRPage{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("document_id = ?", document.ID).Delete(&ExtractedField{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("document_id = ?", document.ID).Delete(&Appointment{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("document_id = ?", document.ID).Delete(&DocumentReference{}).Error; err != nil {
-			return err
-		}
-
-		for _, page := range result.Pages {
-			oCRPage := OCRPage{DocumentID: document.ID, PageNo: page.PageNo, ImageWidth: page.ImageWidth, ImageHeight: page.ImageHeight, ImageAngle: page.ImageAngle, RawText: page.FullText, Status: "COMPLETED"}
-			if err := tx.Create(&oCRPage).Error; err != nil {
-				return err
-			}
-			for index, line := range page.Lines {
-				bbox, _ := json.Marshal(line.BoundingBox)
-				rawLine, _ := json.Marshal(line)
-				if err := tx.Create(&OCRLine{DocumentID: document.ID, OCRPageID: oCRPage.ID, PageNo: page.PageNo, LineIndex: index, Text: line.Text, Confidence: line.Confidence, BoundingBoxJSON: string(bbox), RawJSON: string(rawLine)}).Error; err != nil {
-					return err
-				}
-			}
-		}
-		for _, field := range metadata.fields {
-			field.DocumentID = document.ID
-			if err := tx.Create(&field).Error; err != nil {
-				return err
-			}
-		}
-		for _, appointment := range metadata.appointments {
-			appointment.DocumentID = document.ID
-			if err := tx.Create(&appointment).Error; err != nil {
-				return err
-			}
-		}
-		if strings.TrimSpace(metadata.additionalRefs) != "" {
-			reference := DocumentReference{DocumentID: document.ID, ReferenceType: "ADDITIONAL_REFERENCE", ReferenceText: metadata.additionalRefs, PageNo: findPage(result.Pages, metadata.additionalRefs), BoundingBoxJSON: "[]"}
-			if err := tx.Create(&reference).Error; err != nil {
-				return err
-			}
-		}
-		updates := map[string]any{
-			"title":                  chooseNonEmpty(metadata.title, document.Title),
-			"order_type":             metadata.orderType,
-			"order_no":               metadata.orderNo,
-			"order_year_be":          metadata.orderYearBE,
-			"committee":              chooseNonEmpty(metadata.title, document.Committee),
-			"signer_name":            metadata.signer,
-			"signer_position":        metadata.signerPosition,
-			"responsibilities":       metadata.responsibilities,
-			"additional_refs":        metadata.additionalRefs,
-			"page_count":             len(result.Pages),
-			"person_count":           len(metadata.appointments),
-			"ocr_text":               fullText,
-			"ocr_provider":           "one-ocr",
-			"confidence":             averageConfidence,
-			"status":                 status,
-			"processing_stage":       "EXTRACTED",
-			"processing_finished_at": finished,
-			"processing_duration_ms": finished.Sub(started).Milliseconds(),
-			"ocr_error":              "",
-		}
-		if metadata.issuedDate != nil {
-			updates["issued_date"] = metadata.issuedDate
-		}
-		if metadata.effectiveDate != nil {
-			updates["effective_date"] = metadata.effectiveDate
-		}
-		if metadata.expiryDate != nil {
-			updates["expiry_date"] = metadata.expiryDate
-		}
-		if err := tx.Model(document).Updates(updates).Error; err != nil {
-			return err
-		}
-		var updated Document
-		if err := tx.First(&updated, document.ID).Error; err != nil {
-			return err
-		}
-		if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
-			return err
-		}
-		if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
-			return err
-		}
-		return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: "system:one-ocr", Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("pages=%d lines=%d confidence=%.2f", len(result.Pages), len(allLines), averageConfidence)}).Error
-	})
 }
 
 type commandMetadata struct {
