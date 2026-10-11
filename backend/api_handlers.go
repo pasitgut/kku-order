@@ -341,7 +341,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				}
 				for _, input := range *payload.Appointments {
 					appointment := Appointment{DocumentID: document.ID, FullName: input.FullName, Position: input.Position, Department: input.Department, CommitteeRole: input.CommitteeRole, Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
-					match := resolveAppointmentDirectoryUser(input, directoryUsers, aliases)
+					match := resolveAppointmentMatch(input, previous[input.ID].NameMatchMethod, directoryUsers, aliases)
 					applyMatchToAppointment(&appointment, match)
 					if err := tx.Create(&appointment).Error; err != nil {
 						return err

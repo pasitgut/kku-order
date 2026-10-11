@@ -1,7 +1,9 @@
 package main
 
 import (
-	"fmt"
+	"encoding/json"
+	"math"
+	"strconv"
 	"strings"
 )
 
@@ -30,6 +32,61 @@ type extractionRecords struct {
 	LowConfidence     bool
 }
 
+// pageSize คือขนาดภาพของหน้าเป็นพิกเซล ใช้แปลงกรอบแบบ normalized เป็นพิกเซล
+type pageSize struct {
+	width  float64
+	height float64
+}
+
+// pageSizes แยกตามหมายเลขหน้า หน้าที่ไม่รู้ขนาดใช้ 1x1 (กรอบยังคงเป็นค่า normalized)
+type pageSizes map[int]pageSize
+
+func newPageSizes(pages []ExtractedPage) pageSizes {
+	sizes := make(pageSizes, len(pages))
+	for _, p := range pages {
+		sizes[p.Page] = effectivePageSize(p)
+	}
+	return sizes
+}
+
+func effectivePageSize(p ExtractedPage) pageSize {
+	if p.Width <= 0 || p.Height <= 0 {
+		return pageSize{width: 1, height: 1}
+	}
+	return pageSize{width: float64(p.Width), height: float64(p.Height)}
+}
+
+func (s pageSizes) of(page int) pageSize {
+	if size, ok := s[page]; ok {
+		return size
+	}
+	return pageSize{width: 1, height: 1}
+}
+
+// firstBoxJSON แปลงกรอบแรกเป็น [left, top, width, height] ตามพิกเซลของหน้าที่กรอบอยู่ (UI อ่านรูปแบบนี้)
+func (s pageSizes) firstBoxJSON(boxes []Box) string {
+	if len(boxes) == 0 {
+		return "[]"
+	}
+	box := boxes[0]
+	size := s.of(box.Page)
+	values := []float64{
+		roundTwoDecimals(box.X0 * size.width),
+		roundTwoDecimals(box.Y0 * size.height),
+		roundTwoDecimals((box.X1 - box.X0) * size.width),
+		roundTwoDecimals((box.Y1 - box.Y0) * size.height),
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
+}
+
+func roundTwoDecimals(value float64) float64 {
+	return math.Round(value*100) / 100
+}
+
 // personLabel ใช้แสดงแถวในรายการ blocker: กรรมการโดยตำแหน่งที่ไม่มีชื่อแสดงเป็นตำแหน่ง
 func personLabel(a Appointment) string {
 	if strings.TrimSpace(a.FullName) != "" {
@@ -43,6 +100,7 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 	rec := extractionRecords{Updates: map[string]any{}}
 	var sum float32
 	var count int
+	sizes := newPageSizes(result.Pages)
 
 	// นับความมั่นใจเฉพาะค่าที่ไม่ว่าง (spec: Department และ Duty ไม่นับ)
 	track := func(v ExtractedValue) {
@@ -73,18 +131,18 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 			ReferenceType:   "ADDITIONAL_REFERENCE",
 			ReferenceText:   ref.Text,
 			PageNo:          pageOf(ref),
-			BoundingBoxJSON: firstBoxJSON(ref.Boxes),
+			BoundingBoxJSON: sizes.firstBoxJSON(ref.Boxes),
 		})
 	}
 
-	// ทุกฟิลด์มีแถวเสมอ แม้ค่าว่าง เพื่อให้ผู้ตรวจพิมพ์ค่าที่ OCR พลาดได้ (ข้อยกเว้นของ controller)
+	// ทุกคีย์มีแถวเสมอ แม้ค่าว่าง เพื่อให้ผู้ตรวจพิมพ์ค่าที่ OCR พลาดได้ (ข้อยกเว้นของ controller)
 	// ค่าว่างไม่นับเข้าเกณฑ์ความมั่นใจ (track ข้ามค่าว่างอยู่แล้ว)
 	for _, item := range []struct {
 		key, label string
 		v          ExtractedValue
 	}{
 		{"order_no", "เลขที่คำสั่ง", h.OrderNo},
-		{"subject", "เรื่อง", h.Subject},
+		{"committee_name", "ชื่อเรื่อง/ชื่อคณะกรรมการ", h.Subject},
 		{"issued_by", "ออกโดย", h.IssuedBy},
 		{"issued_date", "วันที่ออกคำสั่ง", h.Date},
 		{"effective_date", "วันที่มีผล", h.EffectiveDate},
@@ -93,17 +151,31 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 		{"signer_position", "ตำแหน่งผู้ลงนาม", ExtractedValue{}},
 	} {
 		track(item.v)
-		rec.Fields = append(rec.Fields, fieldRow(item.key, item.label, item.v))
+		rec.Fields = append(rec.Fields, fieldRow(item.key, item.label, item.v.Text, item.v, sizes))
 	}
 	// อ้างอิงแต่ละรายการถูกนับความมั่นใจไปแล้วด้านบน แถวรวมนี้จึงไม่นับซ้ำ
-	rec.Fields = append(rec.Fields, fieldRow("additional_references", "เอกสารอ้างอิง", ExtractedValue{Text: strings.Join(refTexts, "\n")}))
+	rec.Fields = append(rec.Fields, fieldRow("additional_references", "เอกสารอ้างอิง", strings.Join(refTexts, "\n"), ExtractedValue{Text: strings.Join(refTexts, "\n")}, sizes))
+
+	// คีย์ที่ UI อ่าน (order_type, order_year_be) ได้มาจากค่าในส่วนหัว และใช้กรอบเดียวกับค่าต้นทาง
+	orderType := ""
+	if strings.TrimSpace(h.IssuedBy.Text) != "" {
+		orderType = inferOrderType(h.IssuedBy.Text)
+	}
+	rec.Fields = append(rec.Fields, fieldRow("order_type", "ประเภทเอกสาร", orderType, h.IssuedBy, sizes))
+	orderYear := ""
+	if year := findOrderYear(h.OrderNo.Text); year != 0 {
+		orderYear = strconv.Itoa(year)
+	}
+	yearRow := fieldRow("order_year_be", "ปีที่ออกคำสั่ง (พ.ศ.)", orderYear, h.OrderNo, sizes)
+	yearRow.FieldType = "number"
+	rec.Fields = append(rec.Fields, yearRow)
 
 	rec.Updates["order_no"] = truncateRunes(h.OrderNo.Text, colLimitDocumentOrderNo)
 	rec.Updates["title"] = truncateRunes(h.Subject.Text, colLimitDocumentTitle)
 	rec.Updates["committee"] = truncateRunes(h.IssuedBy.Text, colLimitDocumentCommittee)
 	rec.Updates["signer_name"] = truncateRunes(h.Signer.Text, colLimitDocumentSignerName)
 	rec.Updates["additional_refs"] = strings.Join(refTexts, "\n")
-	rec.Updates["order_type"] = inferOrderType(h.IssuedBy.Text)
+	rec.Updates["order_type"] = orderType
 	rec.Updates["order_year_be"] = findOrderYear(h.OrderNo.Text)
 	rec.Updates["issued_date"] = parseThaiDateOrNil(h.Date.Text)
 	rec.Updates["effective_date"] = parseThaiDateOrNil(h.EffectiveDate.Text)
@@ -130,17 +202,13 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 				NameMatchMethod:  matchMethodFor(m.ExOfficio),
 				Confidence:       minPresentConfidence(m.Prefix, m.Name, m.Position, m.Role),
 				PageNo:           pageOf(box),
-				BoundingBoxJSON:  firstBoxJSON(box.Boxes),
+				BoundingBoxJSON:  sizes.firstBoxJSON(box.Boxes),
 			})
 		}
 	}
 
 	var allLines []string
 	for _, p := range result.Pages {
-		width, height := p.Width, p.Height
-		if width <= 0 || height <= 0 {
-			width, height = 1, 1
-		}
 		pageTexts := make([]string, 0, len(p.Lines))
 		for i, line := range p.Lines {
 			pageTexts = append(pageTexts, line.Text)
@@ -149,14 +217,15 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 				LineIndex:       i,
 				Text:            line.Text,
 				Confidence:      confidenceOf(line),
-				BoundingBoxJSON: boxesJSON(line.Boxes),
+				BoundingBoxJSON: sizes.firstBoxJSON(line.Boxes),
 			})
 		}
 		allLines = append(allLines, pageTexts...)
+		size := effectivePageSize(p)
 		rec.OCRPages = append(rec.OCRPages, OCRPage{
 			PageNo:      p.Page,
-			ImageWidth:  width,
-			ImageHeight: height,
+			ImageWidth:  int(size.width),
+			ImageHeight: int(size.height),
 			RawText:     strings.Join(pageTexts, "\n"),
 			Status:      "COMPLETED",
 		})
@@ -197,15 +266,16 @@ func minPresentConfidence(values ...ExtractedValue) float32 {
 	return lowest
 }
 
-func fieldRow(key, label string, v ExtractedValue) ExtractedField {
+// fieldRow สร้างแถวฟิลด์: value คือค่าที่แสดง, src คือค่าต้นทางที่ให้ความมั่นใจ/กรอบ/ข้อความอ้างอิง
+func fieldRow(key, label, value string, src ExtractedValue, sizes pageSizes) ExtractedField {
 	return ExtractedField{
 		FieldKey:        key,
 		FieldLabel:      label,
-		Value:           v.Text,
-		SourceText:      v.Text,
-		Confidence:      confidenceOf(v),
-		PageNo:          pageOf(v),
-		BoundingBoxJSON: firstBoxJSON(v.Boxes),
+		Value:           value,
+		SourceText:      src.Text,
+		Confidence:      confidenceOf(src),
+		PageNo:          pageOf(src),
+		BoundingBoxJSON: sizes.firstBoxJSON(src.Boxes),
 	}
 }
 
@@ -225,7 +295,7 @@ func pageOf(v ExtractedValue) int {
 
 func matchMethodFor(exOfficio bool) string {
 	if exOfficio {
-		return "EX_OFFICIO"
+		return matchMethodExOfficio
 	}
 	return ""
 }
@@ -235,20 +305,4 @@ func parseThaiDateOrNil(text string) any {
 		return *t
 	}
 	return nil
-}
-
-func boxesJSON(boxes []Box) string {
-	parts := make([]string, 0, len(boxes))
-	for _, b := range boxes {
-		parts = append(parts, fmt.Sprintf(`{"page":%d,"x0":%g,"y0":%g,"x1":%g,"y1":%g}`, b.Page, b.X0, b.Y0, b.X1, b.Y1))
-	}
-	return "[" + strings.Join(parts, ",") + "]"
-}
-
-// firstBoxJSON เก็บเฉพาะกรอบแรกของค่า ตาม spec
-func firstBoxJSON(boxes []Box) string {
-	if len(boxes) == 0 {
-		return "[]"
-	}
-	return boxesJSON(boxes[:1])
 }

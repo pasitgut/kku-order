@@ -534,14 +534,7 @@ func attachAppointmentCandidates(db *gorm.DB, document *Document) {
 	if err != nil {
 		return
 	}
-	for index := range document.Appointments {
-		if document.Appointments[index].DirectoryUserID != nil {
-			continue
-		}
-		match := matchDirectoryUser(document.Appointments[index].FullName, users, aliases)
-		document.Appointments[index].Candidates = candidatesToOffer(match)
-		document.Appointments[index].NameMatchMethod = match.Method
-	}
+	suggestCandidates(document.Appointments, users, aliases)
 }
 
 func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {

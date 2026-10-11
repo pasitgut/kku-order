@@ -17,6 +17,7 @@ const (
 	matchMethodNotFound  = "NOT_FOUND"
 	matchMethodEmpty     = "DIRECTORY_EMPTY"
 	matchMethodManual    = "MANUAL"
+	matchMethodExOfficio = "EX_OFFICIO"
 
 	activeUserCode = "A"
 	sourceSynced   = "SYNCED"
@@ -189,6 +190,20 @@ func matchAppointments(appointments []Appointment, users []DirectoryUser, aliase
 		}
 	}
 	return weak
+}
+
+// suggestCandidates offers the directory people an unlinked, named row might be. Rows
+// without a name have nothing to match by, so their method (EX_OFFICIO) is left alone.
+func suggestCandidates(appointments []Appointment, users []DirectoryUser, aliases map[string]uint) {
+	for index := range appointments {
+		appointment := &appointments[index]
+		if appointment.DirectoryUserID != nil || strings.TrimSpace(appointment.FullName) == "" {
+			continue
+		}
+		match := matchDirectoryUser(appointment.FullName, users, aliases)
+		appointment.Candidates = candidatesToOffer(match)
+		appointment.NameMatchMethod = match.Method
+	}
 }
 
 func applyMatchToAppointment(appointment *Appointment, match directoryMatch) {
@@ -371,6 +386,17 @@ func resolveAppointmentDirectoryUser(input appointmentRequest, users []Directory
 		}
 	}
 	return matchDirectoryUser(input.FullName, users, aliases)
+}
+
+// resolveAppointmentMatch is resolveAppointmentDirectoryUser for a saved row. A row with no
+// name and no reviewer choice cannot be matched by name, so it keeps the method it already had
+// (EX_OFFICIO for ex-officio members) instead of being reported as NOT_FOUND.
+func resolveAppointmentMatch(input appointmentRequest, previousMethod string, users []DirectoryUser, aliases map[string]uint) directoryMatch {
+	chosen := input.DirectoryUserID != nil && *input.DirectoryUserID != 0
+	if strings.TrimSpace(input.FullName) == "" && !chosen {
+		return directoryMatch{Method: previousMethod}
+	}
+	return resolveAppointmentDirectoryUser(input, users, aliases)
 }
 
 // confirmBlockers names the rows that still have nobody attached. A document

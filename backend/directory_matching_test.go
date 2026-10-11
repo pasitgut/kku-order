@@ -224,9 +224,33 @@ func TestConfirmBlockersLabelsExOfficioRows(t *testing.T) {
 }
 
 func TestMatchAppointmentsSkipsBlankNames(t *testing.T) {
-	apps := []Appointment{{FullName: "", Position: "เลขานุการ"}}
-	weak := matchAppointments(apps, nil, nil)
-	if weak || apps[0].DirectoryUserID != nil || apps[0].NameMatchMethod != "" {
-		t.Fatalf("weak=%t apps=%+v", weak, apps[0])
+	apps := []Appointment{{FullName: "", Position: "เลขานุการ", NameMatchMethod: matchMethodExOfficio}}
+	users := []DirectoryUser{{ID: 7, FirstName: "สมชาย", LastName: "ใจดี"}}
+	weak := matchAppointments(apps, users, nil)
+	if weak || apps[0].DirectoryUserID != nil || apps[0].NameMatchMethod != matchMethodExOfficio {
+		t.Fatalf("weak=%t apps=%+v, want the ex-officio row untouched", weak, apps[0])
+	}
+}
+
+func TestEditedExOfficioRowKeepsItsMethod(t *testing.T) {
+	users := []DirectoryUser{{ID: 7, FirstName: "สมชาย", LastName: "ใจดี"}}
+	input := appointmentRequest{FullName: "", Position: "เลขานุการ"}
+
+	appointment := Appointment{Position: "เลขานุการ"}
+	applyMatchToAppointment(&appointment, resolveAppointmentMatch(input, matchMethodExOfficio, users, nil))
+
+	if appointment.NameMatchMethod != matchMethodExOfficio || appointment.DirectoryUserID != nil {
+		t.Fatalf("appointment = %+v, want EX_OFFICIO and no directory user", appointment)
+	}
+}
+
+func TestSuggestCandidatesSkipsNamelessRows(t *testing.T) {
+	users := []DirectoryUser{{ID: 7, FirstName: "สมชาย", LastName: "ใจดี"}}
+	apps := []Appointment{{FullName: "", Position: "เลขานุการ", NameMatchMethod: matchMethodExOfficio}}
+
+	suggestCandidates(apps, users, nil)
+
+	if apps[0].NameMatchMethod != matchMethodExOfficio || len(apps[0].Candidates) != 0 {
+		t.Fatalf("apps[0] = %+v, want EX_OFFICIO kept with no candidates", apps[0])
 	}
 }

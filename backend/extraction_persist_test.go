@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -103,7 +105,7 @@ func TestBuildExtractionRecordsWritesEveryHeaderFieldEvenWhenEmpty(t *testing.T)
 	for _, f := range rec.Fields {
 		keys = append(keys, f.FieldKey)
 	}
-	want := "order_no,subject,issued_by,issued_date,effective_date,expiry_date,signer_name,signer_position,additional_references"
+	want := "order_no,committee_name,issued_by,issued_date,effective_date,expiry_date,signer_name,signer_position,additional_references,order_type,order_year_be"
 	if got := strings.Join(keys, ","); got != want {
 		t.Fatalf("field keys = %s, want %s", got, want)
 	}
@@ -219,5 +221,101 @@ func TestTruncateRunesDoesNotSplitThaiCharacters(t *testing.T) {
 	}
 	if got := truncateRunes("abc", 10); got != "abc" {
 		t.Fatalf("short string changed: %q", got)
+	}
+}
+
+func fieldByKey(t *testing.T, rec extractionRecords, key string) ExtractedField {
+	t.Helper()
+	for _, f := range rec.Fields {
+		if f.FieldKey == key {
+			return f
+		}
+	}
+	t.Fatalf("no field row %q", key)
+	return ExtractedField{}
+}
+
+func assertBox(t *testing.T, raw string, want ...float64) {
+	t.Helper()
+	var got []float64
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("box %q is not a JSON number array: %v", raw, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("box = %s, want %v", raw, want)
+	}
+	for i := range want {
+		if math.Abs(got[i]-want[i]) > 1e-9 {
+			t.Fatalf("box = %s, want %v", raw, want)
+		}
+	}
+}
+
+func TestBuildExtractionRecordsStoresFirstBoxInPixelsOfItsPage(t *testing.T) {
+	r := sampleResult()
+	r.Groups[0].Members[0].Name.Boxes = []Box{{Page: 1, X0: 0.1, Y0: 0.5, X1: 0.3, Y1: 0.52}}
+	r.Pages[0].Lines = []ExtractedValue{{Text: "บรรทัด", Boxes: []Box{{Page: 1, X0: 0.1, Y0: 0.2, X1: 0.5, Y1: 0.3}}}}
+	rec := buildExtractionRecords(r, 0.8)
+
+	assertBox(t, fieldByKey(t, rec, "order_no").BoundingBoxJSON, 661.6, 233.9, 330.8, 46.78)
+	if got := fieldByKey(t, rec, "order_no").PageNo; got != 1 {
+		t.Fatalf("order_no PageNo = %d, want 1", got)
+	}
+	assertBox(t, rec.Appointments[0].BoundingBoxJSON, 165.4, 1169.5, 330.8, 46.78)
+	if rec.Appointments[0].PageNo != 1 {
+		t.Fatalf("appointment PageNo = %d, want 1", rec.Appointments[0].PageNo)
+	}
+	assertBox(t, rec.OCRLines[0].BoundingBoxJSON, 165.4, 467.8, 661.6, 233.9)
+	if rec.OCRPages[0].ImageWidth != 1654 || rec.OCRPages[0].ImageHeight != 2339 {
+		t.Fatalf("page size = %dx%d, want 1654x2339", rec.OCRPages[0].ImageWidth, rec.OCRPages[0].ImageHeight)
+	}
+}
+
+func TestBuildExtractionRecordsUnknownPageSizeKeepsNormalizedBox(t *testing.T) {
+	r := sampleResult()
+	r.Pages = []ExtractedPage{{Page: 1}}
+	rec := buildExtractionRecords(r, 0.8)
+
+	assertBox(t, fieldByKey(t, rec, "order_no").BoundingBoxJSON, 0.4, 0.1, 0.2, 0.02)
+	if rec.OCRPages[0].ImageWidth != 1 || rec.OCRPages[0].ImageHeight != 1 {
+		t.Fatalf("unknown size should store 1x1, got %+v", rec.OCRPages[0])
+	}
+}
+
+func TestBuildExtractionRecordsDerivesOrderTypeYearAndCommitteeFields(t *testing.T) {
+	r := sampleResult()
+	r.Header.IssuedBy.Text = "ประกาศคณะกรรมการบริหาร"
+	r.Header.IssuedBy.Boxes = []Box{{Page: 1, X0: 0.1, Y0: 0.2, X1: 0.5, Y1: 0.22}}
+	rec := buildExtractionRecords(r, 0.8)
+
+	ot := fieldByKey(t, rec, "order_type")
+	if ot.Value != "ประกาศ" || ot.FieldLabel != "ประเภทเอกสาร" {
+		t.Fatalf("order_type = %+v", ot)
+	}
+	assertBox(t, ot.BoundingBoxJSON, 165.4, 467.8, 661.6, 46.78)
+
+	yr := fieldByKey(t, rec, "order_year_be")
+	if yr.Value != "2569" || yr.FieldLabel != "ปีที่ออกคำสั่ง (พ.ศ.)" || yr.FieldType != "number" {
+		t.Fatalf("order_year_be = %+v", yr)
+	}
+	assertBox(t, yr.BoundingBoxJSON, 661.6, 233.9, 330.8, 46.78)
+
+	cn := fieldByKey(t, rec, "committee_name")
+	if cn.Value != "แต่งตั้งคณะกรรมการ" || cn.FieldLabel != "ชื่อเรื่อง/ชื่อคณะกรรมการ" {
+		t.Fatalf("committee_name = %+v", cn)
+	}
+}
+
+func TestBuildExtractionRecordsDerivedFieldsEmptyWithoutSource(t *testing.T) {
+	r := sampleResult()
+	r.Header.OrderNo = ExtractedValue{}
+	r.Header.IssuedBy = ExtractedValue{}
+	rec := buildExtractionRecords(r, 0.8)
+
+	if got := fieldByKey(t, rec, "order_type").Value; got != "" {
+		t.Fatalf("order_type = %q, want empty without issued_by", got)
+	}
+	if got := fieldByKey(t, rec, "order_year_be").Value; got != "" {
+		t.Fatalf("order_year_be = %q, want empty without order number", got)
 	}
 }
