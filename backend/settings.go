@@ -26,6 +26,7 @@ const ocrSettingsKey = "ocr"
 // web. Values missing from the database fall back to the .env defaults.
 type OCRSettings struct {
 	Engine                string  `json:"engine"`
+	APIURL                string  `json:"apiUrl"`
 	Language              string  `json:"language"`
 	DPI                   int     `json:"dpi"`
 	MaxSide               int     `json:"maxSide"`
