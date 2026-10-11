@@ -1,0 +1,38 @@
+{
+  "engine": "docflow-contract",
+  "header": {
+    "orderNo": {"text": "1234/2569", "confidence": 0.94, "boxes": [{"page": 1, "x0": 0.4, "y0": 0.1, "x1": 0.6, "y1": 0.12}]},
+    "subject": {"text": "แต่งตั้งคณะกรรมการ", "confidence": 0.91, "boxes": [{"page": 1, "x0": 0.2, "y0": 0.2, "x1": 0.8, "y1": 0.23}]},
+    "issuedBy": {"text": "คณะกรรมการบริหาร", "confidence": 0.9},
+    "date": {"text": "1 ตุลาคม 2569", "confidence": 0.88},
+    "effectiveDate": {"text": "2 ตุลาคม 2569", "confidence": 0.88},
+    "expiryDate": {"text": "", "confidence": 0.0},
+    "signer": {"text": "นายตัวอย่าง ทดสอบ", "confidence": 0.85},
+    "references": [{"text": "ที่ ศธ 0001/2569", "confidence": 0.8}]
+  },
+  "groups": [
+    {
+      "department": {"text": "สำนักงานอธิการบดี", "confidence": 0.9},
+      "duty": {"text": "กรรมการ", "confidence": 0.9},
+      "members": [
+        {
+          "prefix": {"text": "นาย", "confidence": 0.95},
+          "name": {"text": "สมชาย ใจดี", "confidence": 0.93, "boxes": [{"page": 1, "x0": 0.2, "y0": 0.4, "x1": 0.35, "y1": 0.42}]},
+          "position": {"text": "ผู้อำนวยการ", "confidence": 0.9},
+          "role": {"text": "ประธาน", "confidence": 0.9},
+          "exOfficio": false
+        },
+        {
+          "prefix": {"text": "", "confidence": 0.0},
+          "name": {"text": "", "confidence": 0.0},
+          "position": {"text": "เลขานุการ", "confidence": 0.9},
+          "role": {"text": "", "confidence": 0.0},
+          "exOfficio": true
+        }
+      ]
+    }
+  ],
+  "pages": [
+    {"page": 1, "width": 1654, "height": 2339, "lines": [{"text": "คำสั่งแต่งตั้ง", "confidence": 0.97, "boxes": [{"page": 1, "x0": 0.3, "y0": 0.05, "x1": 0.7, "y1": 0.07}]}]}
+  ]
+}
