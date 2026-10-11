@@ -275,6 +275,29 @@ export async function getSyncRuns() {
   return apiFetch<{ data: SyncRun[] }>("/api/v1/sync/runs");
 }
 
+export type AuditLogItem = {
+  id: number;
+  createdAt: string;
+  userId: string;
+  userName: string;
+  action: string;
+  actionLabel: string;
+  documentId?: number | null;
+  documentTitle: string;
+  documentExists: boolean;
+  details: string;
+};
+
+export type AuditLogPage = { data: AuditLogItem[]; total: number; page: number; pageSize: number };
+
+export async function getAuditLogs(query: string) {
+  return apiFetch<AuditLogPage>(`/api/v1/audit-logs?${query}`);
+}
+
+export async function getAuditActions() {
+  return apiFetch<{ data: { action: string; label: string }[] }>("/api/v1/audit-logs/actions");
+}
+
 export async function getExpiryNotifications() {
   return apiFetch<{ data: ExpiryNotification[] }>("/api/v1/notifications/expiry");
 }

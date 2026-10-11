@@ -11,6 +11,10 @@ test("permissions mirror requireRole in backend/main.go", () => {
   assert.equal(can("DEVELOPER", "delete"), true);
   assert.equal(can("ADMIN", "settings"), true);
   assert.equal(can("STAFF", "settings"), false);
+  assert.equal(can("DEVELOPER", "audit"), true);
+  assert.equal(can("ADMIN", "audit"), true);
+  assert.equal(can("STAFF", "audit"), false);
+  assert.equal(can("VIEWER", "audit"), false);
 });
 
 test("roles are matched case-insensitively and unknown roles get nothing", () => {

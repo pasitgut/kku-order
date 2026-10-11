@@ -2,7 +2,7 @@
 export const ROLES = ["ADMIN", "STAFF", "DEVELOPER", "VIEWER"] as const;
 export type Role = (typeof ROLES)[number];
 
-export type PermissionKey = "view" | "import" | "edit" | "cancel" | "confirm" | "createPerson" | "sync" | "delete" | "settings";
+export type PermissionKey = "view" | "import" | "edit" | "cancel" | "confirm" | "createPerson" | "sync" | "delete" | "settings" | "audit";
 
 export const PERMISSIONS: { key: PermissionKey; label: string; roles: Role[] }[] = [
   { key: "view", label: "ดูเอกสาร ค้นหา และรายงาน", roles: ["ADMIN", "STAFF", "DEVELOPER", "VIEWER"] },
@@ -14,6 +14,7 @@ export const PERMISSIONS: { key: PermissionKey; label: string; roles: Role[] }[]
   { key: "sync", label: "sync บุคลากรจาก External API", roles: ["ADMIN", "STAFF"] },
   { key: "delete", label: "ลบเอกสาร", roles: ["ADMIN", "DEVELOPER"] },
   { key: "settings", label: "แก้ไขการตั้งค่า OCR และการนำเข้า", roles: ["ADMIN"] },
+  { key: "audit", label: "ดูประวัติการใช้งานระบบและส่งออก CSV", roles: ["ADMIN", "DEVELOPER"] },
 ];
 
 const roleLabels: Record<Role, string> = { ADMIN: "ผู้ดูแลระบบ", STAFF: "เจ้าหน้าที่", DEVELOPER: "นักพัฒนา", VIEWER: "ผู้ดูข้อมูล" };
