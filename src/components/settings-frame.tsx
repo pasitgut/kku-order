@@ -2,21 +2,30 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowsClockwise, GoogleDriveLogo, Scan, UsersThree } from "@phosphor-icons/react";
+import { ArrowsClockwise, ClockCounterClockwise, GoogleDriveLogo, Scan, UsersThree } from "@phosphor-icons/react";
 import { AppShell } from "@/components/app-shell";
+import { useMe } from "@/components/me-context";
+import { PermissionKey, can } from "@/lib/permissions";
 
-const sections = [
+type SettingsItem = { href: string; label: string; icon: typeof UsersThree; permission?: PermissionKey };
+
+const sections: { group: string; items: SettingsItem[] }[] = [
   { group: "ผู้ใช้งาน", items: [{ href: "/settings", label: "ผู้ใช้งานและสิทธิ์", icon: UsersThree }] },
   { group: "การทำงานของระบบ", items: [{ href: "/settings/ocr", label: "OCR และการนำเข้า", icon: Scan }, { href: "/settings/drive", label: "Google Drive", icon: GoogleDriveLogo }, { href: "/settings/system", label: "sync และการแจ้งเตือน", icon: ArrowsClockwise }] },
+  { group: "การตรวจสอบ", items: [{ href: "/settings/audit", label: "ประวัติการใช้งานระบบ", icon: ClockCounterClockwise, permission: "audit" }] },
 ];
 
 export function SettingsFrame({ children, actions, note }: { children: React.ReactNode; actions?: React.ReactNode; note: string }) {
   const pathname = usePathname();
+  const { me } = useMe();
+  const visibleSections = sections
+    .map((section) => ({ ...section, items: section.items.filter((item) => !item.permission || can(me?.role ?? "", item.permission)) }))
+    .filter((section) => section.items.length > 0);
   return <AppShell breadcrumb="หน้าหลัก / ตั้งค่า" title="ตั้งค่าระบบ" description="ผู้ใช้งาน สิทธิ์ตามบทบาท และค่าการทำงานของระบบ" actions={actions}>
     <div className="grid items-start gap-6 lg:grid-cols-[248px_minmax(0,1fr)]">
       <aside className="space-y-4 lg:sticky lg:top-24">
         <nav aria-label="หมวดการตั้งค่า" className="card p-2.5">
-          {sections.map((section) => <div key={section.group} className="mb-2 last:mb-0">
+          {visibleSections.map((section) => <div key={section.group} className="mb-2 last:mb-0">
             <p className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium tracking-wide text-[var(--subtle)]">{section.group}</p>
             {section.items.map((item) => {
               const Icon = item.icon;
