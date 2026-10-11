@@ -434,6 +434,7 @@ func main() {
 	router.GET("/api/v1/documents/:id/audit", listDocumentAuditLogs(db))
 	router.POST("/api/v1/documents", requireRole("ADMIN", "STAFF"), uploadDocument(db, processor))
 	router.POST("/api/v1/documents/:id/file", requireRole("ADMIN", "STAFF"), replaceDocumentFile(db, processor))
+	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(gormReprocessStore{db: db}, processor.Enqueue))
 	router.PATCH("/api/v1/documents/:id", requireRole("ADMIN", "STAFF"), updateDocument(db))
 	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
 	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
