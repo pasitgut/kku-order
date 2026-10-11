@@ -176,3 +176,21 @@ docker compose -f docker-compose.yml -f docker-compose.ocr-net.yml up -d --build
 ```
 
 ไฟล์ `docker-compose.ocr-net.yml` ต่อ service `api` เข้ากับ network `docflow-ocr` เพื่อให้เรียก `ocr-proxy:8000` ได้ network นี้ถูกสร้างตอนรัน `docker compose up` ในโฟลเดอร์ `deploy/ocr/` (ขั้น d)
+
+## j. deploy แอป DocFlow ขึ้น VM (image)
+
+VM ไม่ build โค้ดเอง ให้ build image บน Mac (ชิป Apple Silicon ใช้ buildx สร้าง `linux/amd64`) แล้วส่งขึ้น VM ด้วยคำสั่งเดียว รันจาก root ของ repo และ commit โค้ดก่อน (สคริปต์จะไม่ทำงานถ้ามีไฟล์ที่ติดตามอยู่แก้ไขค้างไว้ เพื่อให้ tag ตรงกับโค้ด):
+
+```sh
+scripts/deploy-vm.sh
+```
+
+สคริปต์ทำตามลำดับนี้:
+
+1. build `docflow-api:<tag>` และ `docflow-web:<tag>` โดย `<tag>` คือ commit hash สั้น ๆ
+2. ส่ง image ทั้งสองไป VM ด้วย `docker save | gzip | ssh ... docker load`
+3. คัดลอก `docker-compose.yml` และ `docker-compose.ocr-net.yml` ไปที่ `~/docflow/kku-order` (ไม่แตะ `.env`, `.env.local` และ `docker-compose.vm.yml`)
+4. ตั้ง `API_IMAGE` และ `WEB_IMAGE` ใน `.env` ของ VM แล้วรัน `docker compose up -d --no-build api web`
+5. รอไม่เกิน 3 นาทีจนบริการ `api` เป็น healthy แล้วแสดง `docker compose ps` ถ้าไม่ผ่าน จะแสดง log 30 บรรทัดล่าสุดของ `api` และจบด้วยสถานะผิดพลาด
+
+ตั้งค่า `VM` หรือ `VM_DIR` ได้ถ้าต้องการปลายทางอื่น เช่น `VM=user@host scripts/deploy-vm.sh`

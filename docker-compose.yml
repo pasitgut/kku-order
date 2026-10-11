@@ -19,6 +19,7 @@ services:
       retries: 10
 
   api:
+    image: ${API_IMAGE:-docflow-api:local}
     build: ./backend
     container_name: docflow-api
     restart: unless-stopped
@@ -69,6 +70,7 @@ services:
         condition: service_healthy
 
   web:
+    image: ${WEB_IMAGE:-docflow-web:local}
     build:
       context: .
       args:
