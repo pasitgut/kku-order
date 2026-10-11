@@ -86,7 +86,7 @@ type ExtractedField struct {
 	SourceText      string     `json:"sourceText" gorm:"type:text"`
 	Confidence      float32    `json:"confidence"`
 	PageNo          int        `json:"pageNo"`
-	BoundingBoxJSON string     `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string     `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	Verified        bool       `json:"verified"`
 	VerifiedBy      string     `json:"verifiedBy" gorm:"size:255"`
 	VerifiedAt      *time.Time `json:"verifiedAt"`
@@ -116,7 +116,7 @@ type OCRLine struct {
 	LineIndex       int       `json:"lineIndex"`
 	Text            string    `json:"text" gorm:"type:longtext;not null"`
 	Confidence      float32   `json:"confidence"`
-	BoundingBoxJSON string    `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string    `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	RawJSON         string    `json:"-" gorm:"type:json"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
@@ -153,7 +153,7 @@ type Appointment struct {
 	NameMatchScore  float32              `json:"nameMatchScore"`
 	Confidence      float32              `json:"confidence"`
 	PageNo          int                  `json:"pageNo"`
-	BoundingBoxJSON string               `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string               `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	Verified        bool                 `json:"verified"`
 	VerifiedBy      string               `json:"verifiedBy" gorm:"size:255"`
 	VerifiedAt      *time.Time           `json:"verifiedAt"`
@@ -167,7 +167,7 @@ type DocumentReference struct {
 	ReferenceType   string    `json:"referenceType" gorm:"size:100"`
 	ReferenceText   string    `json:"referenceText" gorm:"type:text"`
 	PageNo          int       `json:"pageNo"`
-	BoundingBoxJSON string    `json:"boundingBox" gorm:"type:json"`
+	BoundingBoxJSON string    `json:"boundingBox" gorm:"column:bounding_box;type:json"`
 	CreatedAt       time.Time `json:"createdAt"`
 	UpdatedAt       time.Time `json:"updatedAt"`
 }

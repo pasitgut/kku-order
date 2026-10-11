@@ -69,6 +69,7 @@ func defaultOCRSettings() OCRSettings {
 	}
 	return OCRSettings{
 		Engine:                "thaidoc",
+		APIURL:                strings.TrimSpace(os.Getenv("OCR_API_URL")),
 		Language:              language,
 		DPI:                   dpi,
 		MaxSide:               maxSide,

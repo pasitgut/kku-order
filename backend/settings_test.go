@@ -333,3 +333,28 @@ func TestGetOCRSettingsReportsKeyConfiguredWithoutValue(t *testing.T) {
 		t.Fatalf("body = %s err=%v", rec.Body.String(), err)
 	}
 }
+
+func TestDefaultOCRSettingsUseEnvAPIURL(t *testing.T) {
+	t.Setenv("OCR_API_URL", " https://thaidoc.example ")
+
+	if got := defaultOCRSettings().APIURL; got != "https://thaidoc.example" {
+		t.Fatalf("APIURL = %q, want the trimmed OCR_API_URL", got)
+	}
+}
+
+func TestGetOCRSettingsReturnsEnvAPIURLWhenNothingStored(t *testing.T) {
+	t.Setenv("OCR_API_URL", "https://thaidoc.example")
+	// A nil store stands for "no row in app_settings": the handler must report the env URL.
+	h := getOCRSettingsHandler(nil, ocrAPIConfig{DefaultURL: "https://thaidoc.example"})
+	rec := performRequest(t, http.MethodGet, "/api/v1/settings/ocr", "/api/v1/settings/ocr", nil, h)
+
+	var out struct {
+		Data OCRSettings `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body = %s err=%v", rec.Body.String(), err)
+	}
+	if out.Data.APIURL != "https://thaidoc.example" {
+		t.Fatalf("apiUrl = %q, want env OCR_API_URL", out.Data.APIURL)
+	}
+}
