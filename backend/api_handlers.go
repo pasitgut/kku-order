@@ -612,7 +612,7 @@ type replacementFile struct {
 // reviewed since.
 func replacedFileUpdates(file replacementFile, importedBy string, now time.Time) map[string]any {
 	retentionUntil := now.AddDate(10, 0, 0)
-	return map[string]any{
+	updates := map[string]any{
 		"title": file.Title, "original_filename": file.Filename, "storage_path": file.StoragePath,
 		"source_type": file.SourceType, "mime_type": file.MimeType, "file_size_bytes": file.SizeBytes,
 		"file_hash": file.Hash, "retention_until": retentionUntil, "import_source": "REUPLOAD",
@@ -626,6 +626,10 @@ func replacedFileUpdates(file replacementFile, importedBy string, now time.Time)
 		"page_count": 0, "person_count": 0, "confidence": 0,
 		"processing_started_at": nil, "processing_finished_at": nil, "processing_duration_ms": 0,
 	}
+	for key, value := range retryResetUpdates() {
+		updates[key] = value
+	}
+	return updates
 }
 
 // replaceDocumentFile swaps the source file of a document that is already in

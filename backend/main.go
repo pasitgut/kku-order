@@ -49,6 +49,9 @@ type Document struct {
 	ProcessingStage      string              `json:"processingStage" gorm:"size:50"`
 	ProcessingStartedAt  *time.Time          `json:"processingStartedAt"`
 	ProcessingFinishedAt *time.Time          `json:"processingFinishedAt"`
+	ExtractionAttempts   int                 `json:"extractionAttempts" gorm:"not null;default:0"`
+	NextAttemptAt        *time.Time          `json:"nextAttemptAt"`
+	ExtractionLastStatus int                 `json:"-" gorm:"not null;default:0"`
 	ProcessingDurationMs int64               `json:"processingDurationMs"`
 	ReviewNotes          string              `json:"reviewNotes" gorm:"type:text"`
 	IssuedDate           *time.Time          `json:"issuedDate"`
@@ -602,6 +605,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				"confirmed_by": "", "confirmed_at": nil, "ocr_error": "", "ocr_text": "", "page_count": 0,
 				"person_count": 0, "confidence": 0, "processing_started_at": nil, "processing_finished_at": nil,
 				"processing_duration_ms": 0,
+			}
+			for key, value := range retryResetUpdates() {
+				updates[key] = value
 			}
 			if err := db.Transaction(func(tx *gorm.DB) error {
 				for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
