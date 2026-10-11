@@ -20,7 +20,7 @@ func TestDefaultOCRSettingsReadEnvironment(t *testing.T) {
 
 	settings := defaultOCRSettings()
 
-	if settings.Engine != "one-ocr" || settings.DPI != 300 || settings.Language != "auto" || settings.MaxSide != 2048 || !settings.Preprocess {
+	if settings.Engine != "thaidoc" || settings.DPI != 300 || settings.Language != "auto" || settings.MaxSide != 2048 || !settings.Preprocess {
 		t.Fatalf("defaults = %+v, want values from environment", settings)
 	}
 	if settings.ReviewThreshold != 0.9 || !settings.ImportEnabled || settings.ImportSource != "folder" || settings.ImportIntervalMinutes != 5 {
@@ -176,14 +176,14 @@ func settingsRouter(store SettingsStore, role string) *gin.Engine {
 		c.Set(authRoleKey, role)
 		c.Next()
 	})
-	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(store))
+	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(store, ocrAPIConfig{}))
 	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(store))
 	return router
 }
 
 func TestUpdateOCRSettingsSavesValidPayload(t *testing.T) {
 	store := &fakeSettingsStore{settings: defaultOCRSettings()}
-	body := `{"engine":"one-ocr","language":"thai","dpi":300,"maxSide":1536,"preprocess":true,"reviewThreshold":0.85,"importEnabled":false,"importSource":"folder","importIntervalMinutes":15,"driveFolderUrl":"","driveAfterImport":"move"}`
+	body := `{"engine":"thaidoc","language":"thai","dpi":300,"maxSide":1536,"preprocess":true,"reviewThreshold":0.85,"importEnabled":false,"importSource":"folder","importIntervalMinutes":15,"driveFolderUrl":"","driveAfterImport":"move"}`
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/settings/ocr", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -199,7 +199,7 @@ func TestUpdateOCRSettingsSavesValidPayload(t *testing.T) {
 
 func TestUpdateOCRSettingsRejectsInvalidPayloadAndNonAdmins(t *testing.T) {
 	store := &fakeSettingsStore{settings: defaultOCRSettings()}
-	invalid := httptest.NewRequest(http.MethodPut, "/api/v1/settings/ocr", strings.NewReader(`{"engine":"one-ocr","dpi":123}`))
+	invalid := httptest.NewRequest(http.MethodPut, "/api/v1/settings/ocr", strings.NewReader(`{"engine":"thaidoc","dpi":123}`))
 	response := httptest.NewRecorder()
 	settingsRouter(store, "ADMIN").ServeHTTP(response, invalid)
 	if response.Code != http.StatusBadRequest {
@@ -227,7 +227,7 @@ func TestGetOCRSettingsFallsBackToDefaultsWhenStoreFails(t *testing.T) {
 	var payload struct {
 		Data OCRSettings `json:"data"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Data.Engine != "one-ocr" {
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil || payload.Data.Engine != "thaidoc" {
 		t.Fatalf("payload = %s (err %v), want defaults", response.Body.String(), err)
 	}
 }
@@ -284,5 +284,71 @@ func TestDriveImportNeedsAFolderLink(t *testing.T) {
 	settings.ImportEnabled = false
 	if err := settings.Validate(); err != nil {
 		t.Fatalf("a disabled Drive import may omit the link: %v", err)
+	}
+}
+
+func TestMergeOCRSettingsMapsLegacyOneOCRWithoutLosingImportSettings(t *testing.T) {
+	defaults := defaultOCRSettings()
+	defaults.APIURL = "https://default.example"
+	stored := `{"engine":"one-ocr","reviewThreshold":0.7,"apiUrl":"https://kept.example","importIntervalMinutes":30}`
+	got, err := mergeOCRSettings(defaults, stored)
+	if err != nil {
+		t.Fatalf("mergeOCRSettings: %v", err)
+	}
+	if got.Engine != "thaidoc" {
+		t.Fatalf("Engine = %q, want thaidoc", got.Engine)
+	}
+	if got.APIURL != "https://kept.example" || got.ReviewThreshold != 0.7 || got.ImportIntervalMinutes != 30 {
+		t.Fatalf("stored values were wiped: %+v", got)
+	}
+}
+
+func TestMergeOCRSettingsEmptyStoredURLFallsBackToDefault(t *testing.T) {
+	defaults := defaultOCRSettings()
+	defaults.APIURL = "https://env.example"
+	got, err := mergeOCRSettings(defaults, `{"engine":"thaidoc","apiUrl":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.APIURL != "https://env.example" {
+		t.Fatalf("APIURL = %q", got.APIURL)
+	}
+}
+
+func TestOCRSettingsValidateChecksAPIURL(t *testing.T) {
+	base := defaultOCRSettings()
+	base.Engine = "thaidoc"
+	for _, bad := range []string{"ftp://x", "https://"} {
+		s := base
+		s.APIURL = bad
+		if err := s.Validate(); err == nil {
+			t.Fatalf("%q accepted", bad)
+		}
+	}
+	for _, good := range []string{"", "https://ocr.example", "http://10.0.0.5:8000"} {
+		s := base
+		s.APIURL = good
+		if err := s.Validate(); err != nil {
+			t.Fatalf("%q rejected: %v", good, err)
+		}
+	}
+	s := base
+	s.Engine = "one-ocr"
+	if err := s.Validate(); err == nil {
+		t.Fatal("one-ocr must not be a valid engine after the change")
+	}
+}
+
+func TestGetOCRSettingsReportsKeyConfiguredWithoutValue(t *testing.T) {
+	h := getOCRSettingsHandler(&fakeSettingsStore{settings: defaultOCRSettings()}, ocrAPIConfig{APIKey: "SECRET-XYZ"})
+	rec := performRequest(t, http.MethodGet, "/api/v1/settings/ocr", "/api/v1/settings/ocr", nil, h)
+	if strings.Contains(rec.Body.String(), "SECRET-XYZ") {
+		t.Fatal("GET leaked the key")
+	}
+	var out struct {
+		OCRAPIKeyConfigured bool `json:"ocrApiKeyConfigured"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || !out.OCRAPIKeyConfigured {
+		t.Fatalf("body = %s err=%v", rec.Body.String(), err)
 	}
 }

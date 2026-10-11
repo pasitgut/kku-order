@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,7 +40,7 @@ type OCRSettings struct {
 }
 
 var (
-	allowedOCREngines   = map[string]bool{"one-ocr": true}
+	allowedOCREngines   = map[string]bool{"thaidoc": true, "docflow-contract": true}
 	allowedOCRLanguages = map[string]bool{"auto": true, "thai": true, "english": true}
 	allowedOCRDPIs      = map[int]bool{150: true, 200: true, 300: true, 400: true}
 	allowedOCRMaxSides  = map[int]bool{1024: true, 1536: true, 2048: true, 3072: true}
@@ -72,7 +71,7 @@ func defaultOCRSettings() OCRSettings {
 		maxSide = 1536
 	}
 	return OCRSettings{
-		Engine:                "one-ocr",
+		Engine:                "thaidoc",
 		Language:              language,
 		DPI:                   dpi,
 		MaxSide:               maxSide,
@@ -113,11 +112,26 @@ func (s OCRSettings) Validate() error {
 			return fmt.Errorf("ลิงก์โฟลเดอร์ต้องเป็นลิงก์จาก drive.google.com")
 		}
 	}
+	return validateOCRAPIURL(s.APIURL)
+}
+
+// validateOCRAPIURL accepts an empty value, which means "use OCR_API_URL from the environment".
+func validateOCRAPIURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("URL ของ OCR API ต้องขึ้นต้นด้วย http:// หรือ https:// และมีชื่อโฮสต์")
+	}
 	return nil
 }
 
 // mergeOCRSettings overlays stored JSON on the defaults. A broken or invalid
 // stored value must never stop document processing, so it returns the defaults.
+// The retired "one-ocr" engine maps to the default engine, and an empty stored
+// apiUrl falls back to the default (env OCR_API_URL). Both happen before Validate
+// so that the stored import and Drive settings survive.
 func mergeOCRSettings(defaults OCRSettings, stored string) (OCRSettings, error) {
 	merged := defaults
 	if strings.TrimSpace(stored) == "" {
@@ -125,6 +139,12 @@ func mergeOCRSettings(defaults OCRSettings, stored string) (OCRSettings, error) 
 	}
 	if err := json.Unmarshal([]byte(stored), &merged); err != nil {
 		return defaults, fmt.Errorf("อ่านค่าตั้งค่า OCR: %w", err)
+	}
+	if merged.Engine == "one-ocr" {
+		merged.Engine = defaults.Engine
+	}
+	if strings.TrimSpace(merged.APIURL) == "" {
+		merged.APIURL = defaults.APIURL
 	}
 	if err := merged.Validate(); err != nil {
 		return defaults, err
@@ -231,9 +251,10 @@ func loadOCRSettingsOrDefault(store SettingsStore) OCRSettings {
 	return settings
 }
 
-func getOCRSettingsHandler(store SettingsStore) gin.HandlerFunc {
+// getOCRSettingsHandler reports whether the API key is configured, never its value.
+func getOCRSettingsHandler(store SettingsStore, cfg ocrAPIConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": loadOCRSettingsOrDefault(store)})
+		c.JSON(http.StatusOK, gin.H{"data": loadOCRSettingsOrDefault(store), "ocrApiKeyConfigured": cfg.APIKey != ""})
 	}
 }
 
@@ -279,96 +300,6 @@ func runOCRWorker(ctx context.Context, settings OCRSettings, inputDir string) (w
 		return workerResult{}, fmt.Errorf("%s ไม่พบข้อความในเอกสาร", settings.Engine)
 	}
 	return result, nil
-}
-
-type ocrTestLine struct {
-	Text       string  `json:"text"`
-	Confidence float32 `json:"confidence"`
-}
-
-type ocrTestResult struct {
-	Confidence float32       `json:"confidence"`
-	Seconds    float64       `json:"seconds"`
-	LineCount  int           `json:"lineCount"`
-	Lines      []ocrTestLine `json:"lines"`
-}
-
-const maxOCRTestBytes = 20 << 20
-
-// testOCRSettingsHandler reads the first page of a sample file with the
-// submitted (unsaved) settings so an admin can compare before saving.
-func testOCRSettingsHandler() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		settings := defaultOCRSettings()
-		if raw := c.PostForm("settings"); raw != "" {
-			if err := json.Unmarshal([]byte(raw), &settings); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "ข้อมูลการตั้งค่าไม่ถูกต้อง"})
-				return
-			}
-		}
-		if err := settings.Validate(); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		header, err := c.FormFile("file")
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาเลือกไฟล์ตัวอย่าง"})
-			return
-		}
-		if header.Size > maxOCRTestBytes {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "ไฟล์ตัวอย่างต้องไม่เกิน 20 MB"})
-			return
-		}
-		extension := strings.ToLower(filepath.Ext(header.Filename))
-		if extension != ".pdf" && extension != ".png" && extension != ".jpg" && extension != ".jpeg" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "รองรับไฟล์ PDF, PNG หรือ JPG"})
-			return
-		}
-		tempDir, err := os.MkdirTemp("", "docflow-ocr-test-")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "สร้างพื้นที่ทดสอบไม่สำเร็จ"})
-			return
-		}
-		defer os.RemoveAll(tempDir)
-		sourcePath := filepath.Join(tempDir, "source"+extension)
-		if err := c.SaveUploadedFile(header, sourcePath); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "บันทึกไฟล์ตัวอย่างไม่สำเร็จ"})
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
-		defer cancel()
-		started := time.Now()
-		if extension == ".pdf" {
-			args := append(settings.renderArgs(), "-l", "1", sourcePath, filepath.Join(tempDir, "page"))
-			if output, err := exec.CommandContext(ctx, getenv("PDFTOPPM_BIN", "pdftoppm"), args...).CombinedOutput(); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("อ่านไฟล์ PDF ไม่สำเร็จ: %s", strings.TrimSpace(string(output)))})
-				return
-			}
-		} else if err := os.Rename(sourcePath, filepath.Join(tempDir, "page-1.png")); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "เตรียมภาพตัวอย่างไม่สำเร็จ"})
-			return
-		}
-		result, err := runOCRWorker(ctx, settings, tempDir)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"data": summarizeOCRTest(result, time.Since(started))})
-	}
-}
-
-func summarizeOCRTest(result workerResult, elapsed time.Duration) ocrTestResult {
-	summary := ocrTestResult{Confidence: averageOCRConfidence(result.Pages), Seconds: math.Round(elapsed.Seconds()*10) / 10, Lines: []ocrTestLine{}}
-	for _, page := range result.Pages {
-		for _, line := range page.Lines {
-			summary.LineCount++
-			if len(summary.Lines) < 40 {
-				summary.Lines = append(summary.Lines, ocrTestLine{Text: line.Text, Confidence: line.Confidence})
-			}
-		}
-	}
-	return summary
 }
 
 // SystemSettings are read-only values from .env. Secrets are reported only as
