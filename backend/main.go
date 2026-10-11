@@ -641,12 +641,14 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				return
 			}
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			logUploadFailure("check duplicate", 0, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบไฟล์ซ้ำได้"})
 			return
 		}
 
 		storageDir := getenv("UPLOAD_DIR", "./storage")
 		if err := os.MkdirAll(storageDir, 0o750); err != nil {
+			logUploadFailure("prepare storage", 0, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมพื้นที่จัดเก็บได้"})
 			return
 		}
@@ -658,6 +660,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			return
 		}
 		if err := c.SaveUploadedFile(header, storagePath); err != nil {
+			logUploadFailure("save file", 0, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกไฟล์ได้"})
 			return
 		}
@@ -681,6 +684,8 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			for key, value := range retryResetUpdates() {
 				updates[key] = value
 			}
+			// gorm writes the new storage_path back into duplicate, so the old path is read first.
+			previousPath := duplicate.StoragePath
 			if err := db.Transaction(func(tx *gorm.DB) error {
 				if err := lockEditableDocument(tx, duplicate.ID); err != nil {
 					return err
@@ -715,12 +720,14 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				if writeCancelledConflict(c, err) {
 					return
 				}
+				logUploadFailure("overwrite transaction", duplicate.ID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกทับเอกสารได้"})
 				return
 			}
-			_ = os.Remove(duplicate.StoragePath)
+			removeReplacedUpload(previousPath, storagePath)
 			processor.Enqueue(duplicate.ID)
 			if err := db.First(&duplicate, duplicate.ID).Error; err != nil {
+				logUploadFailure("reload overwritten document", duplicate.ID, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารที่บันทึกทับได้"})
 				return
 			}
@@ -734,6 +741,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		}
 		if err := createDocumentBundle(db, &core, &document); err != nil {
 			_ = os.Remove(storagePath)
+			logUploadFailure("create document bundle", 0, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกข้อมูลเอกสารได้"})
 			return
 		}
@@ -741,6 +749,12 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		processor.Enqueue(document.ID)
 		c.JSON(http.StatusCreated, gin.H{"data": document})
 	}
+}
+
+// logUploadFailure records why an upload answered 500, since the client only sees a generic message.
+// documentID is 0 while the upload has not created a document yet.
+func logUploadFailure(step string, documentID uint, err error) {
+	log.Printf("upload failed: step=%s document_id=%d: %v", step, documentID, err)
 }
 
 func hashUpload(file multipart.File) (string, error) {

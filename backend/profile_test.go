@@ -5,6 +5,8 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -68,5 +70,54 @@ func TestActivityLabelNamesKnownActions(t *testing.T) {
 	}
 	if activityLabel("SOMETHING_NEW") != "SOMETHING_NEW" {
 		t.Fatal("unknown actions fall back to the raw action")
+	}
+}
+
+// writtenAuditActions scans the non-test backend sources for audit action
+// literals, so a new action cannot ship without a Thai label.
+func writtenAuditActions(t *testing.T) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pattern := regexp.MustCompile(`(?:Action:\s*|\baction\s*:?=\s*)"([A-Z][A-Z_]+)"`)
+	actions := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, match := range pattern.FindAllStringSubmatch(string(source), -1) {
+			actions[match[1]] = true
+		}
+	}
+	return actions
+}
+
+func TestEveryWrittenAuditActionHasThaiLabel(t *testing.T) {
+	actions := writtenAuditActions(t)
+	for _, known := range []string{"DOCUMENT_UPLOADED", "DOCUMENT_RESCAN_REQUESTED", "DOCUMENT_REPROCESS_REQUESTED"} {
+		if !actions[known] {
+			t.Fatalf("source scan missed %s; the scanner is broken", known)
+		}
+	}
+	for action := range actions {
+		if label := activityLabel(action); label == action {
+			t.Errorf("audit action %s is written but has no Thai label", action)
+		}
+	}
+}
+
+func TestRescanAndReprocessLabelsAreThai(t *testing.T) {
+	if activityLabel("DOCUMENT_RESCAN_REQUESTED") != "สแกนใหม่" {
+		t.Fatalf("rescan label = %q", activityLabel("DOCUMENT_RESCAN_REQUESTED"))
+	}
+	if activityLabel("DOCUMENT_REPROCESS_REQUESTED") != "ประมวลผลใหม่" {
+		t.Fatalf("reprocess label = %q", activityLabel("DOCUMENT_REPROCESS_REQUESTED"))
 	}
 }

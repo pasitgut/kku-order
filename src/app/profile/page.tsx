@@ -55,7 +55,7 @@ export default function ProfilePage() {
         <SettingsCard title="งานล่าสุดของฉัน" description="จากประวัติการทำงานของคุณในระบบ">
           <ul>{(activity?.items ?? []).map((item) => {
             const title = item.documentTitle || item.details || "-";
-            const content = <><span className="inline-flex w-28 shrink-0 items-center gap-1.5 text-xs text-[var(--muted)]"><StatusDot tone={actionTone[item.action] ?? "idle"} />{item.label}</span><span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span><span className="whitespace-nowrap text-xs text-[var(--subtle)]">{formatThaiDate(item.createdAt)}</span></>;
+            const content = <><span title={item.label} className="inline-flex w-28 min-w-0 shrink-0 items-center gap-1.5 text-xs text-[var(--muted)]"><StatusDot tone={actionTone[item.action] ?? "idle"} /><span className="min-w-0 truncate">{item.label}</span></span><span className="min-w-0 flex-1 truncate text-sm font-medium">{title}</span><span className="whitespace-nowrap text-xs text-[var(--subtle)]">{formatThaiDate(item.createdAt)}</span></>;
             return <li key={item.id} className="border-b border-[var(--line-soft)] last:border-0">{item.documentId ? <Link href={`/documents/${item.documentId}`} className="focus-ring flex items-center gap-3.5 px-6 py-3 hover:bg-[var(--brand-blue-pale)]">{content}</Link> : <div className="flex items-center gap-3.5 px-6 py-3">{content}</div>}</li>;
           })}{activity && activity.items.length === 0 && <li className="px-6 py-10 text-center text-sm text-[var(--muted)]">ยังไม่มีงานในระบบ</li>}</ul>
         </SettingsCard>

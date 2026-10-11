@@ -59,15 +59,19 @@ type activityItem struct {
 }
 
 var activityLabels = map[string]string{
-	"DOCUMENT_UPLOADED":        "นำเข้า",
-	"DOCUMENT_FOLDER_IMPORTED": "นำเข้า",
-	"DOCUMENT_OVERWRITTEN":     "บันทึกทับ",
-	"DOCUMENT_FILE_REPLACED":   "อัปโหลดไฟล์ทับ",
-	"DOCUMENT_UPDATED":         "แก้ไข",
-	"DOCUMENT_CANCELLED":       "ยกเลิกเอกสาร",
-	"DOCUMENT_CONFIRMED":       "ยืนยัน",
-	"DIRECTORY_USER_CREATED":   "เพิ่มบุคคล",
-	"SETTINGS_OCR_UPDATED":     "ตั้งค่า OCR",
+	"DOCUMENT_UPLOADED":            "นำเข้า",
+	"DOCUMENT_FOLDER_IMPORTED":     "นำเข้า",
+	"DOCUMENT_OVERWRITTEN":         "บันทึกทับ",
+	"DOCUMENT_FILE_REPLACED":       "อัปโหลดไฟล์ทับ",
+	"DOCUMENT_UPDATED":             "แก้ไข",
+	"DOCUMENT_CANCELLED":           "ยกเลิกเอกสาร",
+	"DOCUMENT_CONFIRMED":           "ยืนยัน",
+	"DIRECTORY_USER_CREATED":       "เพิ่มบุคคล",
+	"SETTINGS_OCR_UPDATED":         "ตั้งค่า OCR",
+	"DOCUMENT_RESCAN_REQUESTED":    "สแกนใหม่",
+	"DOCUMENT_REPROCESS_REQUESTED": "ประมวลผลใหม่",
+	"DOCUMENT_EXTRACTION_FAILED":   "ประมวลผลไม่สำเร็จ",
+	"DOCUMENT_PROCESSED":           "ประมวลผลเสร็จ",
 }
 
 func activityLabel(action string) string {
@@ -132,8 +136,7 @@ func meHandler(db *gorm.DB) gin.HandlerFunc {
 		response := meResponse{UserID: userID, Role: fmt.Sprint(role), DisplayName: userID}
 
 		// SSO sends an account ID; the directory tells us the person's name.
-		var user DirectoryUser
-		if err := db.Where("user_id = ? OR username = ? OR email = ?", userID, userID, userID).Take(&user).Error; err == nil {
+		if user, found := loadDirectoryUserForAccount(db, userID); found {
 			response.DirectoryUserID = &user.ID
 			if name := strings.TrimSpace(displayDirectoryName(user)); name != "" {
 				response.DisplayName = name

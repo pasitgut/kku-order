@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gorm.io/gorm/schema"
 )
@@ -145,6 +146,24 @@ func TestGormModelsMatchMigrationColumns(t *testing.T) {
 			}
 			if !columns[field.DBName] {
 				t.Errorf("%T.%s maps to column %q, which table %q does not have", m.model, field.Name, field.DBName, m.table)
+			}
+		}
+	}
+}
+
+// Update maps written to document_workflows must only name columns the
+// migrations create; a missing column fails the UPDATE with a 500 at runtime.
+func TestWorkflowUpdateMapsUseMigratedColumns(t *testing.T) {
+	columns := migrationTableColumns(t)["document_workflows"]
+	maps := map[string]map[string]any{
+		"replacedFileUpdates": replacedFileUpdates(replacementFile{}, "user", time.Now()),
+		"rescanResetUpdates":  rescanResetUpdates(),
+		"retryResetUpdates":   retryResetUpdates(),
+	}
+	for name, updates := range maps {
+		for key := range updates {
+			if !columns[key] {
+				t.Errorf("%s writes column %q, which document_workflows does not have", name, key)
 			}
 		}
 	}

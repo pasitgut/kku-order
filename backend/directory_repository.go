@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 
@@ -31,6 +33,29 @@ func loadDirectory(db *gorm.DB) ([]DirectoryUser, map[string]uint, error) {
 		aliases[row.NormalizedName] = row.DirectoryPersonID
 	}
 	return users, aliases, nil
+}
+
+// directoryAccountQuery finds the synced person behind an SSO account. The sync
+// stores the university user id as external_id and the mail address as email.
+func directoryAccountQuery(db *gorm.DB, accountID string) *gorm.DB {
+	return db.Where("LOWER(email) = LOWER(?) OR CAST(external_id AS CHAR) = ?", accountID, accountID)
+}
+
+// loadDirectoryUserForAccount returns the directory entry for an SSO account, if the sync has one.
+func loadDirectoryUserForAccount(db *gorm.DB, accountID string) (DirectoryUser, bool) {
+	var person DirectoryPerson
+	if err := directoryAccountQuery(db, accountID).Take(&person).Error; err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("directory lookup for account %q failed: %v", accountID, err)
+		}
+		return DirectoryUser{}, false
+	}
+	profiles, err := loadDirectoryProfiles(db, []DirectoryPerson{person})
+	if err != nil {
+		log.Printf("directory profile for person %d failed: %v", person.ID, err)
+		return DirectoryUser{}, false
+	}
+	return directoryPersonAPI(person, profiles[person.ID]), true
 }
 
 func createDirectoryPersonWithProfile(tx *gorm.DB, person *DirectoryPerson, profile *DirectoryPersonProfile) error {

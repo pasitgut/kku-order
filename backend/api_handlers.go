@@ -642,6 +642,15 @@ func replacedFileUpdates(file replacementFile, importedBy string, now time.Time)
 	return updates
 }
 
+// removeReplacedUpload deletes the file a document used to point at once its
+// row points at replacementPath. Equal paths mean nothing was replaced.
+func removeReplacedUpload(previousPath, replacementPath string) {
+	if previousPath == "" || previousPath == replacementPath {
+		return
+	}
+	_ = os.Remove(previousPath)
+}
+
 // replaceDocumentFile swaps the source file of a document that is already in
 // the system, keeping its id, its revision history and its audit trail, so a
 // corrected scan does not become a second record of the same order.
@@ -653,6 +662,7 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
 			}
+			logUploadFailure("load document", document.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
@@ -697,12 +707,14 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			c.JSON(http.StatusConflict, gin.H{"error": "ไฟล์นี้ถูกนำเข้าเป็นเอกสารอื่นแล้ว", "duplicateDocumentId": clash.ID})
 			return
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			logUploadFailure("check duplicate", document.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบไฟล์ซ้ำได้"})
 			return
 		}
 
 		storageDir := getenv("UPLOAD_DIR", "./storage")
 		if err := os.MkdirAll(storageDir, 0o750); err != nil {
+			logUploadFailure("prepare storage", document.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถเตรียมพื้นที่จัดเก็บได้"})
 			return
 		}
@@ -713,6 +725,7 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			return
 		}
 		if err := c.SaveUploadedFile(header, storagePath); err != nil {
+			logUploadFailure("save file", document.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกไฟล์ได้"})
 			return
 		}
@@ -767,15 +780,15 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			if writeCancelledConflict(c, err) {
 				return
 			}
+			logUploadFailure("replace transaction", document.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอัปโหลดทับเอกสารได้"})
 			return
 		}
-		if previousPath != "" && previousPath != storagePath {
-			_ = os.Remove(previousPath)
-		}
+		removeReplacedUpload(previousPath, storagePath)
 		processor.Enqueue(document.ID)
 
 		if err := db.First(&document, document.ID).Error; err != nil {
+			logUploadFailure("reload replaced document", document.ID, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารที่อัปโหลดทับได้"})
 			return
 		}
