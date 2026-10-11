@@ -9,7 +9,7 @@ import { useToast } from "@/components/toast";
 import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
-import { canReprocess, processingNote } from "@/lib/processing-status";
+import { canRescan, processingNote, rescanNeedsConfirm } from "@/lib/processing-status";
 
 type PanelView = "original" | "roster" | "members" | "metadata" | "duties" | "history";
 
@@ -72,7 +72,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [restorePoints, setRestorePoints] = useState<Record<number, RestorePoint>>({});
   const [replaceArmed, setReplaceArmed] = useState(false);
   const [replacing, setReplacing] = useState(false);
-  const [reprocessing, setReprocessing] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
+  const [rescanArmed, setRescanArmed] = useState(false);
   // เกณฑ์เดียวกับที่ backend ใช้ตัดสินว่าเอกสารต้องตรวจสอบ ปรับได้ที่หน้าตั้งค่า OCR
   const [reviewThreshold, setReviewThreshold] = useState(0.9);
   const replaceInputRef = useRef<HTMLInputElement>(null);
@@ -292,16 +293,19 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     }
   };
 
-  const onReprocess = async () => {
-    setReprocessing(true);
+  const onRescan = async () => {
+    if (rescanNeedsConfirm(document) && !rescanArmed) {
+      setRescanArmed(true);
+      return;
+    }
+    setRescanning(true);
     try {
       await reprocessDocument(document.id);
-      setDocument((current) => ({ ...current, status: "PROCESSING", processingStage: "QUEUED", ocrError: "" }));
-      toast("ส่งเอกสารเข้าคิวประมวลผลใหม่แล้ว");
+      window.location.reload();
     } catch (reason) {
-      showError(reason, "ประมวลผลใหม่ไม่สำเร็จ");
-    } finally {
-      setReprocessing(false);
+      showError(reason, "สแกนไฟล์เดิมใหม่ไม่สำเร็จ");
+      setRescanning(false);
+      setRescanArmed(false);
     }
   };
 
@@ -353,7 +357,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 
   const bandMeta = <>
     <StatusBadge status={statusLabel(document.status)} />
-    {!cancelled && can(me?.role ?? "", "cancel") && <button type="button" disabled={saving || replacing || reprocessing || cancelling} onClick={() => { setCancelOpen(true); setCancelError(""); }} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-white/45 px-3.5 text-[13px] font-medium text-white hover:bg-white/10 disabled:opacity-50"><WarningCircle size={15} />ยกเลิกเอกสาร</button>}
+    {!cancelled && can(me?.role ?? "", "cancel") && <button type="button" disabled={saving || replacing || rescanning || cancelling} onClick={() => { setCancelOpen(true); setCancelError(""); }} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-white/45 px-3.5 text-[13px] font-medium text-white hover:bg-white/10 disabled:opacity-50"><WarningCircle size={15} />ยกเลิกเอกสาร</button>}
+    {!cancelled && can(me?.role ?? "", "import") && canRescan(document) && <button type="button" disabled={saving || replacing || rescanning || cancelling} onClick={onRescan} className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md px-3.5 text-[13px] font-medium transition disabled:opacity-50 ${rescanArmed ? "bg-[var(--danger)] text-white" : "border border-white/45 text-white hover:bg-white/10"}`}><ArrowCounterClockwise size={15} className={rescanning ? "animate-spin" : ""} />{rescanning ? "กำลังส่งเข้าคิว..." : rescanArmed ? "ยืนยันการสแกนใหม่" : rescanNeedsConfirm(document) ? "สแกนไฟล์เดิมใหม่" : "ประมวลผลใหม่"}</button>}
+    {rescanArmed && !rescanning && <button type="button" onClick={() => setRescanArmed(false)} className="focus-ring h-10 rounded-md px-2 text-[13px] text-[var(--band-text)] hover:text-white">ยกเลิก</button>}
     <span className="text-[13px] text-[var(--band-text)]">นำเข้า {formatThaiDate(document.createdAt)}</span>
     {can(me?.role ?? "", "delete") && <button type="button" onClick={removeDocument} disabled={deleting} className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md px-3.5 text-[13px] font-medium transition ${deleteArmed ? "bg-[var(--danger)] text-white" : "border border-white/45 text-white hover:bg-white/10"}`}><Trash size={15} />{deleting ? "กำลังลบ..." : deleteArmed ? "ยืนยันการลบ" : "ลบข้อมูลทดสอบ"}</button>}
     {deleteArmed && !deleting && <button type="button" onClick={() => setDeleteArmed(false)} className="focus-ring h-10 rounded-md px-2 text-[13px] text-[var(--band-text)] hover:text-white">ยกเลิก</button>}
@@ -367,6 +373,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       <p className="mt-3 break-words text-xs text-[var(--muted)]">ผู้ยกเลิก: {document.cancelledBy || "เจ้าหน้าที่"} · {document.cancelledAt ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(document.cancelledAt)) : "ไม่ระบุเวลา"}</p>
       <p className="mt-2 text-xs text-[var(--muted)]">เก็บต้นฉบับและประวัติไว้สำหรับตรวจสอบย้อนหลัง เอกสารนี้ไม่รวมในรายงานภาระงานและการแจ้งเตือนหมดอายุ</p>
     </section>}
+    {rescanArmed && !cancelled && <p role="alert" className="flex items-start gap-2 rounded-lg border border-[var(--danger)]/25 bg-[var(--danger-soft)] px-4 py-3 text-sm leading-6 text-[var(--danger)]"><WarningCircle size={18} weight="fill" className="mt-1 shrink-0" />ข้อมูลที่ตรวจและแก้ไขไว้จะถูกแทนด้วยผลสแกนใหม่ และต้องยืนยันเอกสารใหม่อีกครั้ง</p>}
     {cancelOpen && !cancelled && <form onSubmit={(event) => { event.preventDefault(); void submitCancellation(); }} aria-labelledby="cancel-document-title" className="card space-y-4 border border-[var(--danger)]/25 p-5">
       <div><h2 id="cancel-document-title" className="text-base font-semibold text-[var(--navy)]">ยกเลิกเอกสาร</h2><p className="mt-1 text-sm text-[var(--muted)]">หลังยกเลิกจะเปิดดูย้อนหลังได้ แต่ไม่สามารถแก้ไขหรือยืนยันข้อมูลได้ ข้อมูลที่ยังไม่ได้บันทึกจะไม่ถูกเก็บ</p></div>
       <label htmlFor="cancel-document-reason" className="block text-sm font-medium">เหตุผลที่ยกเลิก <span className="text-[var(--danger)]">*</span></label>
@@ -382,7 +389,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 <WarningCircle size={18} className="mt-0.5 shrink-0 text-[var(--warning)]" />
 <div className="min-w-0">
 <p className="text-sm font-medium text-[var(--navy)]">{processingNote(document)}</p>{can(me?.role ?? "", "settings") && document.ocrError && <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">สาเหตุ: {document.ocrError}</p>}</div>
-</div>{can(me?.role ?? "", "edit") && canReprocess(document) && <button type="button" disabled={reprocessing} onClick={onReprocess} className="focus-ring inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-50"><ArrowCounterClockwise size={15} className={reprocessing ? "animate-spin" : ""} />{reprocessing ? "กำลังส่งเข้าคิว..." : "ประมวลผลใหม่"}</button>}</div>}
+</div></div>}
           {!cancelled && (document.processingStage === "QUEUED" || document.processingStage === "PREPARING" || document.processingStage === "EXTRACTING") && <p role="status" className="rounded-lg bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--navy)]">กำลังประมวลผลเอกสาร ระบบจะอัปเดตข้อมูลให้อัตโนมัติ</p>}
           <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="min-w-[180px] flex-1"><p className="text-xs text-[var(--muted)]">ตรวจแล้ว <span className="font-medium text-[var(--ink)]">{verifiedCount}</span> จาก {appointments.length} รายชื่อ</p><span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${appointments.length ? Math.round((verifiedCount / appointments.length) * 100) : 0}%` }} /></span></div>

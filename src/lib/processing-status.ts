@@ -27,8 +27,15 @@ export function processingNote(doc: ProcessingDoc): string | null {
   return null;
 }
 
-export function canReprocess(doc: ProcessingDoc): boolean {
-  return doc.processingStage === "FAILED" || doc.processingStage === "RETRY_WAIT";
+// เอกสารที่ยังไม่ยกเลิกและไม่มี worker ถืออยู่ สแกนไฟล์เดิมใหม่ได้ (เกณฑ์เดียวกับ backend)
+export function canRescan(doc: ProcessingDoc): boolean {
+  if (doc.status === "CANCELLED") return false;
+  return !["QUEUED", "EXTRACTING", "PREPARING"].includes(doc.processingStage ?? "");
+}
+
+// เอกสารที่ล้มเหลวหรือรอลองใหม่ยังไม่เคยได้ผล จึงกดได้ทันที ส่วนเอกสารที่เสร็จแล้วต้องยืนยันสองขั้น
+export function rescanNeedsConfirm(doc: ProcessingDoc): boolean {
+  return doc.processingStage !== "FAILED" && doc.processingStage !== "RETRY_WAIT";
 }
 
 // ระหว่างประมวลผล confidence 0 หมายถึงกำลังคำนวณ; เสร็จแล้วยัง 0 หมายถึงไม่ระบุ

@@ -11,9 +11,13 @@ import (
 )
 
 var (
-	errDocumentNotFound    = errors.New("document not found")
-	errReprocessNotAllowed = errors.New("reprocess not allowed")
+	errDocumentNotFound = errors.New("document not found")
+	errDocumentBusy     = errors.New("document is being processed")
 )
+
+// rescanBusyStages are the stages in which a worker already owns the document;
+// a second enqueue there would process the file twice.
+var rescanBusyStages = []string{"QUEUED", "EXTRACTING", "PREPARING"}
 
 type reprocessStore interface {
 	RequestReprocess(id uint, actor string, now time.Time) error
@@ -23,38 +27,62 @@ type gormReprocessStore struct {
 	db *gorm.DB
 }
 
-// RequestReprocess รับเฉพาะ FAILED หรือ RETRY_WAIT รีเซ็ตคอลัมน์ลองใหม่ และบันทึก AuditLog
+// RequestReprocess ประมวลผลไฟล์เดิมใหม่ได้ทุกสถานะ ยกเว้นยกเลิกแล้วและกำลังประมวลผลอยู่
+// เอกสารที่ยืนยันแล้วจะถูกถอนการยืนยัน เพราะผลสแกนใหม่ยังไม่มีคนตรวจ
 func (s gormReprocessStore) RequestReprocess(id uint, actor string, now time.Time) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		var doc Document
-		if err := tx.Select("id", "processing_stage", "status").First(&doc, id).Error; err != nil {
+		// The row lock also rejects cancelled documents without a race.
+		if err := lockEditableDocument(tx, id); err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errDocumentNotFound
 			}
 			return err
 		}
-		// A cancelled document stays cancelled; reprocessing it would restore workflow state.
-		if doc.Status == documentCancelled {
-			return errDocumentCancelled
+		var doc Document
+		if err := tx.Select("id", "processing_stage").First(&doc, id).Error; err != nil {
+			return err
 		}
-		if doc.ProcessingStage != "FAILED" && doc.ProcessingStage != "RETRY_WAIT" {
-			return errReprocessNotAllowed
+		action := "DOCUMENT_RESCAN_REQUESTED"
+		if doc.ProcessingStage == "FAILED" || doc.ProcessingStage == "RETRY_WAIT" {
+			action = "DOCUMENT_REPROCESS_REQUESTED"
 		}
-		updates := map[string]any{
-			"status":                "PROCESSING",
-			"processing_stage":      "QUEUED",
-			"ocr_error":             "",
-			"processing_started_at": nil,
+		// One conditional UPDATE is the gate: a second click finds the stage already QUEUED and changes nothing.
+		result := tx.Model(&Document{}).
+			Where("id = ? AND status <> ? AND processing_stage NOT IN ?", id, documentCancelled, rescanBusyStages).
+			Updates(rescanResetUpdates())
+		if result.Error != nil {
+			return result.Error
 		}
-		for key, value := range retryResetUpdates() {
-			updates[key] = value
+		if result.RowsAffected == 0 {
+			return errDocumentBusy
 		}
-		if err := tx.Model(&Document{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		var updated Document
+		if err := tx.First(&updated, id).Error; err != nil {
+			return err
+		}
+		if err := syncCoreConfirmation(tx, &updated); err != nil {
 			return err
 		}
 		docID := id
-		return tx.Create(&AuditLog{DocumentID: &docID, UserID: actor, Action: "DOCUMENT_REPROCESS_REQUESTED", CreatedAt: now}).Error
+		return tx.Create(&AuditLog{DocumentID: &docID, UserID: actor, Action: action, CreatedAt: now}).Error
 	})
+}
+
+// rescanResetUpdates คืนค่าที่ทำให้เอกสารกลับเข้าคิวเพื่อสแกนไฟล์เดิมใหม่
+// ล้างการยืนยัน (เหมือนอัปโหลดทับ) และรีเซ็ตการลองใหม่ ไม่ลบข้อมูลที่สกัดไว้ จะถูกแทนเมื่อผลใหม่ถูกบันทึก
+func rescanResetUpdates() map[string]any {
+	updates := map[string]any{
+		"status":                "PROCESSING",
+		"processing_stage":      "QUEUED",
+		"ocr_error":             "",
+		"processing_started_at": nil,
+		"confirmed_by":          "",
+		"confirmed_at":          nil,
+	}
+	for key, value := range retryResetUpdates() {
+		updates[key] = value
+	}
+	return updates
 }
 
 func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.HandlerFunc {
@@ -70,8 +98,8 @@ func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.Hand
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 			case errors.Is(err, errDocumentCancelled):
 				c.JSON(http.StatusConflict, gin.H{"error": "เอกสารถูกยกเลิกแล้ว ไม่สามารถประมวลผลใหม่ได้", "status": documentCancelled})
-			case errors.Is(err, errReprocessNotAllowed):
-				c.JSON(http.StatusConflict, gin.H{"error": "ประมวลผลใหม่ได้เฉพาะเอกสารที่ล้มเหลวหรือรอลองใหม่"})
+			case errors.Is(err, errDocumentBusy):
+				c.JSON(http.StatusConflict, gin.H{"error": "เอกสารกำลังประมวลผลอยู่ กรุณารอให้เสร็จก่อนสแกนใหม่"})
 			default:
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ประมวลผลใหม่ไม่สำเร็จ"})
 			}

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,7 +40,8 @@ func TestReprocessHandlerStatusMapping(t *testing.T) {
 		want int
 	}{
 		{"not found", errDocumentNotFound, http.StatusNotFound},
-		{"wrong state", errReprocessNotAllowed, http.StatusConflict},
+		{"busy", errDocumentBusy, http.StatusConflict},
+		{"cancelled", errDocumentCancelled, http.StatusConflict},
 		{"unexpected", errors.New("db"), http.StatusInternalServerError},
 	}
 	for _, c := range cases {
@@ -76,5 +78,69 @@ func TestReprocessRouteRejectsViewerAndAllowsStaff(t *testing.T) {
 		fakeRole("STAFF"), requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(&fakeReprocessStore{}, handler()))
 	if staff.Code != http.StatusAccepted {
 		t.Fatalf("STAFF status = %d, want 202", staff.Code)
+	}
+}
+
+func TestReprocessHandlerRefusalMessages(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		message string
+	}{
+		{"cancelled", errDocumentCancelled, "เอกสารถูกยกเลิกแล้ว ไม่สามารถประมวลผลใหม่ได้"},
+		{"busy", errDocumentBusy, "เอกสารกำลังประมวลผลอยู่ กรุณารอให้เสร็จก่อนสแกนใหม่"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			h := reprocessDocumentHandler(&fakeReprocessStore{err: c.err}, func(uint) {
+				t.Fatal("must not enqueue a refused document")
+			})
+			rec := performRequest(t, http.MethodPost, "/api/v1/documents/:id/reprocess", "/api/v1/documents/3/reprocess", nil, fakeRole("STAFF"), h)
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), c.message) {
+				t.Fatalf("body = %s, want message %q", rec.Body.String(), c.message)
+			}
+		})
+	}
+}
+
+func TestReprocessRouteAllowsFinishedDocumentForAdminAndStaff(t *testing.T) {
+	route := "/api/v1/documents/:id/reprocess"
+	for _, role := range []string{"ADMIN", "STAFF"} {
+		var enqueued []uint
+		rec := performRequest(t, http.MethodPost, route, "/api/v1/documents/7/reprocess", nil,
+			fakeRole(role), requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(&fakeReprocessStore{}, func(id uint) { enqueued = append(enqueued, id) }))
+		if rec.Code != http.StatusAccepted || len(enqueued) != 1 || enqueued[0] != 7 {
+			t.Fatalf("%s: status = %d enqueued = %v", role, rec.Code, enqueued)
+		}
+	}
+	viewer := performRequest(t, http.MethodPost, route, "/api/v1/documents/7/reprocess", nil,
+		fakeRole("VIEWER"), requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(&fakeReprocessStore{}, func(uint) {
+			t.Fatal("viewer must not enqueue")
+		}))
+	if viewer.Code != http.StatusForbidden {
+		t.Fatalf("VIEWER status = %d, want 403", viewer.Code)
+	}
+}
+
+func TestRescanResetUpdatesClearsConfirmationAndRetryState(t *testing.T) {
+	u := rescanResetUpdates()
+	if u["status"] != "PROCESSING" || u["processing_stage"] != "QUEUED" || u["ocr_error"] != "" {
+		t.Fatalf("status/stage/error not reset: %v", u)
+	}
+	if u["confirmed_by"] != "" {
+		t.Fatalf("confirmed_by = %v, want empty", u["confirmed_by"])
+	}
+	if v, ok := u["confirmed_at"]; !ok || v != nil {
+		t.Fatalf("confirmed_at = %v (present=%t), want nil", v, ok)
+	}
+	if u["extraction_attempts"] != 0 || u["extraction_last_status"] != 0 {
+		t.Fatalf("retry counters not reset: %v", u)
+	}
+	if v, ok := u["next_attempt_at"]; !ok || v != nil {
+		t.Fatalf("next_attempt_at = %v (present=%t), want nil", v, ok)
 	}
 }

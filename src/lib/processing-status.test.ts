@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { canReprocess, confidenceLabel, isInsecureURL, processingNote } from "./processing-status.ts";
+import { canRescan, confidenceLabel, isInsecureURL, processingNote, rescanNeedsConfirm } from "./processing-status.ts";
 
 const base = { status: "PROCESSING", confidence: 0 };
 
@@ -22,11 +22,28 @@ test("normal documents have no note", () => {
   assert.equal(processingNote({ status: "REVIEW", processingStage: "EXTRACTED", confidence: 0.9 }), null);
 });
 
-test("reprocess allowed only for FAILED or RETRY_WAIT", () => {
-  assert.equal(canReprocess({ status: "NEEDS_REVIEW", processingStage: "FAILED", confidence: 0 }), true);
-  assert.equal(canReprocess({ status: "PROCESSING", processingStage: "RETRY_WAIT", confidence: 0 }), true);
-  assert.equal(canReprocess({ status: "REVIEW", processingStage: "EXTRACTED", confidence: 0.9 }), false);
-  assert.equal(canReprocess({ status: "PROCESSING", processingStage: "EXTRACTING", confidence: 0 }), false);
+test("rescan allowed for finished, failed and retry-waiting documents", () => {
+  assert.equal(canRescan({ status: "NEEDS_REVIEW", processingStage: "FAILED", confidence: 0 }), true);
+  assert.equal(canRescan({ status: "PROCESSING", processingStage: "RETRY_WAIT", confidence: 0 }), true);
+  assert.equal(canRescan({ status: "REVIEW", processingStage: "EXTRACTED", confidence: 0.9 }), true);
+  assert.equal(canRescan({ status: "CONFIRMED", processingStage: "EXTRACTED", confidence: 0.95 }), true);
+});
+
+test("rescan refused while queued, extracting or preparing", () => {
+  assert.equal(canRescan({ status: "PROCESSING", processingStage: "QUEUED", confidence: 0 }), false);
+  assert.equal(canRescan({ status: "PROCESSING", processingStage: "EXTRACTING", confidence: 0 }), false);
+  assert.equal(canRescan({ status: "PROCESSING", processingStage: "PREPARING", confidence: 0 }), false);
+});
+
+test("rescan refused for cancelled documents whatever the stage", () => {
+  assert.equal(canRescan({ status: "CANCELLED", processingStage: "EXTRACTED", confidence: 0.9 }), false);
+  assert.equal(canRescan({ status: "CANCELLED", processingStage: "FAILED", confidence: 0 }), false);
+});
+
+test("only a finished document needs the two-step confirmation", () => {
+  assert.equal(rescanNeedsConfirm({ status: "NEEDS_REVIEW", processingStage: "FAILED", confidence: 0 }), false);
+  assert.equal(rescanNeedsConfirm({ status: "PROCESSING", processingStage: "RETRY_WAIT", confidence: 0 }), false);
+  assert.equal(rescanNeedsConfirm({ status: "REVIEW", processingStage: "EXTRACTED", confidence: 0.9 }), true);
 });
 
 test("confidence 0 is not shown as calculating", () => {
