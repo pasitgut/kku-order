@@ -103,12 +103,12 @@ export default function UploadPage() {
   </label>;
 
   return <AppShell breadcrumb="หน้าหลัก / นำเข้าเอกสาร" title="นำเข้าชุดเอกสารคำสั่งแต่งตั้ง" description="ไฟล์จะถูกบันทึกลง MySQL ก่อนเข้าสู่คิวปรับภาพและสกัดด้วยบริการ OCR">
-    <div className="grid items-start gap-6 xl:grid-cols-3">
-      <div className="xl:col-span-2">
+    <div className="grid min-w-0 grid-cols-1 items-start gap-6 xl:grid-cols-3">
+      <div className="min-w-0 xl:col-span-2">
         {files.length === 0 ? dropzone(true) : <section className="card flex flex-col overflow-hidden">
           <div className="flex flex-col gap-3 border-b border-[var(--line)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6">
             <div><h2 className="text-[17px] font-semibold text-[var(--navy)]">ไฟล์ที่เลือก ({files.length})</h2><p className="mt-0.5 text-xs text-[var(--muted)]">{summary}</p></div>
-            <div className="flex gap-2"><button type="button" onClick={() => setFiles([])} disabled={processing} className="focus-ring h-10 rounded-md border border-[var(--line-strong)] bg-white px-3.5 text-[13px] text-[var(--muted)] hover:bg-[var(--line-soft)] disabled:opacity-50">ล้างทั้งหมด</button><button type="button" onClick={startProcessing} disabled={processing || readyCount === 0} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-[var(--accent)] px-4 text-[13px] font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[#a6b3bf]">{processing ? "กำลังบันทึกลงระบบ..." : readyCount ? `นำเข้า ${readyCount} ไฟล์ที่พร้อม` : "นำเข้าเอกสาร"}<ArrowRight size={16} weight="bold" /></button></div>
+            <div className="flex flex-wrap gap-2"><button type="button" onClick={() => setFiles([])} disabled={processing} className="focus-ring h-10 rounded-md border border-[var(--line-strong)] bg-white px-3.5 text-[13px] text-[var(--muted)] hover:bg-[var(--line-soft)] disabled:opacity-50">ล้างทั้งหมด</button><button type="button" onClick={startProcessing} disabled={processing || readyCount === 0} className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-[var(--accent)] px-4 text-[13px] font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[#a6b3bf]">{processing ? "กำลังบันทึกลงระบบ..." : readyCount ? `นำเข้า ${readyCount} ไฟล์ที่พร้อม` : "นำเข้าเอกสาร"}<ArrowRight size={16} weight="bold" /></button></div>
           </div>
           <ul className="flex-1">{files.map((item, index) => {
             const state = stateLabels[item.state];
@@ -116,7 +116,7 @@ export default function UploadPage() {
               <div className="flex items-center gap-3.5">
                 <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#f1f3f6] text-[10px] font-semibold text-[var(--muted)]">{fileExtension(item.file.name)}</span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{item.file.name}</p>
+                  <p title={item.file.name} className="truncate text-sm font-medium">{item.file.name}</p>
                   <p className="mt-0.5 text-xs font-light text-[var(--muted)]">{(item.file.size / 1024 / 1024).toFixed(2)} MB{item.duplicateDocumentId ? <> · ตรงกับ <Link href={`/documents/${item.duplicateDocumentId}`} className="text-[var(--accent)] hover:underline">เอกสาร #{item.duplicateDocumentId}</Link></> : null}{item.message ? ` · ${item.message}` : ""}</p>
                   {item.state === "uploading" && <span className="mt-2 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full w-1/2 animate-pulse rounded-full bg-[var(--accent)]" /></span>}
                 </div>
@@ -133,7 +133,7 @@ export default function UploadPage() {
         </section>}
       </div>
 
-      <aside className="flex flex-col gap-5">
+      <aside className="flex min-w-0 flex-col gap-5">
         {files.length > 0 && dropzone(false)}
         <section className="card p-5 lg:p-6">
           <h2 className="font-semibold text-[var(--navy)]">กระบวนการหลังนำเข้า</h2>
