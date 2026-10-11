@@ -653,8 +653,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			return
 		}
 		storedFilename := safeStoredFileName(header.Filename)
-		safeName := fmt.Sprintf("%d-%s", time.Now().UnixNano(), storedFilename)
-		storagePath := filepath.Join(storageDir, safeName)
+		storagePath := filepath.Join(storageDir, storageFileName(time.Now().UnixNano(), storedFilename))
 		if len([]rune(storagePath)) > 1000 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ที่อยู่ไฟล์ยาวเกินขนาดที่ฐานข้อมูลรองรับ"})
 			return

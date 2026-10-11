@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -719,7 +718,7 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			return
 		}
 		storedFilename := safeStoredFileName(header.Filename)
-		storagePath := filepath.Join(storageDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), storedFilename))
+		storagePath := filepath.Join(storageDir, storageFileName(time.Now().UnixNano(), storedFilename))
 		if len([]rune(storagePath)) > 1000 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ที่อยู่ไฟล์ยาวเกินขนาดที่ฐานข้อมูลรองรับ"})
 			return

@@ -8,8 +8,10 @@ import (
 	"mime"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -331,7 +333,7 @@ func storeImportedDocument(db *gorm.DB, source io.ReadSeeker, fileName, storageD
 	}
 
 	fileName = safeStoredFileName(fileName)
-	storagePath := filepath.Join(storageDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), fileName))
+	storagePath := filepath.Join(storageDir, storageFileName(time.Now().UnixNano(), fileName))
 	if len([]rune(storagePath)) > 1000 {
 		return false, fmt.Errorf("ที่อยู่ไฟล์ยาวเกินขนาดที่ฐานข้อมูลรองรับ")
 	}
@@ -388,6 +390,37 @@ func safeStoredFileName(name string) string {
 		name = string(runes[:500])
 	}
 	return name
+}
+
+// maxStoredBaseNameBytes keeps the on-disk base name well under the 255-byte
+// file name limit of common file systems. Thai characters take 3 bytes each.
+const maxStoredBaseNameBytes = 200
+
+// storageFileName builds the on-disk name "<unixnano>-<name>". The timestamp
+// prefix and the extension are kept; the stem is cut on a UTF-8 boundary so the
+// whole base name fits in maxStoredBaseNameBytes. The original name stays in the
+// database and is never shortened.
+func storageFileName(timestamp int64, originalName string) string {
+	name := safeStoredFileName(originalName)
+	extension := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, extension)
+	prefix := strconv.FormatInt(timestamp, 10) + "-"
+	stem = truncateUTF8Bytes(stem, maxStoredBaseNameBytes-len(prefix)-len(extension))
+	return prefix + stem + extension
+}
+
+func truncateUTF8Bytes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return value[:cut]
 }
 
 func hashReader(reader io.Reader) (string, error) {
