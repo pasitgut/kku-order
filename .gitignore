@@ -57,3 +57,4 @@ next-env.d.ts
 
 # internal security review, never publish
 /docs/security/
+.superpowers/

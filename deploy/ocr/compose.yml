@@ -1,0 +1,55 @@
+# DocFlow OCR stack: thaidoc-extract behind a Caddy reverse proxy.
+# thaidoc is reachable only through the proxy (internal network, no published ports).
+# Start: cp .env.example .env && edit, then: docker compose up -d --build
+name: docflow-ocr
+
+services:
+  thaidoc:
+    build:
+      context: ${THAIDOC_SRC:-../../../thaidoc-src}
+      dockerfile: ${THAIDOC_DOCKERFILE:-Dockerfile}
+    image: thaidoc-extract:${THAIDOC_VERSION:?set THAIDOC_VERSION}
+    command: ["serve"]
+    restart: unless-stopped
+    environment:
+      CPU_THREADS: ${THAIDOC_CPU_THREADS:-4}
+    networks:
+      - ocr-internal
+    healthcheck:
+      # healthy only when the models are loaded, not merely when the HTTP server is up
+      test: ["CMD", "python", "-c", "import json,sys,urllib.request as u; d=json.load(u.urlopen('http://127.0.0.1:8000/health', timeout=4)); sys.exit(0 if d.get('models_loaded') is True else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  proxy:
+    image: caddy:2.8.4-alpine
+    restart: unless-stopped
+    depends_on:
+      thaidoc:
+        condition: service_healthy
+    environment:
+      OCR_API_KEY: ${OCR_API_KEY:?set OCR_API_KEY}
+      OCR_SITE_ADDRESS: ${OCR_SITE_ADDRESS:-:8000}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    ports:
+      - "${OCR_PROXY_PUBLISH:-127.0.0.1:18000}:8000"
+    networks:
+      ocr-internal:
+      docflow-ocr:
+        aliases:
+          - ocr-proxy
+
+networks:
+  # no outbound route: thaidoc cannot reach anything outside this stack
+  ocr-internal:
+    internal: true
+  # shared with the DocFlow app compose (external network there)
+  docflow-ocr:
+    name: docflow-ocr
+
+volumes:
+  caddy_data:
