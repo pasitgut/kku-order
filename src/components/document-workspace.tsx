@@ -6,7 +6,7 @@ import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info,
 import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 
@@ -52,6 +52,13 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [departmentFilter, setDepartmentFilter] = useState("");
   const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
   const [saving, setSaving] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState("");
+  const cancelled = document.status === "CANCELLED";
+  const editable = !cancelled && !cancelling && can(me?.role ?? "", "edit");
+  const cancelReasonRef = useRef<HTMLTextAreaElement>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [picker, setPicker] = useState<DirectoryPicker | null>(null);
@@ -100,12 +107,12 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   }, [document.id]);
 
   useEffect(() => {
-    if (document.processingStage !== "QUEUED" && document.processingStage !== "PREPARING") return;
+    if (cancelled || (document.processingStage !== "QUEUED" && document.processingStage !== "PREPARING")) return;
     let active = true;
     const timer = window.setInterval(() => {
       getDocument(document.id).then(({ data }) => {
         if (!active) return;
-        setDocument(data);
+        setDocument((current) => current.status === "CANCELLED" ? current : data);
         if (data.processingStage === "EXTRACTED" || data.processingStage === "FAILED") {
           setFields(data.fields ?? []);
           setAppointments(data.appointments ?? []);
@@ -113,7 +120,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       }).catch(() => {});
     }, 2000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [document.id, document.processingStage]);
+  }, [document.id, document.processingStage, cancelled]);
 
   const showError = (reason: unknown, fallback: string) => toast(reason instanceof Error ? reason.message : fallback, { kind: "error" });
 
@@ -288,14 +295,58 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     }
   };
 
+  useEffect(() => {
+    if (cancelOpen) cancelReasonRef.current?.focus();
+  }, [cancelOpen]);
+
+  const submitCancellation = async () => {
+    const reason = cancelReason.trim();
+    if (!reason || Array.from(reason).length > 2000) {
+      setCancelError("กรุณาระบุเหตุผลที่ยกเลิก 1–2,000 ตัวอักษร");
+      cancelReasonRef.current?.focus();
+      return;
+    }
+    setCancelling(true);
+    setCancelError("");
+    try {
+      const { data } = await cancelDocument(document.id, reason);
+      setDocument(data);
+      setFields(data.fields ?? []);
+      setAppointments(data.appointments ?? []);
+      setCancelOpen(false);
+      setPicker(null); setDraft(null); setCompare(null); setReplaceArmed(false);
+      toast("ยกเลิกเอกสารเรียบร้อยแล้ว");
+      getDocumentRevisions(document.id).then(({ data }) => setRevisions(data)).catch(() => {});
+      router.refresh();
+    } catch (reason) {
+      setCancelError(reason instanceof Error ? reason.message : "ไม่สามารถยกเลิกเอกสารได้");
+    } finally { setCancelling(false); }
+  };
+
   const bandMeta = <>
     <StatusBadge status={statusLabel(document.status)} />
+    {!cancelled && can(me?.role ?? "", "cancel") && <button type="button" disabled={saving || replacing || reprocessing || cancelling} onClick={() => { setCancelOpen(true); setCancelError(""); }} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-white/45 px-3.5 text-[13px] font-medium text-white hover:bg-white/10 disabled:opacity-50"><WarningCircle size={15} />ยกเลิกเอกสาร</button>}
     <span className="text-[13px] text-[var(--band-text)]">นำเข้า {formatThaiDate(document.createdAt)}</span>
-    <button type="button" onClick={removeDocument} disabled={deleting} className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md px-3.5 text-[13px] font-medium transition ${deleteArmed ? "bg-[var(--danger)] text-white" : "border border-white/45 text-white hover:bg-white/10"}`}><Trash size={15} />{deleting ? "กำลังลบ..." : deleteArmed ? "ยืนยันการลบ" : "ลบข้อมูลทดสอบ"}</button>
+    {can(me?.role ?? "", "delete") && <button type="button" onClick={removeDocument} disabled={deleting} className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md px-3.5 text-[13px] font-medium transition ${deleteArmed ? "bg-[var(--danger)] text-white" : "border border-white/45 text-white hover:bg-white/10"}`}><Trash size={15} />{deleting ? "กำลังลบ..." : deleteArmed ? "ยืนยันการลบ" : "ลบข้อมูลทดสอบ"}</button>}
     {deleteArmed && !deleting && <button type="button" onClick={() => setDeleteArmed(false)} className="focus-ring h-10 rounded-md px-2 text-[13px] text-[var(--band-text)] hover:text-white">ยกเลิก</button>}
   </>;
 
   return <AppShell backHref="/documents" breadcrumb="เอกสารทั้งหมด / ตรวจสอบข้อมูล" title={document.title || document.originalFilename} meta={bandMeta}><div className="space-y-6">
+    {cancelled && <section role="status" className="rounded-lg border border-[var(--danger)]/25 bg-[var(--danger-soft)] p-5">
+      <h2 className="flex items-center gap-2 text-base font-semibold text-[var(--danger)]"><WarningCircle size={20} />ยกเลิกเอกสารแล้ว</h2>
+      <p className="mt-3 text-xs font-medium text-[var(--muted)]">เหตุผลที่ยกเลิก</p>
+      <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6">{document.cancellationReason}</p>
+      <p className="mt-3 break-words text-xs text-[var(--muted)]">ผู้ยกเลิก: {document.cancelledBy || "เจ้าหน้าที่"} · {document.cancelledAt ? new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Bangkok" }).format(new Date(document.cancelledAt)) : "ไม่ระบุเวลา"}</p>
+      <p className="mt-2 text-xs text-[var(--muted)]">เก็บต้นฉบับและประวัติไว้สำหรับตรวจสอบย้อนหลัง เอกสารนี้ไม่รวมในรายงานภาระงานและการแจ้งเตือนหมดอายุ</p>
+    </section>}
+    {cancelOpen && !cancelled && <form onSubmit={(event) => { event.preventDefault(); void submitCancellation(); }} aria-labelledby="cancel-document-title" className="card space-y-4 border border-[var(--danger)]/25 p-5">
+      <div><h2 id="cancel-document-title" className="text-base font-semibold text-[var(--navy)]">ยกเลิกเอกสาร</h2><p className="mt-1 text-sm text-[var(--muted)]">หลังยกเลิกจะเปิดดูย้อนหลังได้ แต่ไม่สามารถแก้ไขหรือยืนยันข้อมูลได้ ข้อมูลที่ยังไม่ได้บันทึกจะไม่ถูกเก็บ</p></div>
+      <label htmlFor="cancel-document-reason" className="block text-sm font-medium">เหตุผลที่ยกเลิก <span className="text-[var(--danger)]">*</span></label>
+      <textarea ref={cancelReasonRef} id="cancel-document-reason" required maxLength={4000} disabled={cancelling} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} rows={3} aria-invalid={Boolean(cancelError)} aria-describedby="cancel-document-help cancel-document-error" className="focus-ring w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6" />
+      <p id="cancel-document-help" className="text-xs text-[var(--muted)]">ระบุได้ไม่เกิน 2,000 ตัวอักษร · {Array.from(cancelReason.trim()).length.toLocaleString("th-TH")} / 2,000</p>
+      <p id="cancel-document-error" role={cancelError ? "alert" : undefined} className="text-sm text-[var(--danger)]">{cancelError}</p>
+      <div className="flex flex-wrap justify-end gap-2"><button type="button" disabled={cancelling} onClick={() => setCancelOpen(false)} className="focus-ring h-11 rounded-md border border-[var(--line)] px-4 text-sm">กลับไปตรวจสอบ</button><button type="submit" disabled={cancelling || !cancelReason.trim()} className="focus-ring h-11 rounded-md bg-[var(--danger)] px-4 text-sm font-medium text-white disabled:opacity-50">{cancelling ? "กำลังยกเลิก..." : "ยืนยันยกเลิกเอกสาร"}</button></div>
+    </form>}
     <div className="grid items-stretch gap-6 xl:grid-cols-2">
       <section className="flex min-h-[420px] flex-col overflow-hidden rounded-[10px] bg-[#e9eef3] xl:min-h-[720px] shadow-[var(--shadow-card)]">
         <div className="flex items-center justify-between border-b border-[var(--line)] bg-white py-3 pl-5 pr-3"><div><p className="text-sm font-semibold text-[var(--navy)]">ต้นฉบับเอกสาร</p><p className="mt-0.5 text-xs font-light text-[var(--muted)]">{document.pageCount || "-"} หน้า · {formatFileSize(document.fileSizeBytes)} · {document.ocrProvider || "นำเข้าข้อมูลโดยตรง"}</p></div><div className="flex items-center gap-1"><button type="button" onClick={() => setSelectedPage((page) => Math.max(1, page - 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)]" aria-label="หน้าก่อนหน้า"><CaretLeft size={17} /></button><span className="px-1.5 text-[13px]">หน้า {selectedPage} / {document.pageCount || 1}</span><button type="button" onClick={() => setSelectedPage((page) => Math.min(document.pageCount || 1, page + 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)]" aria-label="หน้าถัดไป"><CaretRight size={17} /></button></div></div>
@@ -305,9 +356,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 
       <section className="card flex min-w-0 flex-col overflow-hidden">
         <div className="space-y-3 px-5 pb-4 pt-5 lg:px-6">
-          <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-[var(--navy)]">ตรวจสอบข้อมูลเอกสาร</h2><span className="text-xs text-[var(--muted)]">ข้อมูลจากการสกัด · แก้ไขได้ทุกช่อง</span></div>
-          {document.processingStage === "FAILED" && <div role="alert" className="flex flex-col gap-3 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning-soft)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-start gap-2"><WarningCircle size={18} className="mt-0.5 shrink-0 text-[var(--warning)]" /><div className="min-w-0"><p className="text-sm font-medium text-[var(--navy)]">ประมวลผลเอกสารไม่สำเร็จ จึงยังไม่มีข้อมูลให้ตรวจ</p>{can(me?.role ?? "", "settings") && document.ocrError && <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">สาเหตุ: {document.ocrError}</p>}</div></div>{can(me?.role ?? "", "edit") && <button type="button" disabled={reprocessing} onClick={retryProcessing} className="focus-ring inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-60"><ArrowCounterClockwise size={15} className={reprocessing ? "animate-spin" : ""} />{reprocessing ? "กำลังส่งเข้าคิว..." : "ลองประมวลผลอีกครั้ง"}</button>}</div>}
-          {(document.processingStage === "QUEUED" || document.processingStage === "PREPARING") && <p role="status" className="rounded-lg bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--navy)]">กำลังประมวลผลเอกสาร ระบบจะอัปเดตข้อมูลให้อัตโนมัติ</p>}
+          <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="text-lg font-semibold text-[var(--navy)]">ตรวจสอบข้อมูลเอกสาร</h2><span className="text-xs text-[var(--muted)]">{editable ? "ข้อมูลจากการสกัด · แก้ไขได้ทุกช่อง" : "ข้อมูลจากการสกัด · ดูย้อนหลัง"}</span></div>
+          {!cancelled && document.processingStage === "FAILED" && <div role="alert" className="flex flex-col gap-3 rounded-lg border border-[var(--warning)]/30 bg-[var(--warning-soft)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div className="flex min-w-0 items-start gap-2"><WarningCircle size={18} className="mt-0.5 shrink-0 text-[var(--warning)]" /><div className="min-w-0"><p className="text-sm font-medium text-[var(--navy)]">ประมวลผลเอกสารไม่สำเร็จ จึงยังไม่มีข้อมูลให้ตรวจ</p>{can(me?.role ?? "", "settings") && document.ocrError && <p className="mt-1 break-words text-xs leading-5 text-[var(--muted)]">สาเหตุ: {document.ocrError}</p>}</div></div>{can(me?.role ?? "", "edit") && <button type="button" disabled={reprocessing} onClick={retryProcessing} className="focus-ring inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:opacity-60"><ArrowCounterClockwise size={15} className={reprocessing ? "animate-spin" : ""} />{reprocessing ? "กำลังส่งเข้าคิว..." : "ลองประมวลผลอีกครั้ง"}</button>}</div>}
+          {!cancelled && (document.processingStage === "QUEUED" || document.processingStage === "PREPARING") && <p role="status" className="rounded-lg bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--navy)]">กำลังประมวลผลเอกสาร ระบบจะอัปเดตข้อมูลให้อัตโนมัติ</p>}
           <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <div className="min-w-[180px] flex-1"><p className="text-xs text-[var(--muted)]">ตรวจแล้ว <span className="font-medium text-[var(--ink)]">{verifiedCount}</span> จาก {appointments.length} รายชื่อ</p><span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${appointments.length ? Math.round((verifiedCount / appointments.length) * 100) : 0}%` }} /></span></div>
             {unlinkedAppointments.length > 0 && <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs"><span className="h-2 w-2 rounded-full bg-[var(--highlight)]" />ยังไม่ผูก {unlinkedAppointments.length}</span>}
@@ -335,7 +386,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
             const unlinked = appointments.filter((row) => departmentOf(row) === department && !isLinked(row)).length;
             return <section key={department}>
               <div className="flex items-start gap-3 border-b border-[var(--line)] bg-[var(--canvas)] px-5 py-3 lg:px-6">
-                <input type="checkbox" aria-label={`ตรวจแล้วทั้งฝ่าย ${department}`} checked={rows.length > 0 && rows.every((row) => row.verified)} ref={(element) => { if (element) element.indeterminate = rows.some((row) => row.verified) && !rows.every((row) => row.verified); }} onChange={(event) => toggleGroupVerified(department, rows, event.target.checked)} className="mt-0.5 h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
+                <input disabled={!editable} type="checkbox" aria-label={`ตรวจแล้วทั้งฝ่าย ${department}`} checked={rows.length > 0 && rows.every((row) => row.verified)} ref={(element) => { if (element) element.indeterminate = rows.some((row) => row.verified) && !rows.every((row) => row.verified); }} onChange={(event) => toggleGroupVerified(department, rows, event.target.checked)} className="mt-0.5 h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
                 <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2"><h3 className="text-sm font-semibold text-[var(--navy)]">{department}</h3><span className="text-xs text-[var(--muted)]">{rows.length} รายชื่อ</span>{unlinked > 0 && <span className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--highlight)]" />ยังไม่ผูก {unlinked}</span>}</div><p className="mt-0.5 line-clamp-2 text-xs font-light leading-5 text-[var(--muted)]">หน้าที่ฝ่าย: {duty}</p></div>
               </div>
               <ul>{rows.map((row) => {
@@ -344,7 +395,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
                 const open = openRows[row.id] ?? (memberFilter === "warning" && problem);
                 return <li key={row.id} className={`border-b border-[var(--line-soft)] ${selectedAppointmentId === row.id ? "bg-[var(--brand-blue-pale)]" : ""}`}>
                   <div className="flex min-h-[52px] items-center gap-3 px-5 py-2 lg:px-6">
-                    <input type="checkbox" checked={row.verified} onChange={(event) => updateAppointment(row.id, "verified", event.target.checked)} aria-label={`ตรวจแล้ว ${row.fullName}`} className="h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
+                    <input disabled={!editable} type="checkbox" checked={row.verified} onChange={(event) => updateAppointment(row.id, "verified", event.target.checked)} aria-label={`ตรวจแล้ว ${row.fullName}`} className="h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
                     <div className="min-w-0 flex-1 sm:flex sm:items-baseline sm:gap-2.5"><p className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0">{row.fullName || "ไม่ระบุชื่อ"}</p><p className="truncate text-xs font-light text-[var(--muted)]">{[row.position, row.committeeRole].filter(Boolean).join(" · ") || "-"}</p></div>
                     <span className="hidden whitespace-nowrap text-xs text-[var(--subtle)] sm:inline">{Math.round(row.confidence * 100)}% · น.{row.pageNo || "-"}</span>
                     <MatchTag state={state} />
@@ -353,15 +404,15 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
                       : <button type="button" aria-expanded={open} aria-label={`${open ? "ปิด" : "แก้ไข"} ${row.fullName}`} onClick={() => toggleRow(row.id, open)} className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--accent)]"><PencilSimple size={15} /></button>}
                   </div>
                   {open && <div className="space-y-3 px-5 pb-4 lg:pr-6 sm:pl-[52px] lg:pl-[54px]">
-                    <div className="grid gap-2 sm:grid-cols-3">
+                    <fieldset disabled={!editable} className="grid gap-2 sm:grid-cols-3">
                       <label className="block"><span className="text-[11px] text-[var(--muted)]">ชื่อตามเอกสาร</span><input value={row.fullName} onChange={(event) => updateAppointment(row.id, "fullName", event.target.value)} className={`${inputClass} mt-1`} /></label>
                       <label className="block"><span className="text-[11px] text-[var(--muted)]">ตำแหน่ง</span><input value={row.position} onChange={(event) => updateAppointment(row.id, "position", event.target.value)} className={`${inputClass} mt-1`} /></label>
                       <label className="block"><span className="text-[11px] text-[var(--muted)]">บทบาท</span><input value={row.committeeRole} onChange={(event) => updateAppointment(row.id, "committeeRole", event.target.value)} className={`${inputClass} mt-1`} /></label>
-                    </div>
+                    </fieldset>
                     {isLinked(row)
-                      ? <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><Check size={14} className="text-[var(--success)]" />{row.directoryUser?.fullName ? `ผูกกับ ${row.directoryUser.fullName}` : "ผูกกับบุคคลในระบบแล้ว"} · {state.detail}<button type="button" onClick={() => unlinkAppointment(row.id)} className={`${smallButton} h-8 border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><ArrowCounterClockwise size={13} /> เปลี่ยนคน</button></p>
-                      : <UnlinkedResolver row={row} state={state} picker={picker} draft={draft} onPick={linkAppointment} onCompare={() => openCompare(row)} onPickerChange={setPicker} onSearch={runDirectorySearch} onDraftChange={setDraft} onOpenDraft={() => openDraft(row)} onSubmitDraft={submitDraft} />}
-                    <div className="flex gap-2"><button type="button" onClick={() => locateAppointment(row.id, row.pageNo)} className={`${smallButton} border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><MapPin size={14} /> ดูกรอบในเอกสาร</button><button type="button" onClick={() => removeAppointment(row.id)} className={`${smallButton} border-transparent text-[var(--muted)] hover:text-[var(--danger)]`}><Trash size={13} /> ลบแถว</button></div>
+                      ? <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><Check size={14} className="text-[var(--success)]" />{row.directoryUser?.fullName ? `ผูกกับ ${row.directoryUser.fullName}` : "ผูกกับบุคคลในระบบแล้ว"} · {state.detail}<button disabled={!editable} type="button" onClick={() => unlinkAppointment(row.id)} className={`${smallButton} h-8 border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><ArrowCounterClockwise size={13} /> เปลี่ยนคน</button></p>
+                      : <fieldset disabled={!editable}><UnlinkedResolver row={row} state={state} picker={picker} draft={draft} onPick={linkAppointment} onCompare={() => openCompare(row)} onPickerChange={setPicker} onSearch={runDirectorySearch} onDraftChange={setDraft} onOpenDraft={() => openDraft(row)} onSubmitDraft={submitDraft} /></fieldset>}
+                    <div className="flex gap-2"><button type="button" onClick={() => locateAppointment(row.id, row.pageNo)} className={`${smallButton} border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><MapPin size={14} /> ดูกรอบในเอกสาร</button><button disabled={!editable} type="button" onClick={() => removeAppointment(row.id)} className={`${smallButton} border-transparent text-[var(--muted)] hover:text-[var(--danger)]`}><Trash size={13} /> ลบแถว</button></div>
                   </div>}
                 </li>;
               })}</ul>
@@ -369,20 +420,20 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
           })}{departmentGroups.length === 0 && <div className="p-10 text-center text-sm text-[var(--muted)]">ไม่พบรายการตามตัวกรอง</div>}</div>
         </div>}
 
-        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
+        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input disabled={!editable} value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
 
-        {panel === "duties" && <div className="flex-1 space-y-5 p-5 lg:p-6"><label className="block"><span className="text-sm font-medium text-[var(--navy)]">หน้าที่รับผิดชอบของคณะกรรมการ</span><textarea value={document.responsibilities} onChange={(event) => setDocument((current) => ({ ...current, responsibilities: event.target.value }))} rows={8} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /><span className="mt-1 block text-xs text-[var(--muted)]">แก้ไขข้อความจากเอกสารได้ แล้วกดบันทึกฉบับร่าง</span></label><label className="block"><span className="text-sm font-medium text-[var(--navy)]">การอ้างอิงประกาศเพิ่มเติม</span><textarea value={document.additionalReferences} onChange={(event) => setDocument((current) => ({ ...current, additionalReferences: event.target.value }))} rows={4} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /></label></div>}
+        {panel === "duties" && <div className="flex-1 space-y-5 p-5 lg:p-6"><label className="block"><span className="text-sm font-medium text-[var(--navy)]">หน้าที่รับผิดชอบของคณะกรรมการ</span><textarea readOnly={!editable} value={document.responsibilities} onChange={(event) => setDocument((current) => ({ ...current, responsibilities: event.target.value }))} rows={8} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /><span className="mt-1 block text-xs text-[var(--muted)]">แก้ไขข้อความจากเอกสารได้ แล้วกดบันทึกฉบับร่าง</span></label><label className="block"><span className="text-sm font-medium text-[var(--navy)]">การอ้างอิงประกาศเพิ่มเติม</span><textarea readOnly={!editable} value={document.additionalReferences} onChange={(event) => setDocument((current) => ({ ...current, additionalReferences: event.target.value }))} rows={4} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /></label></div>}
 
-        <div className="flex flex-col gap-3 border-t border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 lg:px-6">
+        {editable && <div className="flex flex-col gap-3 border-t border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 lg:px-6">
           <div className="flex items-start gap-2 text-[13px] leading-5">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : unlinkedAppointments.length > 0 ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="font-medium text-[var(--danger)]">เหลือ {unlinkedAppointments.length} รายชื่อที่ยังไม่ได้ผูกกับบุคคล</span></> : document.status === "CONFIRMED" ? <><CheckCircle size={18} weight="fill" className="shrink-0 text-[var(--success)]" /><span>ยืนยันข้อมูลแล้วโดย {document.confirmedBy || "เจ้าหน้าที่"}</span></> : <><Info size={18} className="shrink-0 text-[var(--accent)]" /><span className="text-[var(--muted)]">ระบบจะไม่ถือเป็นข้อมูลสมบูรณ์จนกว่าจะยืนยัน</span></>}</div>
           <div className="flex flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || document.status === "CONFIRMED" || unlinkedAppointments.length > 0} title={unlinkedAppointments.length > 0 ? `ยังมี ${unlinkedAppointments.length} รายชื่อที่ยังไม่ได้ผูกกับบุคคลในระบบ` : undefined} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></div>
-        </div>
+        </div>}
       </section>
     </div>
 
-    {revisions.length > 0 && <section className="card overflow-hidden"><div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">ประวัติการแก้ไข</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">ตรวจสอบย้อนหลังได้จากตาราง `document_revisions`</p></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-6 py-3">ฟิลด์</th><th className="px-4 py-3">ค่าเดิม</th><th className="px-4 py-3">ค่าที่แก้ไข</th><th className="px-6 py-3">ผู้แก้ไข / เวลา</th></tr></thead><tbody>{revisions.map((revision) => <tr key={revision.id}><td className="px-6 py-3 font-medium">{revision.fieldKey}</td><td className="max-w-[180px] truncate px-4 py-3 text-[var(--muted)]">{revision.oldValue || "-"}</td><td className="max-w-[180px] truncate px-4 py-3">{revision.newValue || "-"}</td><td className="px-6 py-3 text-xs text-[var(--muted)]">{revision.changedBy}<br />{formatThaiDate(revision.changedAt)}</td></tr>)}</tbody></table></div></section>}
+    {revisions.length > 0 && <section className="card overflow-hidden"><div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">ประวัติการแก้ไข</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">ตรวจสอบย้อนหลังได้จากตาราง `document_revisions`</p></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-6 py-3">ฟิลด์</th><th className="px-4 py-3">ค่าเดิม</th><th className="px-4 py-3">ค่าที่แก้ไข</th><th className="px-6 py-3">ผู้แก้ไข / เวลา</th></tr></thead><tbody>{revisions.map((revision) => <tr key={revision.id}><td className="px-6 py-3 font-medium">{revision.fieldKey === "cancellation_reason" ? "เหตุผลที่ยกเลิก" : revision.fieldKey === "status" ? "สถานะเอกสาร" : revision.fieldKey}</td><td className="max-w-[180px] truncate px-4 py-3 text-[var(--muted)]">{revision.fieldKey === "status" ? statusLabel(revision.oldValue) : revision.oldValue || "-"}</td><td className="max-w-[180px] truncate px-4 py-3">{revision.fieldKey === "status" ? statusLabel(revision.newValue) : revision.newValue || "-"}</td><td className="px-6 py-3 text-xs text-[var(--muted)]">{revision.changedBy}<br />{formatThaiDate(revision.changedAt)}</td></tr>)}</tbody></table></div></section>}
 
-    {compare && <CandidateCompareDialog compare={compare} onSelect={(userId) => setCompare({ ...compare, selected: userId })} onClose={() => setCompare(null)} onConfirm={(candidate) => linkAppointment(compare.appointment.id, candidate.userId, candidate.fullName, candidate.positionTitle)} onCreate={() => { const row = compare.appointment; setCompare(null); openDraft(row); }} />}
+    {editable && compare && <CandidateCompareDialog compare={compare} onSelect={(userId) => setCompare({ ...compare, selected: userId })} onClose={() => setCompare(null)} onConfirm={(candidate) => linkAppointment(compare.appointment.id, candidate.userId, candidate.fullName, candidate.positionTitle)} onCreate={() => { const row = compare.appointment; setCompare(null); openDraft(row); }} />}
   </div></AppShell>;
 }
 

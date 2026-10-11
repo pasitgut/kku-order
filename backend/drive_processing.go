@@ -40,7 +40,7 @@ func runDriveOCRQueue(db *gorm.DB, processor *DocumentProcessor, logger *log.Log
 			return
 		}
 		var document Document
-		lookup := db.WithContext(ctx).Where("import_source = ? AND processing_stage IN ?", "GOOGLE_DRIVE", []string{"IMPORTED", "QUEUED", "PREPARING"}).Order("id").Limit(1).Find(&document)
+		lookup := db.WithContext(ctx).Where("status <> ?", documentCancelled).Where("import_source = ? AND processing_stage IN ?", "GOOGLE_DRIVE", []string{"IMPORTED", "QUEUED", "PREPARING"}).Order("id").Limit(1).Find(&document)
 		if lookup.Error != nil {
 			logger.Printf("Drive OCR queue: %v", lookup.Error)
 			return

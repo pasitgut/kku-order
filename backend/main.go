@@ -59,6 +59,9 @@ type Document struct {
 	ImportedBy           string              `json:"importedBy" gorm:"size:255"`
 	ConfirmedBy          string              `json:"confirmedBy" gorm:"size:255"`
 	ConfirmedAt          *time.Time          `json:"confirmedAt"`
+	CancellationReason   string              `json:"cancellationReason" gorm:"type:text"`
+	CancelledBy          string              `json:"cancelledBy" gorm:"size:255"`
+	CancelledAt          *time.Time          `json:"cancelledAt"`
 	OCRProvider          string              `json:"ocrProvider" gorm:"size:100"`
 	OCRText              string              `json:"ocrText" gorm:"type:longtext"`
 	OCRError             string              `json:"ocrError" gorm:"type:longtext"`
@@ -427,7 +430,7 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
 			return
 		}
-		result := db.Model(&Document{}).Where("id = ? AND processing_stage = ?", documentID, "FAILED").Updates(map[string]any{
+		result := db.Model(&Document{}).Where("id = ? AND processing_stage = ? AND status <> ?", documentID, "FAILED", documentCancelled).Updates(map[string]any{
 			"status": "PROCESSING", "processing_stage": "QUEUED", "ocr_error": "",
 			"processing_started_at": nil, "processing_finished_at": nil, "processing_duration_ms": 0,
 		})
@@ -457,6 +460,7 @@ func main() {
 	router.POST("/api/v1/documents/:id/file", requireRole("ADMIN", "STAFF"), replaceDocumentFile(db, processor))
 	router.PATCH("/api/v1/documents/:id", requireRole("ADMIN", "STAFF"), updateDocument(db))
 	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
+	router.POST("/api/v1/documents/:id/cancel", requireRole("ADMIN", "STAFF"), cancelDocument(db))
 	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
 	router.POST("/api/v1/sync/users", requireRole("ADMIN", "STAFF"), userSyncHandler(userSync))
 	router.GET("/api/v1/sync/runs", listSyncRuns(db))
@@ -630,6 +634,10 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		}
 		var duplicate Document
 		if err := db.Where("file_hash = ?", fileHash).First(&duplicate).Error; err == nil {
+			if duplicate.Status == documentCancelled {
+				writeCancelledConflict(c, errDocumentCancelled)
+				return
+			}
 			if !strings.EqualFold(c.PostForm("overwrite"), "true") {
 				c.JSON(http.StatusConflict, gin.H{"error": "พบไฟล์เอกสารที่เคยนำเข้าแล้ว", "duplicateDocumentId": duplicate.ID, "canOverwrite": true})
 				return
@@ -677,6 +685,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				"processing_duration_ms": 0,
 			}
 			if err := db.Transaction(func(tx *gorm.DB) error {
+				if err := lockEditableDocument(tx, duplicate.ID); err != nil {
+					return err
+				}
 				for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
 					if err := tx.Where("document_id = ?", duplicate.ID).Delete(model).Error; err != nil {
 						return err
@@ -704,6 +715,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				return tx.Create(&AuditLog{DocumentID: &duplicate.ID, UserID: currentUserID(c), Action: "DOCUMENT_OVERWRITTEN", Details: header.Filename}).Error
 			}); err != nil {
 				_ = os.Remove(storagePath)
+				if writeCancelledConflict(c, err) {
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกทับเอกสารได้"})
 				return
 			}
@@ -753,6 +767,10 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 			return
 		}
+		if document.Status == documentCancelled {
+			writeCancelledConflict(c, errDocumentCancelled)
+			return
+		}
 		if document.Status == "CONFIRMED" {
 			c.JSON(http.StatusOK, gin.H{"message": "เอกสารนี้ยืนยันแล้ว", "data": document})
 			return
@@ -773,6 +791,9 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 		now := time.Now()
 		confirmedBy := currentUserID(c)
 		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := lockEditableDocument(tx, document.ID); err != nil {
+				return err
+			}
 			if err := tx.Model(&document).Updates(map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}).Error; err != nil {
 				return err
 			}
@@ -784,6 +805,9 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: confirmedBy, Action: "DOCUMENT_CONFIRMED", Details: "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล"}).Error
 		}); err != nil {
+			if writeCancelledConflict(c, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถยืนยันเอกสารได้"})
 			return
 		}

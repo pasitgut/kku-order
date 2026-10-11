@@ -78,17 +78,24 @@ func (p *DocumentProcessor) Process(ctx context.Context, documentID uint) error 
 	if err := p.db.First(&document, documentID).Error; err != nil {
 		return fmt.Errorf("load document: %w", err)
 	}
-	if err := p.db.Model(&document).Updates(map[string]any{
+	if document.Status == documentCancelled {
+		return nil
+	}
+	startResult := p.db.Model(&document).Where("status <> ?", documentCancelled).Updates(map[string]any{
 		"status": "PROCESSING", "processing_stage": "PREPARING", "processing_started_at": started,
 		"ocr_error": "", "ocr_provider": "one-ocr",
-	}).Error; err != nil {
-		return fmt.Errorf("mark processing started: %w", err)
+	})
+	if startResult.Error != nil {
+		return fmt.Errorf("mark processing started: %w", startResult.Error)
+	}
+	if startResult.RowsAffected == 0 {
+		return nil
 	}
 
 	result, err := p.runOCR(ctx, document.StoragePath, document.SourceType)
 	if err != nil {
 		finished := time.Now()
-		_ = p.db.Model(&document).Updates(map[string]any{
+		_ = p.db.Model(&document).Where("status <> ?", documentCancelled).Updates(map[string]any{
 			"status": "NEEDS_REVIEW", "processing_stage": "FAILED", "processing_finished_at": finished,
 			"processing_duration_ms": finished.Sub(started).Milliseconds(), "ocr_error": err.Error(),
 		}).Error
@@ -97,7 +104,7 @@ func (p *DocumentProcessor) Process(ctx context.Context, documentID uint) error 
 
 	if err := p.persistOCRResult(&document, result, started); err != nil {
 		finished := time.Now()
-		_ = p.db.Model(&document).Updates(map[string]any{
+		_ = p.db.Model(&document).Where("status <> ?", documentCancelled).Updates(map[string]any{
 			"status": "NEEDS_REVIEW", "processing_stage": "FAILED", "processing_finished_at": finished,
 			"processing_duration_ms": finished.Sub(started).Milliseconds(), "ocr_error": err.Error(),
 		}).Error
@@ -187,6 +194,12 @@ func (p *DocumentProcessor) persistOCRResult(document *Document, result workerRe
 	}
 
 	return p.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockEditableDocument(tx, document.ID); err != nil {
+			if errors.Is(err, errDocumentCancelled) {
+				return nil
+			}
+			return err
+		}
 		if err := tx.Where("document_id = ?", document.ID).Delete(&OCRLine{}).Error; err != nil {
 			return err
 		}

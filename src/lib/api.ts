@@ -99,6 +99,9 @@ export type ApiDocument = {
   importedBy: string;
   confirmedBy: string;
   confirmedAt?: string;
+  cancellationReason?: string;
+  cancelledBy?: string;
+  cancelledAt?: string;
   ocrProvider: string;
   ocrText: string;
   ocrError: string;
@@ -312,6 +315,13 @@ export async function deleteDocument(id: number) {
   });
 }
 
+export async function cancelDocument(id: number, reason: string) {
+  return apiFetch<{ data: ApiDocument }>(`/api/v1/documents/${id}/cancel`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export async function confirmDocument(id: number) {
   return apiFetch<{ data: ApiDocument; message: string }>(`/api/v1/documents/${id}/confirm`, {
     method: "POST",
@@ -343,6 +353,7 @@ export function statusLabel(status: string) {
     REVIEW: "รอตรวจสอบ",
     NEEDS_REVIEW: "ต้องตรวจสอบ",
     CONFIRMED: "ยืนยันแล้ว",
+    CANCELLED: "ยกเลิกแล้ว",
     FAILED: "ประมวลผลไม่สำเร็จ",
   };
   return labels[status] ?? status;

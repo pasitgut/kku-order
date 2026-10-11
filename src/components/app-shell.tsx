@@ -201,6 +201,7 @@ export function StatusBadge({ status }: { status: string }) {
     "รอตรวจสอบ": "bg-[var(--warning-soft)] text-[var(--warning)]",
     "กำลังประมวลผล": "bg-[var(--accent-soft)] text-[#155e97]",
     "ยืนยันแล้ว": "bg-[var(--success-soft)] text-[var(--success)]",
+    "ยกเลิกแล้ว": "bg-[var(--danger-soft)] text-[var(--danger)]",
     "ต้องตรวจสอบ": "bg-[var(--danger-soft)] text-[var(--danger)]",
     "ต้องแก้ไข": "bg-[var(--danger-soft)] text-[var(--danger)]",
     "ประมวลผลไม่สำเร็จ": "bg-[var(--danger-soft)] text-[var(--danger)]",
