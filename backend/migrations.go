@@ -59,8 +59,10 @@ func migrateDatabase(db *gorm.DB) error {
 }
 
 var (
-	addColumnIfMissingPattern = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD COLUMN IF NOT EXISTS ([A-Za-z0-9_]+) (.+)$`)
-	addKeyPattern             = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD KEY ([A-Za-z0-9_]+) (.+)$`)
+	addColumnIfMissingPattern     = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD COLUMN IF NOT EXISTS ([A-Za-z0-9_]+) (.+)$`)
+	addKeyPattern                 = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD KEY ([A-Za-z0-9_]+) (.+)$`)
+	dropForeignKeyIfExistsPattern = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) DROP FOREIGN KEY IF EXISTS ([A-Za-z0-9_]+)$`)
+	addConstraintIfMissingPattern = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD CONSTRAINT IF NOT EXISTS ([A-Za-z0-9_]+) (.+)$`)
 )
 
 // executeMigrationStatement keeps migrations portable across MySQL/MariaDB
@@ -81,6 +83,24 @@ func executeMigrationStatement(db *gorm.DB, statement string) error {
 		return db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", matches[1], matches[2], matches[3])).Error
 	}
 
+	// Foreign keys are dropped and re-added only when the state still needs
+	// it, so a migration that failed midway can run again.
+	if matches := dropForeignKeyIfExistsPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
+		exists, err := foreignKeyExists(db, matches[1], matches[2])
+		if err != nil || !exists {
+			return err
+		}
+		return db.Exec(fmt.Sprintf("ALTER TABLE %s DROP FOREIGN KEY %s", matches[1], matches[2])).Error
+	}
+
+	if matches := addConstraintIfMissingPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
+		exists, err := foreignKeyExists(db, matches[1], matches[2])
+		if err != nil || exists {
+			return err
+		}
+		return db.Exec(fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s", matches[1], matches[2], matches[3])).Error
+	}
+
 	if matches := addKeyPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
 		var count int64
 		if err := db.Raw(`
@@ -96,6 +116,17 @@ func executeMigrationStatement(db *gorm.DB, statement string) error {
 	}
 
 	return db.Exec(statement).Error
+}
+
+func foreignKeyExists(db *gorm.DB, table, name string) (bool, error) {
+	var count int64
+	if err := db.Raw(`
+		SELECT COUNT(*)
+		FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY'`, table, name).Scan(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func splitMigrationSQL(contents string) []string {

@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +66,7 @@ var activityLabels = map[string]string{
 	"DOCUMENT_FILE_REPLACED":       "อัปโหลดไฟล์ทับ",
 	"DOCUMENT_UPDATED":             "แก้ไข",
 	"DOCUMENT_CANCELLED":           "ยกเลิกเอกสาร",
+	"DOCUMENT_DELETED":             "ลบเอกสาร",
 	"DOCUMENT_CONFIRMED":           "ยืนยัน",
 	"DIRECTORY_USER_CREATED":       "เพิ่มบุคคล",
 	"SETTINGS_OCR_UPDATED":         "ตั้งค่า OCR",
@@ -72,6 +74,38 @@ var activityLabels = map[string]string{
 	"DOCUMENT_REPROCESS_REQUESTED": "ประมวลผลใหม่",
 	"DOCUMENT_EXTRACTION_FAILED":   "ประมวลผลไม่สำเร็จ",
 	"DOCUMENT_PROCESSED":           "ประมวลผลเสร็จ",
+}
+
+// deletedDocumentDetails is the Details payload of a DOCUMENT_DELETED row. The
+// document row is gone by then, so the title is stored with the entry.
+type deletedDocumentDetails struct {
+	Title            string `json:"title"`
+	OriginalFilename string `json:"originalFilename"`
+}
+
+// buildActivityItem turns an audit row into a profile item. A document link is
+// only kept when the document still exists.
+func buildActivityItem(entry AuditLog, titles map[uint]string) activityItem {
+	item := activityItem{ID: entry.ID, Action: entry.Action, Label: activityLabel(entry.Action), DocumentID: entry.DocumentID, Details: entry.Details, CreatedAt: entry.CreatedAt}
+	if entry.DocumentID != nil {
+		if title, ok := titles[*entry.DocumentID]; ok {
+			item.DocumentTitle = title
+		} else {
+			item.DocumentID = nil
+		}
+	}
+	switch entry.Action {
+	case "DOCUMENT_DELETED":
+		var deleted deletedDocumentDetails
+		if err := json.Unmarshal([]byte(entry.Details), &deleted); err == nil {
+			item.DocumentTitle = firstNonEmpty(deleted.Title, deleted.OriginalFilename)
+			item.Details = deleted.OriginalFilename
+		}
+	case "SETTINGS_OCR_UPDATED":
+		// Settings payloads are raw JSON and only useful in the audit table.
+		item.Details = ""
+	}
+	return item
 }
 
 func activityLabel(action string) string {
@@ -273,15 +307,7 @@ func myActivityHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 		items := make([]activityItem, 0, len(recent))
 		for _, entry := range recent {
-			item := activityItem{ID: entry.ID, Action: entry.Action, Label: activityLabel(entry.Action), DocumentID: entry.DocumentID, Details: entry.Details, CreatedAt: entry.CreatedAt}
-			if entry.DocumentID != nil {
-				item.DocumentTitle = titles[*entry.DocumentID]
-			}
-			// Settings payloads are raw JSON and only useful in the audit table.
-			if entry.Action == "SETTINGS_OCR_UPDATED" {
-				item.Details = ""
-			}
-			items = append(items, item)
+			items = append(items, buildActivityItem(entry, titles))
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"stats": summarizeActivity(monthLogs, now), "items": items}})
 	}

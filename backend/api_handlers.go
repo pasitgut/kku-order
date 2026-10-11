@@ -389,7 +389,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var document Document
-		if err := db.Select("id", "storage_path", "original_filename").First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Select("id", "title", "storage_path", "original_filename").First(&document, c.Param("id")).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -401,9 +401,10 @@ func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 		err := db.Transaction(func(tx *gorm.DB) error {
 			// Delete children explicitly because the schema is intentionally
 			// portable and does not rely on database-level cascade constraints.
+			// Audit rows stay: their document_id is cleared by the foreign key.
 			for _, model := range []any{
 				&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{},
-				&DocumentReference{}, &DocumentRevision{}, &ExpiryNotification{}, &AuditLog{},
+				&DocumentReference{}, &DocumentRevision{}, &ExpiryNotification{},
 			} {
 				if err := tx.Where("document_id = ?", document.ID).Delete(model).Error; err != nil {
 					return err
@@ -413,6 +414,13 @@ func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 				return err
 			}
 			if err := tx.Delete(&StoredDocument{}, document.ID).Error; err != nil {
+				return err
+			}
+			details, err := json.Marshal(deletedDocumentDetails{Title: document.Title, OriginalFilename: document.OriginalFilename})
+			if err != nil {
+				return err
+			}
+			if err := tx.Create(&AuditLog{UserID: currentUserID(c), Action: "DOCUMENT_DELETED", Details: string(details), CreatedAt: time.Now()}).Error; err != nil {
 				return err
 			}
 			if err := tx.Exec(`DELETE FROM committee_members
