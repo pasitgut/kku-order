@@ -212,3 +212,21 @@ func TestReplacedFileUpdatesClearsEverythingDerivedFromTheOldFile(t *testing.T) 
 		}
 	}
 }
+
+func TestConfirmBlockersLabelsExOfficioRows(t *testing.T) {
+	blockers := confirmBlockers([]Appointment{
+		{FullName: "", Position: "เลขานุการ"},
+		{FullName: "สมชาย", Position: "ผอ."},
+	})
+	if len(blockers) != 2 || blockers[0] != "เลขานุการ (โดยตำแหน่ง)" || blockers[1] != "สมชาย" {
+		t.Fatalf("blockers = %v", blockers)
+	}
+}
+
+func TestMatchAppointmentsSkipsBlankNames(t *testing.T) {
+	apps := []Appointment{{FullName: "", Position: "เลขานุการ"}}
+	weak := matchAppointments(apps, nil, nil)
+	if weak || apps[0].DirectoryUserID != nil || apps[0].NameMatchMethod != "" {
+		t.Fatalf("weak=%t apps=%+v", weak, apps[0])
+	}
+}

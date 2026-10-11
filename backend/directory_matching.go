@@ -173,19 +173,32 @@ func displayDirectoryName(user DirectoryUser) string {
 	return user.FullName
 }
 
+// matchAppointments จับคู่แถวที่มีชื่อกับ directory แถวที่ไม่มีชื่อ (กรรมการโดยตำแหน่ง) ข้ามไป
+// คืน true ถ้ามีแถวที่มีชื่อแต่จับคู่ไม่ได้หรือคะแนนต่ำ
+func matchAppointments(appointments []Appointment, users []DirectoryUser, aliases map[string]uint) bool {
+	weak := false
+	for index := range appointments {
+		appointment := &appointments[index]
+		if strings.TrimSpace(appointment.FullName) == "" {
+			continue
+		}
+		match := matchDirectoryUser(appointment.FullName, users, aliases)
+		applyMatchToAppointment(appointment, match)
+		if !match.Matched || match.Score < 0.90 || appointment.Confidence < 0.90 {
+			weak = true
+		}
+	}
+	return weak
+}
+
 func (p *DocumentProcessor) applyDirectoryMatches(metadata *commandMetadata) {
 	users, aliases, err := loadDirectory(p.db)
 	if err != nil {
 		p.logger.Printf("directory matching skipped: %v", err)
 		return
 	}
-	for index := range metadata.appointments {
-		appointment := &metadata.appointments[index]
-		match := matchDirectoryUser(appointment.FullName, users, aliases)
-		applyMatchToAppointment(appointment, match)
-		if !match.Matched || match.Score < 0.90 || appointment.Confidence < 0.90 {
-			metadata.lowConfidence = true
-		}
+	if matchAppointments(metadata.appointments, users, aliases) {
+		metadata.lowConfidence = true
 	}
 }
 
@@ -377,7 +390,7 @@ func confirmBlockers(appointments []Appointment) []string {
 	blockers := make([]string, 0)
 	for _, appointment := range appointments {
 		if appointment.DirectoryUserID == nil || *appointment.DirectoryUserID == 0 {
-			blockers = append(blockers, appointment.FullName)
+			blockers = append(blockers, personLabel(appointment))
 		}
 	}
 	return blockers
