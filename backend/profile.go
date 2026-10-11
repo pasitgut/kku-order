@@ -64,6 +64,7 @@ var activityLabels = map[string]string{
 	"DOCUMENT_OVERWRITTEN":     "บันทึกทับ",
 	"DOCUMENT_FILE_REPLACED":   "อัปโหลดไฟล์ทับ",
 	"DOCUMENT_UPDATED":         "แก้ไข",
+	"DOCUMENT_CANCELLED":       "ยกเลิกเอกสาร",
 	"DOCUMENT_CONFIRMED":       "ยืนยัน",
 	"DIRECTORY_USER_CREATED":   "เพิ่มบุคคล",
 	"SETTINGS_OCR_UPDATED":     "ตั้งค่า OCR",

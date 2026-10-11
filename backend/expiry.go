@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 
 func refreshExpiryNotifications(db *gorm.DB, logger *log.Logger) {
 	var documents []Document
-	if err := db.Where("expiry_date IS NOT NULL AND expiry_date >= CURRENT_TIMESTAMP").Find(&documents).Error; err != nil {
+	if err := db.Where("status <> ?", documentCancelled).Where("expiry_date IS NOT NULL AND expiry_date >= CURRENT_TIMESTAMP").Find(&documents).Error; err != nil {
 		logger.Printf("load expiry dates failed: %v", err)
 		return
 	}
@@ -48,23 +49,32 @@ func refreshExpiryNotifications(db *gorm.DB, logger *log.Logger) {
 }
 
 func ensureExpiryNotification(db *gorm.DB, logger *log.Logger, documentID uint, appointmentID *uint, noticeType string, dueAt time.Time) {
-	query := db.Model(&ExpiryNotification{}).Where("document_id = ? AND notice_type = ?", documentID, noticeType)
-	if appointmentID == nil {
-		query = query.Where("appointment_id IS NULL")
-	} else {
-		query = query.Where("appointment_id = ?", *appointmentID)
-	}
-	var count int64
-	if err := query.Count(&count).Error; err != nil {
-		logger.Printf("check expiry notification failed: %v", err)
-		return
-	}
-	if count > 0 {
-		return
-	}
-	if err := db.Create(&ExpiryNotification{DocumentID: documentID, AppointmentID: appointmentID, NoticeType: noticeType, DueAt: dueAt, Status: "PENDING"}).Error; err != nil {
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := lockEditableDocument(tx, documentID); err != nil {
+			return err
+		}
+		query := tx.Model(&ExpiryNotification{}).Where("document_id = ? AND notice_type = ?", documentID, noticeType)
+		if appointmentID == nil {
+			query = query.Where("appointment_id IS NULL")
+		} else {
+			query = query.Where("appointment_id = ?", *appointmentID)
+		}
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		if err := tx.Create(&ExpiryNotification{DocumentID: documentID, AppointmentID: appointmentID, NoticeType: noticeType, DueAt: dueAt, Status: "PENDING"}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errDocumentCancelled) {
 		logger.Printf("create expiry notification failed: %v", err)
 	}
+
 }
 
 func sendPendingExpiryEmails(db *gorm.DB, logger *log.Logger) {
@@ -86,41 +96,50 @@ func sendPendingExpiryEmails(db *gorm.DB, logger *log.Logger) {
 	}
 
 	var pending []ExpiryNotification
-	if err := db.Where("status = ? AND due_at <= CURRENT_TIMESTAMP", "PENDING").Order("due_at ASC").Limit(100).Find(&pending).Error; err != nil {
+	if err := db.Where("document_id IN (?)", db.Model(&Document{}).Select("id").Where("status <> ?", documentCancelled)).Where("status = ? AND due_at <= CURRENT_TIMESTAMP", "PENDING").Order("due_at ASC").Limit(100).Find(&pending).Error; err != nil {
 		logger.Printf("load pending expiry emails failed: %v", err)
 		return
 	}
 	for _, notification := range pending {
-		recipient, subject, body, err := expiryEmailContent(db, notification)
-		if err != nil {
-			logger.Printf("build expiry email %d failed: %v", notification.ID, err)
-			continue
-		}
-		if recipient == "" {
-			// No linked person, or the person has no address on file. Record
-			// that instead of silently re-reading this row every day.
-			logger.Printf("expiry notification %d skipped: no reachable recipient", notification.ID)
-			if err := db.Model(&notification).Updates(map[string]any{"status": "SKIPPED"}).Error; err != nil {
-				logger.Printf("mark expiry notification %d skipped failed: %v", notification.ID, err)
+		// Dispatch and cancellation take the same document lock. A notification
+		// fetched before cancellation cannot be sent after cancellation succeeds.
+		err := db.Transaction(func(tx *gorm.DB) error {
+			if err := lockEditableDocument(tx, notification.DocumentID); err != nil {
+				return err
 			}
-			continue
-		}
-		message := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s", from, recipient, subject, body))
-		if err := smtp.SendMail(host+":"+port, auth, from, []string{recipient}, message); err != nil {
-			logger.Printf("send expiry email %d failed: %v", notification.ID, err)
-			continue
-		}
-		now := time.Now()
-		if err := db.Model(&notification).Updates(map[string]any{"status": "SENT", "sent_at": now}).Error; err != nil {
-			logger.Printf("mark expiry email %d sent failed: %v", notification.ID, err)
+			var current ExpiryNotification
+			if err := tx.First(&current, notification.ID).Error; err != nil {
+				return err
+			}
+			if current.Status != "PENDING" {
+				return nil
+			}
+			recipient, subject, body, err := expiryEmailContent(tx, current)
+			if err != nil {
+				return err
+			}
+			if recipient == "" {
+				return tx.Model(&current).Update("status", "SKIPPED").Error
+			}
+			message := []byte(fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s", from, recipient, subject, body))
+			if err := smtp.SendMail(host+":"+port, auth, from, []string{recipient}, message); err != nil {
+				return err
+			}
+			return tx.Model(&current).Updates(map[string]any{"status": "SENT", "sent_at": time.Now()}).Error
+		})
+		if err != nil && !errors.Is(err, errDocumentCancelled) {
+			logger.Printf("dispatch expiry email %d failed: %v", notification.ID, err)
 		}
 	}
 }
 
 func expiryEmailContent(db *gorm.DB, notification ExpiryNotification) (string, string, string, error) {
 	var document Document
-	if err := db.Select("id", "title", "order_no", "expiry_date").First(&document, notification.DocumentID).Error; err != nil {
+	if err := db.Select("id", "title", "order_no", "expiry_date", "status").First(&document, notification.DocumentID).Error; err != nil {
 		return "", "", "", err
+	}
+	if document.Status == documentCancelled {
+		return "", "", "", nil
 	}
 	recipient := ""
 	personName := "ผู้เกี่ยวข้อง"
@@ -147,7 +166,7 @@ func expiryEmailContent(db *gorm.DB, notification ExpiryNotification) (string, s
 func listExpiryNotifications(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var notifications []ExpiryNotification
-		if err := db.Where("status = ?", "PENDING").Order("due_at ASC").Limit(100).Find(&notifications).Error; err != nil {
+		if err := db.Where("document_id IN (?)", db.Model(&Document{}).Select("id").Where("status <> ?", documentCancelled)).Where("status = ?", "PENDING").Order("due_at ASC").Limit(100).Find(&notifications).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดการแจ้งเตือนวาระได้"})
 			return
 		}

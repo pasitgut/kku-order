@@ -114,7 +114,7 @@ func TestReplacedFileUpdatesResetsRetryState(t *testing.T) {
 
 // ตรวจว่า statement ใน migration 0008 อยู่ในรูปแบบที่ runner รองรับ (ไม่ต้องใช้ DB)
 func TestMigration0008StatementsUseSupportedForms(t *testing.T) {
-	raw, err := os.ReadFile("migrations/0008_extraction_retry.sql")
+	raw, err := os.ReadFile("migrations/0010_extraction_retry.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}

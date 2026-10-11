@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +62,9 @@ type Document struct {
 	ImportedBy           string              `json:"importedBy" gorm:"size:255"`
 	ConfirmedBy          string              `json:"confirmedBy" gorm:"size:255"`
 	ConfirmedAt          *time.Time          `json:"confirmedAt"`
+	CancellationReason   string              `json:"cancellationReason" gorm:"type:text"`
+	CancelledBy          string              `json:"cancelledBy" gorm:"size:255"`
+	CancelledAt          *time.Time          `json:"cancelledAt"`
 	OCRProvider          string              `json:"ocrProvider" gorm:"size:100"`
 	OCRText              string              `json:"ocrText" gorm:"type:longtext"`
 	OCRError             string              `json:"ocrError" gorm:"type:longtext"`
@@ -370,8 +374,9 @@ func main() {
 	if driveErr != nil {
 		logger.Printf("Google Drive sync disabled: %v", driveErr)
 	} else if driveImporter != nil {
-		runGoogleDriveSync(driveImporter, logger, "initial")
+		go runGoogleDriveSync(driveImporter, logger, "initial")
 	}
+	go runDriveOCRQueue(db, processor, logger)
 	scheduler := cron.New(cron.WithLocation(location), cron.WithChain(cron.DelayIfStillRunning(cron.DefaultLogger), cron.Recover(cron.DefaultLogger)))
 	if _, err := scheduler.AddFunc(getenv("USER_SYNC_CRON", "0 5 * * *"), func() {
 		result, syncErr := userSync.SyncUsers(context.Background())
@@ -405,11 +410,14 @@ func main() {
 		panic(fmt.Errorf("schedule sweep: %w", err))
 	}
 	if driveImporter != nil {
-		if _, err := scheduler.AddFunc(getenv("GOOGLE_DRIVE_SYNC_CRON", "*/5 * * * *"), func() {
+		if _, err := scheduler.AddFunc("* * * * *", func() {
 			runGoogleDriveSync(driveImporter, logger, "scheduled")
 		}); err != nil {
 			panic(fmt.Errorf("configure Google Drive sync schedule: %w", err))
 		}
+	}
+	if _, err := scheduler.AddFunc("* * * * *", func() { runDriveOCRQueue(db, processor, logger) }); err != nil {
+		panic(fmt.Errorf("configure Drive processing queue: %w", err))
 	}
 	refreshExpiryNotifications(db, logger)
 	scheduler.Start()
@@ -430,6 +438,36 @@ func main() {
 	router.GET("/api/v1/documents/:id", getDocument(db))
 	router.GET("/api/v1/documents/:id/file", documentFile(db))
 	router.GET("/api/v1/documents/:id/pages/:page/image", documentPageImage(db))
+	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), func(c *gin.Context) {
+		documentID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+		if err != nil || documentID == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
+			return
+		}
+		result := db.Model(&Document{}).Where("id = ? AND processing_stage = ? AND status <> ?", documentID, "FAILED", documentCancelled).Updates(map[string]any{
+			"status": "PROCESSING", "processing_stage": "QUEUED", "ocr_error": "",
+			"processing_started_at": nil, "processing_finished_at": nil, "processing_duration_ms": 0,
+		})
+		if result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถส่งเอกสารเข้าคิวประมวลผลได้"})
+			return
+		}
+		if result.RowsAffected == 0 {
+			var count int64
+			if err := db.Model(&Document{}).Where("id = ?", documentID).Count(&count).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบสถานะเอกสารได้"})
+				return
+			}
+			if count == 0 {
+				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
+				return
+			}
+			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารนี้ไม่ได้อยู่ในสถานะที่ประมวลผลซ้ำได้"})
+			return
+		}
+		processor.Enqueue(uint(documentID))
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"id": documentID, "status": "PROCESSING", "processingStage": "QUEUED"}})
+	})
 	router.GET("/api/v1/documents/:id/revisions", listDocumentRevisions(db))
 	router.GET("/api/v1/documents/:id/audit", listDocumentAuditLogs(db))
 	router.POST("/api/v1/documents", requireRole("ADMIN", "STAFF"), uploadDocument(db, processor))
@@ -437,6 +475,7 @@ func main() {
 	router.POST("/api/v1/documents/:id/reprocess", requireRole("ADMIN", "STAFF"), reprocessDocumentHandler(gormReprocessStore{db: db}, processor.Enqueue))
 	router.PATCH("/api/v1/documents/:id", requireRole("ADMIN", "STAFF"), updateDocument(db))
 	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
+	router.POST("/api/v1/documents/:id/cancel", requireRole("ADMIN", "STAFF"), cancelDocument(db))
 	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
 	router.POST("/api/v1/sync/users", requireRole("ADMIN", "STAFF"), userSyncHandler(userSync))
 	router.GET("/api/v1/sync/runs", listSyncRuns(db))
@@ -444,6 +483,44 @@ func main() {
 	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore, ocrConfig))
 	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
 	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore.LoadOCR, ocrConfig))
+	router.GET("/api/v1/settings/drive/status", requireRole("ADMIN", "STAFF", "DEVELOPER"), getDriveAutomationStatus(db, settingsStore))
+	router.POST("/api/v1/settings/drive/test", requireRole("ADMIN"), func(c *gin.Context) {
+		if driveImporter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			return
+		}
+		var request struct {
+			FolderURL string `json:"folderUrl"`
+		}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุลิงก์โฟลเดอร์ Google Drive"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+		defer cancel()
+		folderName, err := driveImporter.TestConnection(ctx, request.FolderURL)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"folderName": folderName, "accessible": true}})
+	})
+	router.POST("/api/v1/settings/drive/sync", requireRole("ADMIN"), func(c *gin.Context) {
+		if driveImporter == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			return
+		}
+		run, err := driveImporter.StartNow()
+		if err != nil {
+			status := http.StatusBadGateway
+			if errors.Is(err, errDriveBusy) {
+				status = http.StatusConflict
+			}
+			c.JSON(status, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"runId": run.ID, "status": run.Status}})
+	})
 	router.GET("/api/v1/settings/system", requireRole("ADMIN", "STAFF", "DEVELOPER"), systemSettingsHandler())
 	router.GET("/api/v1/me", meHandler(db))
 	router.GET("/api/v1/me/activity", myActivityHandler(db))
@@ -565,6 +642,10 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		}
 		var duplicate Document
 		if err := db.Where("file_hash = ?", fileHash).First(&duplicate).Error; err == nil {
+			if duplicate.Status == documentCancelled {
+				writeCancelledConflict(c, errDocumentCancelled)
+				return
+			}
 			if !strings.EqualFold(c.PostForm("overwrite"), "true") {
 				c.JSON(http.StatusConflict, gin.H{"error": "พบไฟล์เอกสารที่เคยนำเข้าแล้ว", "duplicateDocumentId": duplicate.ID, "canOverwrite": true})
 				return
@@ -615,6 +696,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				updates[key] = value
 			}
 			if err := db.Transaction(func(tx *gorm.DB) error {
+				if err := lockEditableDocument(tx, duplicate.ID); err != nil {
+					return err
+				}
 				for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
 					if err := tx.Where("document_id = ?", duplicate.ID).Delete(model).Error; err != nil {
 						return err
@@ -642,6 +726,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				return tx.Create(&AuditLog{DocumentID: &duplicate.ID, UserID: currentUserID(c), Action: "DOCUMENT_OVERWRITTEN", Details: header.Filename}).Error
 			}); err != nil {
 				_ = os.Remove(storagePath)
+				if writeCancelledConflict(c, err) {
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกทับเอกสารได้"})
 				return
 			}
@@ -691,6 +778,10 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 			return
 		}
+		if document.Status == documentCancelled {
+			writeCancelledConflict(c, errDocumentCancelled)
+			return
+		}
 		if document.Status == "CONFIRMED" {
 			c.JSON(http.StatusOK, gin.H{"message": "เอกสารนี้ยืนยันแล้ว", "data": document})
 			return
@@ -711,6 +802,9 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 		now := time.Now()
 		confirmedBy := currentUserID(c)
 		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := lockEditableDocument(tx, document.ID); err != nil {
+				return err
+			}
 			if err := tx.Model(&document).Updates(map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}).Error; err != nil {
 				return err
 			}
@@ -722,6 +816,9 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: confirmedBy, Action: "DOCUMENT_CONFIRMED", Details: "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล"}).Error
 		}); err != nil {
+			if writeCancelledConflict(c, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถยืนยันเอกสารได้"})
 			return
 		}

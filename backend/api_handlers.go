@@ -69,7 +69,7 @@ func dashboardHandler(db *gorm.DB) gin.HandlerFunc {
 		_ = db.Model(&Document{}).Where("status = ?", "REVIEW").Count(&review).Error
 		_ = db.Model(&Document{}).Where("status = ?", "CONFIRMED").Count(&confirmed).Error
 		_ = db.Model(&Document{}).Where("status IN ?", []string{"NEEDS_REVIEW", "FAILED"}).Count(&needsReview).Error
-		_ = db.Model(&Document{}).Where("expiry_date IS NOT NULL AND expiry_date BETWEEN CURRENT_TIMESTAMP AND DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)").Count(&expiring).Error
+		_ = db.Model(&Document{}).Where("status <> ?", documentCancelled).Where("expiry_date IS NOT NULL AND expiry_date BETWEEN CURRENT_TIMESTAMP AND DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)").Count(&expiring).Error
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"total": total, "processing": processing, "review": review, "confirmed": confirmed,
 			"needsReview": needsReview, "expiring": expiring,
@@ -208,6 +208,10 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
+		if document.Status == documentCancelled {
+			writeCancelledConflict(c, errDocumentCancelled)
+			return
+		}
 		changedBy := currentUserID(c)
 		updates := map[string]any{}
 		revisions := make([]DocumentRevision, 0)
@@ -302,6 +306,9 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := lockEditableDocument(tx, document.ID); err != nil {
+				return err
+			}
 			if len(updates) > 0 {
 				if err := tx.Model(&document).Updates(updates).Error; err != nil {
 					return err
@@ -370,6 +377,9 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: "เจ้าหน้าที่แก้ไขข้อมูลก่อนยืนยัน"}).Error
 		}); err != nil {
+			if writeCancelledConflict(c, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกการแก้ไขได้"})
 			return
 		}
@@ -646,6 +656,10 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
+		if document.Status == documentCancelled {
+			writeCancelledConflict(c, errDocumentCancelled)
+			return
+		}
 		if document.Status == "PROCESSING" {
 			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารกำลังประมวลผลอยู่ กรุณารอให้เสร็จก่อนอัปโหลดทับ"})
 			return
@@ -720,6 +734,9 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 		}, replacedBy, time.Now())
 
 		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := lockEditableDocument(tx, document.ID); err != nil {
+				return err
+			}
 			for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}, &ExpiryNotification{}} {
 				if err := tx.Where("document_id = ?", document.ID).Delete(model).Error; err != nil {
 					return err
@@ -747,6 +764,9 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: replacedBy, Action: "DOCUMENT_FILE_REPLACED", Details: header.Filename}).Error
 		}); err != nil {
 			_ = os.Remove(storagePath)
+			if writeCancelledConflict(c, err) {
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอัปโหลดทับเอกสารได้"})
 			return
 		}

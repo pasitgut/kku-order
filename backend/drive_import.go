@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"google.golang.org/api/drive/v3"
@@ -20,129 +21,124 @@ import (
 const drivePageSize = 1000
 
 type GoogleDriveImporter struct {
-	db        *gorm.DB
-	service   *drive.Service
-	folderID  string
-	statePath string
-	logger    *log.Logger
+	db       *gorm.DB
+	service  *drive.Service
+	settings SettingsStore
+	logger   *log.Logger
+	syncMu   sync.Mutex
 }
 
-type driveSyncState struct {
-	ModifiedTimeByFileID map[string]string `json:"files"`
-}
-
-// NewGoogleDriveImporter returns nil when Drive sync is not configured.
 func NewGoogleDriveImporter(db *gorm.DB, logger *log.Logger) (*GoogleDriveImporter, error) {
-	folderID := normalizeDriveFolderID(os.Getenv("GOOGLE_DRIVE_FOLDER_ID"))
-	if folderID == "" {
-		logger.Print("Google Drive sync is disabled: GOOGLE_DRIVE_FOLDER_ID is empty")
+	credentialsFile := googleDriveCredentialsFile()
+	if credentialsFile == "" {
+		logger.Print("Google Drive automation awaits service account setup")
 		return nil, nil
 	}
-	credentialsFile := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CREDENTIALS_FILE"))
-	if credentialsFile == "" {
-		credentialsFile = strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	contents, err := osReadDriveCredentials()
+	if err != nil {
+		return nil, fmt.Errorf("read Google Drive credentials: %w", err)
 	}
-	if credentialsFile == "" {
-		return nil, fmt.Errorf("GOOGLE_DRIVE_CREDENTIALS_FILE must point to a service-account JSON file")
+	if _, err := driveCredentialMetadata(contents); err != nil {
+		return nil, err
 	}
-	service, err := drive.NewService(context.Background(),
-		option.WithCredentialsFile(credentialsFile),
-		option.WithScopes(drive.DriveReadonlyScope),
-	)
+	service, err := drive.NewService(context.Background(), option.WithCredentialsJSON(contents), option.WithScopes(drive.DriveReadonlyScope))
 	if err != nil {
 		return nil, fmt.Errorf("initialize Google Drive client: %w", err)
 	}
-	statePath := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_STATE_FILE"))
-	if statePath == "" {
-		statePath = filepath.Join(getenv("UPLOAD_DIR", "./storage"), ".google-drive-sync.json")
-	}
-	return &GoogleDriveImporter{db: db, service: service, folderID: folderID, statePath: statePath, logger: logger}, nil
+	return &GoogleDriveImporter{db: db, service: service, settings: NewSettingsStore(db), logger: logger}, nil
 }
 
-// Sync imports new or changed files directly inside the configured Drive folder.
-func (i *GoogleDriveImporter) Sync(ctx context.Context) (int, error) {
-	state := i.loadState()
-	imported := 0
-	folders := []string{i.folderID}
-	seenFolders := map[string]bool{i.folderID: true}
-	for folderIndex := 0; folderIndex < len(folders); folderIndex++ {
-		parentID := folders[folderIndex]
-		pageToken := ""
-		for {
-			query := fmt.Sprintf("'%s' in parents and trashed = false", escapeDriveQueryValue(parentID))
-			call := i.service.Files.List().
-				Q(query).
-				PageSize(drivePageSize).
-				Fields("nextPageToken,files(id,name,mimeType,modifiedTime,size,capabilities(canDownload))").
-				IncludeItemsFromAllDrives(true).
-				SupportsAllDrives(true)
-			if pageToken != "" {
-				call = call.PageToken(pageToken)
-			}
-			page, err := call.Context(ctx).Do()
-			if err != nil {
-				return imported, fmt.Errorf("list files from Google Drive folder %q: %w", parentID, err)
-			}
-			for _, file := range page.Files {
-				if ctx.Err() != nil {
-					return imported, ctx.Err()
-				}
-				if file.Id == "" {
-					continue
-				}
-				if file.MimeType == "application/vnd.google-apps.folder" {
-					if !seenFolders[file.Id] {
-						seenFolders[file.Id] = true
-						folders = append(folders, file.Id)
-					}
-					continue
-				}
-				version := file.ModifiedTime
-				if version == "" {
-					version = "<unknown>"
-				}
-				if state.ModifiedTimeByFileID[file.Id] == version {
-					continue
-				}
-				if file.Size > maxImportedFileSize {
-					state.ModifiedTimeByFileID[file.Id] = version
-					i.logger.Printf("Google Drive file exceeds the 50 MB import limit; skipped %q", file.Name)
-					continue
-				}
-				if file.Capabilities != nil && !file.Capabilities.CanDownload {
-					i.logger.Printf("Google Drive file cannot be downloaded; will retry: %q", file.Name)
-					continue
-				}
+func googleDriveCredentialsFile() string {
+	path := strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_CREDENTIALS_FILE"))
+	if path == "" {
+		path = strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	}
+	return path
+}
 
-				outputName, exportMime, supported := driveOutputFile(file)
-				if !supported {
-					state.ModifiedTimeByFileID[file.Id] = version
-					i.logger.Printf("Google Drive file type is unsupported; skipped %q (%s)", file.Name, file.MimeType)
-					continue
-				}
-				created, err := i.importFile(ctx, file, outputName, exportMime)
-				if err != nil {
-					i.logger.Printf("Google Drive import failed for %q: %v", file.Name, err)
-					continue
-				}
-				state.ModifiedTimeByFileID[file.Id] = version
-				if created {
-					imported++
-				}
-			}
-			if page.NextPageToken == "" {
-				break
-			}
-			pageToken = page.NextPageToken
+func osReadDriveCredentials() ([]byte, error) {
+	file, err := os.Open(googleDriveCredentialsFile())
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return io.ReadAll(io.LimitReader(file, 1<<20))
+}
+
+func googleDriveCredentialsConfigured() bool {
+	contents, err := osReadDriveCredentials()
+	if err != nil {
+		return false
+	}
+	_, err = driveCredentialMetadata(contents)
+	return err == nil
+}
+
+func (i *GoogleDriveImporter) configuredFolderID(folderURL string) (string, error) {
+	folderID := normalizeDriveFolderID(folderURL)
+	if folderID == "" {
+		folderID = normalizeDriveFolderID(loadOCRSettingsOrDefault(i.settings).DriveFolderURL)
+	}
+	if folderID == "" {
+		folderID = normalizeDriveFolderID(os.Getenv("GOOGLE_DRIVE_FOLDER_ID"))
+	}
+	if folderID == "" {
+		return "", fmt.Errorf("กรุณากำหนดลิงก์โฟลเดอร์ Google Drive")
+	}
+	return folderID, nil
+}
+
+func (i *GoogleDriveImporter) TestConnection(ctx context.Context, folderURL string) (string, error) {
+	folderID := normalizeDriveFolderID(folderURL)
+	if folderID == "" {
+		return "", fmt.Errorf("กรุณาใช้ลิงก์โฟลเดอร์ Google Drive ที่ถูกต้อง")
+	}
+	resourceKey := ""
+	if parsed, err := url.Parse(folderURL); err == nil {
+		resourceKey = parsed.Query().Get("resourcekey")
+	}
+	folder, err := i.getDriveFile(ctx, folderID, resourceKey)
+	if err != nil {
+		return "", fmt.Errorf("ตรวจสอบสิทธิ์เข้าถึงโฟลเดอร์ Google Drive ไม่สำเร็จ: %w", err)
+	}
+	if folder.MimeType != driveFolderMime || folder.Trashed {
+		return "", fmt.Errorf("ลิงก์นี้ไม่ใช่โฟลเดอร์ Google Drive ที่ใช้งานได้")
+	}
+	// Verify listing permission as well as folder metadata access.
+	call := i.service.Files.List().Q(fmt.Sprintf("'%s' in parents and trashed = false", escapeDriveQueryValue(folderID))).PageSize(1).Fields("files(id)").SupportsAllDrives(true).IncludeItemsFromAllDrives(true).Context(ctx)
+	driveResourceHeader(call.Header(), folderID, resourceKey)
+	if _, err := call.Do(); err != nil {
+		return "", fmt.Errorf("ไม่สามารถอ่านรายการไฟล์ในโฟลเดอร์: %w", err)
+	}
+	return folder.Name, nil
+}
+
+func (i *GoogleDriveImporter) downloadFile(ctx context.Context, file *drive.File, exportMime string) (*http.Response, error) {
+	return driveRetry(ctx, func() (*http.Response, error) {
+		if exportMime != "" {
+			call := i.service.Files.Export(file.Id, exportMime).Context(ctx)
+			driveResourceHeader(call.Header(), file.Id, file.ResourceKey)
+			return call.Download()
 		}
-	}
-	if err := i.saveState(state); err != nil {
-		return imported, fmt.Errorf("save Google Drive sync state: %w", err)
-	}
-	return imported, nil
+		call := i.service.Files.Get(file.Id).SupportsAllDrives(true).Context(ctx)
+		driveResourceHeader(call.Header(), file.Id, file.ResourceKey)
+		return call.Download()
+	})
 }
 
-func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, fileName, exportMime string) (bool, error) {
+func runGoogleDriveSync(importer *GoogleDriveImporter, logger *log.Logger, phase string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	imported, err := importer.SyncIfDue(ctx)
+	if err != nil {
+		logger.Printf("%s Google Drive sync: %v", phase, err)
+	}
+	if imported > 0 {
+		logger.Printf("%s Google Drive batch imported=%d", phase, imported)
+	}
+}
+
+func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, fileName, exportMime string, item *DriveSyncItem) (bool, error) {
 	storageDir := getenv("UPLOAD_DIR", "./storage")
 	if err := os.MkdirAll(storageDir, 0o750); err != nil {
 		return false, fmt.Errorf("prepare storage directory: %w", err)
@@ -157,13 +153,13 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 
 	var responseBody io.ReadCloser
 	if exportMime != "" {
-		response, err := i.service.Files.Export(file.Id, exportMime).Context(ctx).Download()
+		response, err := i.downloadFile(ctx, file, exportMime)
 		if err != nil {
 			return false, fmt.Errorf("export Drive document: %w", err)
 		}
 		responseBody = response.Body
 	} else {
-		response, err := i.service.Files.Get(file.Id).SupportsAllDrives(true).Context(ctx).Download()
+		response, err := i.downloadFile(ctx, file, "")
 		if err != nil {
 			return false, fmt.Errorf("download Drive file: %w", err)
 		}
@@ -188,75 +184,49 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 		return false, err
 	}
 	defer temporary.Close()
-	return storeImportedDocument(i.db, temporary, fileName, storageDir, bytesWritten, "GOOGLE_DRIVE")
-}
-
-func (i *GoogleDriveImporter) loadState() driveSyncState {
-	state := driveSyncState{ModifiedTimeByFileID: make(map[string]string)}
-	contents, err := os.ReadFile(i.statePath)
+	hash, err := hashReader(temporary)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			i.logger.Printf("Google Drive sync state could not be read; rebuilding it: %v", err)
+		return false, err
+	}
+	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	created := false
+	savedPath := ""
+	err = i.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var known DriveImportedFile
+		lookup := tx.Where("file_id = ?", file.Id).Limit(1).Find(&known)
+		if lookup.Error != nil {
+			return lookup.Error
 		}
-		return state
-	}
-	if err := json.Unmarshal(contents, &state); err != nil || state.ModifiedTimeByFileID == nil {
-		i.logger.Printf("Google Drive sync state is invalid; rebuilding it")
-		return driveSyncState{ModifiedTimeByFileID: make(map[string]string)}
-	}
-	return state
-}
-
-func runGoogleDriveSync(importer *GoogleDriveImporter, logger *log.Logger, phase string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	imported, err := importer.Sync(ctx)
-	if err != nil {
-		logger.Printf("%s Google Drive sync failed: %v", phase, err)
-		return
-	}
-	if imported > 0 {
-		logger.Printf("%s Google Drive sync completed: imported=%d", phase, imported)
-	}
-}
-
-func (i *GoogleDriveImporter) saveState(state driveSyncState) error {
-	if err := os.MkdirAll(filepath.Dir(i.statePath), 0o750); err != nil {
-		return err
-	}
-	contents, err := json.Marshal(state)
-	if err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(filepath.Dir(i.statePath), ".google-drive-sync-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if _, err := temporary.Write(contents); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, i.statePath); err != nil {
-		if _, statErr := os.Stat(i.statePath); statErr != nil {
+		if lookup.RowsAffected > 0 {
+			return tx.Model(item).Updates(map[string]any{"status": "EXISTING", "last_error": "", "retry_at": nil}).Error
+		}
+		var storeErr error
+		created, storeErr = storeImportedDocument(tx, temporary, fileName, storageDir, bytesWritten, "GOOGLE_DRIVE")
+		if storeErr != nil {
+			return storeErr
+		}
+		var document StoredDocument
+		if err := tx.Where("file_hash = ?", hash).Take(&document).Error; err != nil {
 			return err
 		}
-		if removeErr := os.Remove(i.statePath); removeErr != nil {
-			return removeErr
+		if created {
+			savedPath = document.StoragePath
 		}
-		if err := os.Rename(temporaryPath, i.statePath); err != nil {
+		if err := tx.Create(&DriveImportedFile{FileID: file.Id, DocumentID: document.ID, FileHash: hash, ImportedAt: time.Now()}).Error; err != nil {
 			return err
 		}
+		status := "DUPLICATE"
+		if created {
+			status = "IMPORTED"
+		}
+		return tx.Model(item).Updates(map[string]any{"status": status, "last_error": "", "retry_at": nil}).Error
+	})
+	if err != nil && savedPath != "" {
+		_ = os.Remove(savedPath)
 	}
-	return nil
+	return created, err
 }
 
 func driveOutputFile(file *drive.File) (name, exportMime string, supported bool) {
@@ -270,7 +240,7 @@ func driveOutputFile(file *drive.File) (name, exportMime string, supported bool)
 		return withExtension(name, ".pdf"), "application/pdf", true
 	}
 	if allowedExtensions[strings.ToLower(filepath.Ext(name))] {
-		return name, "", true
+		return withExtension(name, filepath.Ext(name)), "", true
 	}
 	if extension := extensionForMime(file.MimeType); extension != "" {
 		return withExtension(name, extension), "", true
@@ -298,28 +268,34 @@ func withExtension(name, extension string) string {
 	if base == "" {
 		base = "drive-file"
 	}
-	return safeStoredFileName(base + extension)
+	base = safeStoredFileName(base)
+	runes := []rune(base)
+	limit := 500 - len([]rune(extension))
+	if len(runes) > limit {
+		base = string(runes[:limit])
+	}
+	return base + extension
 }
 
 func normalizeDriveFolderID(value string) string {
 	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if validDriveID(value) {
 		return value
 	}
-	if id := parsed.Query().Get("id"); id != "" {
-		return id
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "drive.google.com" {
+		return ""
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	for index, part := range parts {
-		if part == "folders" && index+1 < len(parts) {
+		if part == "folders" && index+1 < len(parts) && validDriveID(parts[index+1]) {
 			return parts[index+1]
 		}
 	}
-	return value
+	if (parsed.Path == "/open" || parsed.Path == "/folderview") && validDriveID(parsed.Query().Get("id")) {
+		return parsed.Query().Get("id")
+	}
+	return ""
 }
 
 func escapeDriveQueryValue(value string) string {

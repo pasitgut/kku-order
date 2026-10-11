@@ -34,6 +34,8 @@ type OCRSettings struct {
 	// Drive fields are stored for the Google Drive importer, which is built separately.
 	DriveFolderURL   string `json:"driveFolderUrl"`
 	DriveAfterImport string `json:"driveAfterImport"`
+	DriveSyncTime    string `json:"driveSyncTime"`
+	DriveTimezone    string `json:"driveTimezone"`
 }
 
 var (
@@ -79,6 +81,8 @@ func defaultOCRSettings() OCRSettings {
 		ImportSource:          "folder",
 		ImportIntervalMinutes: 5,
 		DriveAfterImport:      "move",
+		DriveSyncTime:         "05:00",
+		DriveTimezone:         "Asia/Bangkok",
 	}
 }
 
@@ -109,6 +113,15 @@ func (s OCRSettings) Validate() error {
 		if err != nil || parsed.Scheme != "https" || parsed.Host != "drive.google.com" {
 			return fmt.Errorf("ลิงก์โฟลเดอร์ต้องเป็นลิงก์จาก drive.google.com")
 		}
+		if !validDriveID(normalizeDriveFolderID(s.DriveFolderURL)) {
+			return fmt.Errorf("กรุณาใช้ลิงก์โฟลเดอร์ Google Drive ที่มีรหัสโฟลเดอร์")
+		}
+	}
+	if clock, err := time.Parse("15:04", s.DriveSyncTime); err != nil || clock.Format("15:04") != s.DriveSyncTime {
+		return fmt.Errorf("เวลาดึง Google Drive ต้องเป็น HH:mm เช่น 05:00")
+	}
+	if _, err := time.LoadLocation(s.DriveTimezone); err != nil || s.DriveTimezone == "" {
+		return fmt.Errorf("เขตเวลาสำหรับ Google Drive ไม่ถูกต้อง")
 	}
 	return validateOCRAPIURL(s.APIURL)
 }
@@ -243,7 +256,7 @@ func getOCRSettingsHandler(store SettingsStore, cfg ocrAPIConfig) gin.HandlerFun
 
 func updateOCRSettingsHandler(store SettingsStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var settings OCRSettings
+		settings := loadOCRSettingsOrDefault(store)
 		if err := c.ShouldBindJSON(&settings); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ข้อมูลการตั้งค่าไม่ถูกต้อง"})
 			return
@@ -263,17 +276,18 @@ func updateOCRSettingsHandler(store SettingsStore) gin.HandlerFunc {
 // SystemSettings are read-only values from .env. Secrets are reported only as
 // "configured" flags, and URLs are reduced to their host.
 type SystemSettings struct {
-	UserSyncCron      string `json:"userSyncCron"`
-	UserSyncTimezone  string `json:"userSyncTimezone"`
-	ExternalUsersHost string `json:"externalUsersHost"`
-	APIKeyConfigured  bool   `json:"apiKeyConfigured"`
-	ExpiryCron        string `json:"expiryCron"`
-	SMTPHost          string `json:"smtpHost"`
-	SMTPPort          string `json:"smtpPort"`
-	SMTPFrom          string `json:"smtpFrom"`
-	SMTPConfigured    bool   `json:"smtpConfigured"`
-	ImportDir         string `json:"importDir"`
-	AuthRequired      bool   `json:"authRequired"`
+	UserSyncCron                     string `json:"userSyncCron"`
+	UserSyncTimezone                 string `json:"userSyncTimezone"`
+	ExternalUsersHost                string `json:"externalUsersHost"`
+	APIKeyConfigured                 bool   `json:"apiKeyConfigured"`
+	ExpiryCron                       string `json:"expiryCron"`
+	SMTPHost                         string `json:"smtpHost"`
+	SMTPPort                         string `json:"smtpPort"`
+	SMTPFrom                         string `json:"smtpFrom"`
+	SMTPConfigured                   bool   `json:"smtpConfigured"`
+	ImportDir                        string `json:"importDir"`
+	AuthRequired                     bool   `json:"authRequired"`
+	GoogleDriveCredentialsConfigured bool   `json:"googleDriveCredentialsConfigured"`
 }
 
 func hostOnly(raw string) string {
@@ -288,17 +302,18 @@ func currentSystemSettings() SystemSettings {
 	externalURL := getenv("EXTERNAL_USERS_URL", getenv("EXTERNAL_USERS_BASE_URL", defaultExternalUsersURL))
 	smtpHost := strings.TrimSpace(os.Getenv("SMTP_HOST"))
 	return SystemSettings{
-		UserSyncCron:      getenv("USER_SYNC_CRON", "0 5 * * *"),
-		UserSyncTimezone:  getenv("USER_SYNC_TZ", "Asia/Bangkok"),
-		ExternalUsersHost: hostOnly(externalURL),
-		APIKeyConfigured:  strings.TrimSpace(os.Getenv("API_KEY")) != "",
-		ExpiryCron:        getenv("EXPIRY_CRON", "10 5 * * *"),
-		SMTPHost:          smtpHost,
-		SMTPPort:          getenv("SMTP_PORT", "587"),
-		SMTPFrom:          strings.TrimSpace(os.Getenv("SMTP_FROM")),
-		SMTPConfigured:    smtpHost != "",
-		ImportDir:         getenv("IMPORT_DIR", "./incoming"),
-		AuthRequired:      authRequired(),
+		UserSyncCron:                     getenv("USER_SYNC_CRON", "0 5 * * *"),
+		UserSyncTimezone:                 getenv("USER_SYNC_TZ", "Asia/Bangkok"),
+		ExternalUsersHost:                hostOnly(externalURL),
+		APIKeyConfigured:                 strings.TrimSpace(os.Getenv("API_KEY")) != "",
+		ExpiryCron:                       getenv("EXPIRY_CRON", "10 5 * * *"),
+		SMTPHost:                         smtpHost,
+		SMTPPort:                         getenv("SMTP_PORT", "587"),
+		SMTPFrom:                         strings.TrimSpace(os.Getenv("SMTP_FROM")),
+		SMTPConfigured:                   smtpHost != "",
+		ImportDir:                        getenv("IMPORT_DIR", "./incoming"),
+		AuthRequired:                     authRequired(),
+		GoogleDriveCredentialsConfigured: googleDriveCredentialsConfigured(),
 	}
 }
 

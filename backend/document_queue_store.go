@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -19,7 +20,7 @@ type gormExtractionJobs struct {
 // Claim เปลี่ยนเป็น EXTRACTING แบบมีเงื่อนไข ถ้าไม่มีแถวตรงเงื่อนไขคืน ok=false (กันการส่งซ้ำ)
 func (g gormExtractionJobs) Claim(id uint, now time.Time) (Document, bool, error) {
 	res := g.db.Model(&Document{}).
-		Where("id = ? AND processing_stage IN ?", id, []string{"QUEUED", "RETRY_WAIT"}).
+		Where("id = ? AND processing_stage IN ? AND status <> ?", id, []string{"QUEUED", "RETRY_WAIT"}, documentCancelled).
 		Updates(map[string]any{
 			"processing_stage":      "EXTRACTING",
 			"status":                "PROCESSING",
@@ -42,7 +43,7 @@ func (g gormExtractionJobs) Claim(id uint, now time.Time) (Document, bool, error
 
 // MarkRetry ตาม spec: RETRY_WAIT, next_attempt_at, extraction_last_status, ocr_error
 func (g gormExtractionJobs) MarkRetry(id uint, plan failurePlan) error {
-	return g.db.Model(&Document{}).Where("id = ?", id).Updates(map[string]any{
+	return g.db.Model(&Document{}).Where("id = ? AND status <> ?", id, documentCancelled).Updates(map[string]any{
 		"status":                 "PROCESSING",
 		"processing_stage":       "RETRY_WAIT",
 		"next_attempt_at":        plan.NextAttempt,
@@ -57,6 +58,12 @@ func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started ti
 	docID := id
 	detail, _ := json.Marshal(failure)
 	return g.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockEditableDocument(tx, id); err != nil {
+			if errors.Is(err, errDocumentCancelled) {
+				return nil
+			}
+			return err
+		}
 		if err := tx.Model(&Document{}).Where("id = ?", id).Updates(map[string]any{
 			"status":                 "NEEDS_REVIEW",
 			"processing_stage":       "FAILED",
@@ -82,6 +89,12 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 	docID := doc.ID
 
 	return g.db.Transaction(func(tx *gorm.DB) error {
+		if err := lockEditableDocument(tx, docID); err != nil {
+			if errors.Is(err, errDocumentCancelled) {
+				return nil
+			}
+			return err
+		}
 		rec.Updates["status"] = status
 		rec.Updates["processing_stage"] = stage
 		rec.Updates["ocr_provider"] = result.Engine

@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { FolderSimple, GoogleDriveLogo, Info } from "@phosphor-icons/react";
+import { ArrowRight, FolderSimple, Info } from "@phosphor-icons/react";
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { useToast } from "@/components/toast";
@@ -117,13 +118,19 @@ export default function OCRSettingsPage() {
 
         <SettingsCard title="ดึงเอกสารอัตโนมัติ" description="ระบบตรวจแหล่งไฟล์ตามรอบเวลา นำเข้า PDF ใหม่เข้าคิว OCR เอง และข้ามไฟล์ซ้ำ" action={<><span id="import-label" className="sr-only">เปิดการดึงเอกสารอัตโนมัติ</span><Switch checked={form.importEnabled} disabled={!editable} labelledBy="import-label" onChange={(importEnabled) => patch({ importEnabled })} /></>}>
           <div className={form.importEnabled ? "" : "opacity-50"}>
-            <Row title="แหล่งไฟล์"><Segmented label="แหล่งไฟล์" value={form.importSource} disabled={!editable || !form.importEnabled} options={[["drive", "Google Drive"], ["folder", "โฟลเดอร์บนเซิร์ฟเวอร์"]]} onChange={(importSource) => patch({ importSource })} /></Row>
+            <Row title="แหล่งไฟล์" hint="เลือกว่าจะดึงเอกสารจาก Google Drive หรือโฟลเดอร์บนเครื่อง"><Segmented label="แหล่งไฟล์" value={form.importSource} disabled={!editable || !form.importEnabled} options={[["drive", "Google Drive"], ["folder", "โฟลเดอร์บนเครื่อง"]]} onChange={(importSource) => patch({ importSource })} /></Row>
             {form.importSource === "drive" ? <>
-              <Row title="บัญชี Google" hint="การเชื่อมต่อ Google Drive อยู่ระหว่างพัฒนา ตอนนี้บันทึกโฟลเดอร์ไว้ล่วงหน้าได้"><span className="flex shrink-0 flex-wrap items-center gap-3"><span className="inline-flex items-center gap-1.5 whitespace-nowrap text-[13px] text-[var(--muted)]"><StatusDot tone="idle" />ยังไม่ได้เชื่อมต่อ</span><button type="button" disabled className="inline-flex h-9 cursor-not-allowed items-center gap-2 whitespace-nowrap rounded-md border border-[var(--line-strong)] bg-white px-3 text-xs text-[var(--muted)]"><GoogleDriveLogo size={16} />เชื่อมต่อบัญชี Google</button></span></Row>
-              <Row title="โฟลเดอร์ใน Google Drive" hint="วางลิงก์โฟลเดอร์จาก drive.google.com" htmlFor="drive-folder"><input id="drive-folder" type="url" value={form.driveFolderUrl} disabled={!editable || !form.importEnabled} onChange={(event) => patch({ driveFolderUrl: event.target.value.trim() })} placeholder="https://drive.google.com/drive/folders/..." className="focus-ring h-10 w-full rounded-md border border-[var(--line-strong)] px-3 text-[13px] disabled:opacity-60 sm:w-[340px]" /></Row>
-              <Row title="หลังนำเข้าแล้ว" hint="ไฟล์ใน Drive ไม่ถูกลบ เพื่อให้ตรวจย้อนหลังได้" htmlFor="after-import"><select id="after-import" value={form.driveAfterImport} disabled={!editable || !form.importEnabled} onChange={(event) => patch({ driveAfterImport: event.target.value as OCRSettings["driveAfterImport"] })} className="focus-ring h-10 min-w-[240px] rounded-md border border-[var(--line-strong)] bg-white px-2.5 text-sm disabled:opacity-60"><option value="move">ย้ายไปโฟลเดอร์ย่อย “นำเข้าแล้ว”</option><option value="keep">เก็บไว้ที่เดิม</option></select></Row>
-            </> : <Row title="โฟลเดอร์บนเซิร์ฟเวอร์" hint="ตั้งที่ IMPORT_DIR ใน .env · เหมาะกับเครื่องสแกนที่บันทึกลงโฟลเดอร์แชร์"><span className="inline-flex items-center gap-2 font-mono text-[13px]"><FolderSimple size={16} className="text-[var(--muted)]" />{importDir || "-"}</span></Row>}
-            <Row title={form.importSource === "drive" ? "ดึงไฟล์ทุก" : "ตรวจโฟลเดอร์ทุก"} htmlFor="interval"><select id="interval" value={form.importIntervalMinutes} disabled={!editable || !form.importEnabled} onChange={(event) => patch({ importIntervalMinutes: Number(event.target.value) })} className="focus-ring h-10 min-w-[160px] rounded-md border border-[var(--line-strong)] bg-white px-2.5 text-sm disabled:opacity-60">{[[1, "1 นาที"], [5, "5 นาที"], [15, "15 นาที"], [30, "30 นาที"], [60, "1 ชั่วโมง"], [1440, "วันละครั้ง"]].map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}</select></Row>
+              <Row title="โฟลเดอร์ Google Drive" hint={form.driveFolderUrl ? "โฟลเดอร์ถูกกำหนดแล้ว" : "ยังไม่ได้กำหนดโฟลเดอร์ Google Drive"}>
+                <Link href="/settings/drive" className="focus-ring inline-flex h-10 items-center gap-2 rounded-md border border-[var(--line-strong)] bg-white px-3 text-sm font-medium text-[var(--accent)] hover:bg-[var(--surface-muted)]">จัดการ Google Drive <ArrowRight size={16} /></Link>
+              </Row>
+              <Row title="รอบนำเข้า" hint="ดึงรายวันตามเขตเวลาที่เลือก เปลี่ยนเวลาและทดสอบสิทธิ์ได้ที่หน้า Google Drive">
+                <span className="text-sm text-[var(--muted)]">ทุกวัน {form.driveSyncTime} · {form.driveTimezone}</span>
+              </Row>
+            </> : <>
+              <Row title="โฟลเดอร์บนเครื่อง" hint="ตั้ง IMPORT_DIR ใน .env · เหมาะกับเครื่องสแกนที่บันทึกลงโฟลเดอร์แชร์"><span className="inline-flex items-center gap-2 font-mono text-[13px]"><FolderSimple size={16} className="text-[var(--muted)]" />{importDir || "-"}</span></Row>
+              <Row title="ตรวจโฟลเดอร์ทุก" htmlFor="interval"><select id="interval" value={form.importIntervalMinutes} disabled={!editable || !form.importEnabled} onChange={(event) => patch({ importIntervalMinutes: Number(event.target.value) })} className="focus-ring h-10 min-w-[160px] rounded-md border border-[var(--line-strong)] bg-white px-2.5 text-sm disabled:opacity-60">{[[1, "1 นาที"], [5, "5 นาที"], [15, "15 นาที"], [30, "30 นาที"], [60, "1 ชั่วโมง"], [1440, "วันละครั้ง"]].map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}</select></Row>
+              <Row title="ใช้ Google Drive แทน" hint="ตั้ง service account โฟลเดอร์ปลายทาง และรอบนำเข้าได้แยกต่างหาก"><Link href="/settings/drive" className="focus-ring inline-flex h-10 items-center gap-2 rounded-md border border-[var(--line-strong)] bg-white px-3 text-sm font-medium text-[var(--accent)] hover:bg-[var(--surface-muted)]">ตั้งค่า Google Drive <ArrowRight size={16} /></Link></Row>
+            </>}
           </div>
         </SettingsCard>
     </div>
