@@ -317,6 +317,9 @@ var allowedExtensions = map[string]bool{".pdf": true, ".docx": true, ".xlsx": tr
 
 func main() {
 	logger := log.New(os.Stdout, "[docflow] ", log.LstdFlags|log.LUTC)
+	if err := loadLocalEnvironment(); err != nil {
+		logger.Printf("local environment file could not be loaded: %v", err)
+	}
 	dsn := getenv("DB_DSN", "docflow:docflow@tcp(localhost:3307)/docflow?charset=utf8mb4&parseTime=True&loc=Local")
 	logger.Printf("database target: %s", redactDSN(dsn))
 	var db *gorm.DB

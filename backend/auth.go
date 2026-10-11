@@ -24,7 +24,8 @@ func authMiddleware() gin.HandlerFunc {
 			return
 		}
 		if userID == "" {
-			userID = "local-user"
+			// Only reachable when SSO is not required, i.e. local development.
+			userID = getenv("AUTH_LOCAL_USER", "local-user")
 		}
 		if role == "" {
 			fallbackRole := "ADMIN"

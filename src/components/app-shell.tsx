@@ -4,9 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Bell, CaretDown, ChartLineUp, FileArrowUp, Files, GearSix, MagnifyingGlass, SignOut, UserCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, Bell, CaretDown, ChartLineUp, FileArrowUp, Files, GearSix, MagnifyingGlass, SignOut, User, WifiSlash } from "@phosphor-icons/react";
 import { Avatar, useMe } from "@/components/me-context";
-import { can, roleLabel } from "@/lib/permissions";
+import { roleLabel } from "@/lib/permissions";
 import { ExpiryNotification, formatThaiDate, getExpiryNotifications } from "@/lib/api";
 
 const navigation = [
@@ -14,7 +14,6 @@ const navigation = [
   { href: "/upload", label: "นำเข้าเอกสาร", shortLabel: "นำเข้า", icon: FileArrowUp },
   { href: "/documents", label: "เอกสารทั้งหมด", shortLabel: "เอกสาร", icon: Files },
   { href: "/search", label: "ค้นหาข้อมูล", shortLabel: "ค้นหา", icon: MagnifyingGlass },
-  { href: "/settings", label: "ตั้งค่า", shortLabel: "ตั้งค่า", icon: GearSix },
 ];
 
 type AppShellProps = {
@@ -80,7 +79,7 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
         <div className="flex min-h-11 flex-col justify-center gap-0.5 px-5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12 xl:px-16"><span><span className="font-medium text-white">DocFlow</span> · วิทยาลัยการคอมพิวเตอร์ มหาวิทยาลัยขอนแก่น</span><span>123 ถ.มิตรภาพ ต.ในเมือง อ.เมือง จ.ขอนแก่น 40002</span></div>
       </footer>
 
-      <nav aria-label="เมนูหลัก" className="fixed inset-x-0 bottom-0 z-30 grid h-[72px] grid-cols-5 bg-[var(--bar)] px-1 lg:hidden">
+      <nav aria-label="เมนูหลัก" className="fixed inset-x-0 bottom-0 z-30 grid h-[72px] grid-cols-4 bg-[var(--bar)] px-1 lg:hidden">
         {navigation.map((item) => {
           const Icon = item.icon;
           const active = isActive(pathname, item.href);
@@ -95,9 +94,13 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
 const logoutUrl = process.env.NEXT_PUBLIC_LOGOUT_URL ?? "/oauth2/sign_out";
 
 function UserMenu() {
-  const { me } = useMe();
+  const { me, status, refresh } = useMe();
+  const pathname = usePathname();
+  // ตั้งค่าและโปรไฟล์อยู่ในเมนูนี้ จึงไฮไลต์ปุ่มนี้แทนเมนูหลัก
+  const current = pathname.startsWith("/settings") || pathname.startsWith("/profile");
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const offline = status === "offline";
 
   useEffect(() => {
     if (!open) return;
@@ -110,19 +113,23 @@ function UserMenu() {
 
   const role = me?.role ?? "";
   return <div ref={containerRef} className="relative">
-    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label="เมนูโปรไฟล์" onClick={() => setOpen((value) => !value)} className={`focus-ring flex h-11 items-center gap-2.5 rounded-[5px] px-1.5 text-left text-white ${open ? "bg-[var(--bar-hover)]" : "hover:bg-[var(--bar-hover)]"}`}>
-      <Avatar me={me} size={34} />
-      <span className="hidden xl:block"><span className="block max-w-[160px] truncate text-[13px] font-medium leading-tight">{me?.displayName ?? "กำลังโหลด..."}</span><span className="block text-[11px] font-light leading-tight text-[var(--bar-muted)]">{role ? roleLabel(role) : ""}</span></span>
-      <CaretDown size={14} className="hidden text-[var(--bar-muted)] xl:block" />
+    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label="เมนูโปรไฟล์" onClick={() => setOpen((value) => !value)} aria-current={current ? "page" : undefined} className={`focus-ring flex h-11 items-center gap-2.5 rounded-[5px] px-1.5 text-left text-white ${open || current ? "bg-[var(--bar-hover)]" : "hover:bg-[var(--bar-hover)]"} ${current ? "shadow-[inset_0_-3px_0_var(--accent)]" : ""}`}>
+      {offline ? <span className="flex h-[34px] w-[34px] items-center justify-center rounded-full bg-[var(--bar-hover)] text-[var(--bar-muted)]"><WifiSlash size={17} /></span> : <Avatar me={me} size={34} />}
+      <span className="hidden xl:block"><span className="block max-w-[160px] truncate text-[13px] font-medium leading-tight">{me?.displayName ?? (offline ? "เชื่อมต่อไม่ได้" : "กำลังโหลด...")}</span><span className="block text-[11px] font-light leading-tight text-[var(--bar-muted)]">{role ? roleLabel(role) : offline ? "ระบบหลังบ้านไม่ตอบ" : ""}</span></span>
+      <CaretDown size={14} className={`hidden text-[var(--bar-muted)] transition xl:block ${open ? "rotate-180" : ""}`} />
     </button>
     {open && <div role="menu" aria-label="เมนูโปรไฟล์" className="absolute right-0 top-[52px] w-[300px] overflow-hidden rounded-[10px] bg-white text-[var(--ink)] shadow-[0_12px_32px_rgba(0,0,0,0.18)]">
-      <div className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-4">
+      {offline ? <div className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-4">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--line-soft)] text-[var(--muted)]"><WifiSlash size={20} /></span>
+        <div className="min-w-0 flex-1"><p className="font-semibold text-[var(--navy)]">เชื่อมต่อระบบไม่ได้</p><p className="text-xs font-light text-[var(--muted)]">ตรวจว่า API (backend) ทำงานอยู่</p></div>
+        <button type="button" aria-label="ลองเชื่อมต่อใหม่" onClick={refresh} className="focus-ring flex h-9 w-9 items-center justify-center rounded-md text-[var(--accent)] hover:bg-[var(--accent-soft)]"><ArrowClockwise size={17} /></button>
+      </div> : <div className="flex items-center gap-3 border-b border-[var(--line)] px-4 py-4">
         <Avatar me={me} size={44} />
-        <div className="min-w-0"><p className="truncate font-semibold text-[var(--navy)]">{me?.displayName ?? "-"}</p><p className="truncate text-xs font-light text-[var(--muted)]">{me?.email || me?.userId || ""}</p>{role && <span className="mt-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[#155e97]">{role}</span>}</div>
-      </div>
+        <div className="min-w-0"><p className="truncate font-semibold text-[var(--navy)]">{me?.displayName ?? "กำลังโหลด..."}</p>{(me?.email || (me?.userId !== me?.displayName && me?.userId)) && <p className="truncate text-xs font-light text-[var(--muted)]">{me?.email || me?.userId}</p>}{role && <span className="mt-1 inline-flex rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-[11px] font-medium text-[#155e97]">{role}</span>}</div>
+      </div>}
       <div className="p-1.5">
-        <Link role="menuitem" href="/profile" onClick={() => setOpen(false)} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><UserCircle size={18} className="text-[var(--muted)]" />โปรไฟล์ของฉัน</Link>
-        {can(role, "view") && role.toUpperCase() !== "VIEWER" && <Link role="menuitem" href="/settings" onClick={() => setOpen(false)} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><GearSix size={18} className="text-[var(--muted)]" />ตั้งค่าระบบ</Link>}
+        <Link role="menuitem" href="/profile" onClick={() => setOpen(false)} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><User size={18} className="text-[var(--muted)]" />โปรไฟล์ของฉัน</Link>
+        {role.toUpperCase() !== "VIEWER" && <Link role="menuitem" href="/settings" onClick={() => setOpen(false)} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><GearSix size={18} className="text-[var(--muted)]" />ตั้งค่าระบบ</Link>}
       </div>
       <div className="border-t border-[var(--line)] p-1.5">
         <a role="menuitem" href={logoutUrl} className="focus-ring flex h-11 items-center gap-3 rounded-md px-3 text-sm hover:bg-[var(--canvas)]"><SignOut size={18} className="text-[var(--muted)]" />ออกจากระบบ</a>

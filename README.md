@@ -64,7 +64,7 @@ API container จะโหลด `.env.local` เข้าไปโดยตร�
 
 สคริปต์จะ upload `malicious_file__open_with_care.pdf` และ `kku.pdf` ผ่าน API, รอ worker ประมวลผล และรายงานจำนวนหน้า รายชื่อ ฟิลด์ และ OCR provider จากข้อมูลที่อ่านกลับจากฐานข้อมูล
 
-ถ้ารัน backend โดยตรง ให้รันจากโฟลเดอร์ `backend` ด้วย `go run .` เพื่อให้ Go compile ไฟล์ทั้งหมดใน package เดียวกัน โดยต้องมี MySQL ที่สร้าง database/user ตามค่า `DB_DSN` ก่อน คำสั่งนี้ไม่ได้อ่าน `.env.local` ให้อัตโนมัติ จึงต้องตั้งค่า environment เอง เช่น
+ถ้ารัน backend โดยตรง ให้รันจากโฟลเดอร์ `backend` ด้วย `go run .` เพื่อให้ Go compile ไฟล์ทั้งหมดใน package เดียวกัน โดยต้องมี MySQL ที่สร้าง database/user ตามค่า `DB_DSN` ก่อน Backend จะโหลด `.env.local` จาก root ของโปรเจกต์ให้อัตโนมัติ โดย environment ที่กำหนดไว้ใน process จะมีลำดับความสำคัญสูงกว่า หากไม่มีไฟล์ที่ root จะใช้ `backend/.env.local` เป็น fallback
 
 ```powershell
 cd backend
