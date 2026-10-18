@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -96,29 +97,54 @@ func listDirectoryUsers(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดรายชื่อบุคลากรได้"})
 			return
 		}
-		query := strings.ToLower(strings.TrimSpace(c.Query("q")))
-		filtered := make([]DirectoryUser, 0, minInt(len(users), 100))
-		for _, user := range users {
-			if query != "" {
-				values := []string{user.FullName, user.FirstName, user.LastName, user.UserID, user.ExternalID, user.Email, user.Department, user.Faculty, user.PositionTitle}
-				matched := false
-				for _, value := range values {
-					if strings.Contains(strings.ToLower(value), query) {
-						matched = true
-						break
-					}
-				}
-				if !matched {
-					continue
+		respondDirectoryUsers(c, users)
+	}
+}
+
+// Keep the document picker's existing response, and paginate only when requested.
+func respondDirectoryUsers(c *gin.Context, users []DirectoryUser) {
+	query := strings.ToLower(strings.TrimSpace(c.Query("q")))
+	source := strings.ToUpper(strings.TrimSpace(c.Query("source")))
+	if source != "" && source != "ALL" && source != sourceManual && source != sourceSynced {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "แหล่งที่มาของรายชื่อไม่ถูกต้อง"})
+		return
+	}
+	filtered := make([]DirectoryUser, 0, len(users))
+	for _, user := range users {
+		if (source == sourceManual && user.Source != sourceManual) || (source == sourceSynced && user.Source == sourceManual) {
+			continue
+		}
+		if query != "" {
+			values := []string{user.FullName, user.FirstName, user.LastName, user.UserID, user.ExternalID, user.Email, user.Department, user.Faculty, user.PositionTitle, user.Phone}
+			matched := false
+			for _, value := range values {
+				if strings.Contains(strings.ToLower(value), query) {
+					matched = true
+					break
 				}
 			}
-			filtered = append(filtered, user)
-			if len(filtered) == 100 {
-				break
+			if !matched {
+				continue
 			}
 		}
-		c.JSON(http.StatusOK, gin.H{"data": filtered})
+		filtered = append(filtered, user)
 	}
+	if _, paginated := c.GetQuery("page"); !paginated {
+		c.JSON(http.StatusOK, gin.H{"data": filtered[:minInt(len(filtered), 100)]})
+		return
+	}
+	page, pageErr := strconv.Atoi(c.Query("page"))
+	limit, limitErr := strconv.Atoi(c.DefaultQuery("limit", "25"))
+	if pageErr != nil || limitErr != nil || page < 1 || limit < 1 || limit > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "เลขหน้าหรือจำนวนรายการไม่ถูกต้อง"})
+		return
+	}
+	// New manual entries appear first, with stable ordering across pages.
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID > filtered[j].ID })
+	total := len(filtered)
+	page = minInt(page, max(1, (total+limit-1)/limit))
+	start := (page - 1) * limit
+	c.JSON(http.StatusOK, gin.H{"data": filtered[start:minInt(start+limit, total)], "pagination": gin.H{"total": total, "page": page, "limit": limit}})
 }
 
 func documentFile(db *gorm.DB) gin.HandlerFunc {

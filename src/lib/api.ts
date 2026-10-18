@@ -254,6 +254,11 @@ export async function getDirectoryUsers(query = "") {
   return apiFetch<{ data: DirectoryUser[] }>(`/api/v1/directory-users${query ? `?q=${encodeURIComponent(query)}` : ""}`);
 }
 
+export async function getDirectoryUsersPage(query: string, source: string, page: number) {
+  const params = new URLSearchParams({ q: query, source, page: String(page), limit: "25" });
+  return apiFetch<{ data: DirectoryUser[]; pagination: { total: number; page: number; limit: number } }>(`/api/v1/directory-users?${params}`);
+}
+
 export async function createDirectoryUser(payload: {
   prefix?: string;
   firstName: string;
@@ -261,6 +266,7 @@ export async function createDirectoryUser(payload: {
   positionTitle?: string;
   department?: string;
   email?: string;
+  phone?: string;
 }) {
   return apiFetch<{ data: DirectoryUser }>("/api/v1/directory-users", {
     method: "POST",

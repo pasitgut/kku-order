@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ArrowsClockwise, GoogleDriveLogo, Scan, UsersThree } from "@phosphor-icons/react";
+import { ArrowsClockwise, GoogleDriveLogo, GraduationCap, Scan, UsersThree } from "@phosphor-icons/react";
 import { AppShell } from "@/components/app-shell";
 
 const sections = [
-  { group: "ผู้ใช้งาน", items: [{ href: "/settings", label: "ผู้ใช้งานและสิทธิ์", icon: UsersThree }] },
+  { group: "ผู้ใช้งาน", items: [{ href: "/settings", label: "ผู้ใช้งานและสิทธิ์", icon: UsersThree }, { href: "/settings/teachers", label: "ข้อมูลอาจารย์", icon: GraduationCap }] },
   { group: "การทำงานของระบบ", items: [{ href: "/settings/ocr", label: "OCR และการนำเข้า", icon: Scan }, { href: "/settings/drive", label: "Google Drive", icon: GoogleDriveLogo }, { href: "/settings/system", label: "sync และการแจ้งเตือน", icon: ArrowsClockwise }] },
 ];
 

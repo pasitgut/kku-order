@@ -1,0 +1,148 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { CaretLeft, CaretRight, CheckCircle, MagnifyingGlass, Plus, SpinnerGap } from "@phosphor-icons/react";
+import { useMe } from "@/components/me-context";
+import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
+import { useToast } from "@/components/toast";
+import { ApiError, DirectoryUser, createDirectoryUser, getDirectoryUsersPage } from "@/lib/api";
+import { can } from "@/lib/permissions";
+import { initials } from "@/lib/person";
+
+const emptyDraft = { prefix: "", firstName: "", lastName: "", positionTitle: "", department: "", email: "", phone: "" };
+const inputClass = "focus-ring h-11 w-full rounded-md border border-[var(--line-strong)] bg-white px-3 text-sm outline-none focus:border-[var(--accent)]";
+const buttonClass = "focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:opacity-50";
+
+export default function TeachersSettingsPage() {
+  const { me, status } = useMe();
+  const toast = useToast();
+  const [draft, setDraft] = useState(emptyDraft);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const firstNameRef = useRef<HTMLInputElement>(null);
+  const [formError, setFormError] = useState("");
+  const [success, setSuccess] = useState("");
+  const [conflictName, setConflictName] = useState("");
+  const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
+  const [source, setSource] = useState("all");
+  const [page, setPage] = useState(1);
+  const [revision, setRevision] = useState(0);
+  const [list, setList] = useState<{ data: DirectoryUser[]; pagination: { total: number; page: number; limit: number } } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const canCreate = can(me?.role ?? "", "createPerson");
+
+  useEffect(() => {
+    if (success && !saving) firstNameRef.current?.focus();
+  }, [success, saving]);
+
+  useEffect(() => {
+    let active = true;
+    getDirectoryUsersPage(search, source, page).then((response) => {
+      if (active) { setList(response); setLoadError(""); setLoading(false); }
+    }).catch((reason: unknown) => {
+      if (active) { setLoadError(reason instanceof Error ? reason.message : "โหลดรายชื่อไม่สำเร็จ"); setLoading(false); }
+    });
+    return () => { active = false; };
+  }, [search, source, page, revision]);
+
+  const refreshList = () => { setLoading(true); setRevision((current) => current + 1); };
+  const searchFor = (value: string) => {
+    setQuery(value); setSearch(value.trim()); setSource("all"); setPage(1); refreshList();
+  };
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canCreate || savingRef.current) return;
+    const payload = Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, value.trim()])) as typeof emptyDraft;
+    setFormError(""); setConflictName(""); setSuccess("");
+    if (!payload.firstName || !payload.lastName) {
+      setFormError("กรุณาระบุชื่อและนามสกุล โดยไม่ใช้ช่องว่างเพียงอย่างเดียว");
+      return;
+    }
+    savingRef.current = true; setSaving(true);
+    try {
+      const { data } = await createDirectoryUser(payload);
+      const name = data.fullName || `${data.firstName} ${data.lastName}`;
+      setSuccess(`เพิ่ม ${name} แล้ว สามารถค้นหาและเลือกใช้ในเอกสารได้ทันที`);
+      toast(`เพิ่มข้อมูล ${name} แล้ว`);
+      setDraft(emptyDraft); setQuery(""); setSearch(""); setSource("MANUAL"); setPage(1); refreshList();
+    } catch (reason) {
+      setFormError(reason instanceof Error ? reason.message : "ไม่สามารถเพิ่มข้อมูลอาจารย์ได้ กรุณาลองอีกครั้ง");
+      if (reason instanceof ApiError && reason.status === 409) {
+        setConflictName(`${payload.firstName} ${payload.lastName}`);
+      }
+    } finally {
+      savingRef.current = false; setSaving(false);
+    }
+  };
+
+  const currentPage = list?.pagination.page ?? 1;
+  const total = list?.pagination.total ?? 0;
+  const limit = list?.pagination.limit ?? 25;
+  const pageCount = Math.max(1, Math.ceil(total / limit));
+
+  return <SettingsFrame note="เพิ่มรายชื่ออาจารย์และบุคลากรไว้ล่วงหน้า เพื่อเลือกใช้ตอนตรวจเอกสารและจับคู่ชื่อจาก OCR ได้ โดยไม่ต้องเพิ่มเอกสารก่อน">
+    <div>
+      <h2 className="text-xl font-semibold text-[var(--navy)]">ข้อมูลอาจารย์และบุคลากร</h2>
+      <p className="mt-1 text-sm font-light leading-6 text-[var(--muted)]">เตรียมรายชื่อไว้ก่อนเริ่มงานเอกสาร รวมถึงบุคลากรจากหน่วยงานภายนอก</p>
+    </div>
+
+    {canCreate && <SettingsCard id="add-teacher" title="เพิ่มข้อมูลอาจารย์" description="ระบุชื่อและนามสกุล ส่วนข้อมูลอื่นสามารถเว้นว่างได้">
+      <form onSubmit={submit} className="space-y-5 p-5 lg:p-6" aria-busy={saving}>
+        {formError && <div role="alert" className="rounded-md bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
+          <p>{formError}</p>
+          {conflictName && <button type="button" onClick={() => searchFor(conflictName)} className="focus-ring mt-2 min-h-10 underline underline-offset-4">ดูรายชื่อที่มีอยู่แล้ว</button>}
+        </div>}
+        {success && <p role="status" className="flex items-start gap-2 rounded-md bg-[var(--success-soft)] px-4 py-3 text-sm leading-6 text-[var(--success)]"><CheckCircle size={20} className="mt-0.5 shrink-0" />{success}</p>}
+        <fieldset disabled={saving} className="grid gap-4 sm:grid-cols-2">
+          <label className="space-y-1.5 text-sm sm:col-span-2"><span className="block">คำนำหน้า</span><input name="prefix" value={draft.prefix} onChange={(event) => setDraft({ ...draft, prefix: event.target.value })} maxLength={50} placeholder="เช่น ผศ.ดร. หรือ อ." autoComplete="honorific-prefix" className={`${inputClass} sm:max-w-64`} /></label>
+          <label className="space-y-1.5 text-sm"><span className="block">ชื่อ <span className="text-[var(--danger)]">*</span></span><input ref={firstNameRef} name="firstName" required value={draft.firstName} onChange={(event) => setDraft({ ...draft, firstName: event.target.value })} maxLength={255} autoComplete="given-name" className={inputClass} /></label>
+          <label className="space-y-1.5 text-sm"><span className="block">นามสกุล <span className="text-[var(--danger)]">*</span></span><input name="lastName" required value={draft.lastName} onChange={(event) => setDraft({ ...draft, lastName: event.target.value })} maxLength={255} autoComplete="family-name" className={inputClass} /></label>
+          <label className="space-y-1.5 text-sm"><span className="block">ตำแหน่ง</span><input name="positionTitle" value={draft.positionTitle} onChange={(event) => setDraft({ ...draft, positionTitle: event.target.value })} maxLength={255} placeholder="เช่น อาจารย์" autoComplete="organization-title" className={inputClass} /></label>
+          <label className="space-y-1.5 text-sm"><span className="block">หน่วยงาน / สังกัด</span><input name="department" value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} maxLength={255} placeholder="เช่น วิทยาลัยการคอมพิวเตอร์" autoComplete="organization" className={inputClass} /></label>
+          <label className="space-y-1.5 text-sm"><span className="block">อีเมล</span><input name="email" type="email" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} maxLength={255} placeholder="name@example.com" autoComplete="email" className={inputClass} /></label>
+          <label className="space-y-1.5 text-sm"><span className="block">เบอร์โทรศัพท์</span><input name="phone" type="tel" value={draft.phone} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} maxLength={20} autoComplete="tel" className={inputClass} /></label>
+        </fieldset>
+        <div className="flex flex-col gap-3 border-t border-[var(--line-soft)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs font-light leading-5 text-[var(--muted)]">รายชื่อนี้ใช้กับเอกสารเท่านั้น ไม่มีการสร้างบัญชีเข้าสู่ระบบ</p>
+          <button type="submit" disabled={saving} className={`${buttonClass} shrink-0 bg-[var(--accent)] text-white hover:bg-[var(--accent-strong)]`}>{saving ? <SpinnerGap size={18} className="animate-spin" /> : <Plus size={18} weight="bold" />}{saving ? "กำลังบันทึก..." : "เพิ่มข้อมูลอาจารย์"}</button>
+        </div>
+      </form>
+    </SettingsCard>}
+    {!canCreate && status === "ready" && <p className="rounded-md border border-[var(--line)] bg-[var(--surface-muted)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">ผู้ดูแลระบบและเจ้าหน้าที่สามารถเพิ่มข้อมูลอาจารย์ได้ คุณสามารถค้นหาและดูรายชื่อด้านล่าง</p>}
+
+    <SettingsCard id="teacher-list" title="รายชื่อในระบบ" description="รายชื่อชุดเดียวกับที่ใช้เลือกบุคคลในเอกสาร เรียงตามรายการที่เพิ่มล่าสุด">
+      <div className="flex flex-col gap-3 border-b border-[var(--line)] bg-[var(--surface-muted)] px-5 py-4 lg:px-6">
+        <form onSubmit={(event) => { event.preventDefault(); setSearch(query.trim()); setPage(1); refreshList(); }} role="search" aria-label="ค้นหารายชื่ออาจารย์" className="flex flex-col gap-2 sm:flex-row">
+          <div className="relative min-w-0 flex-1"><MagnifyingGlass size={18} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" /><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="ค้นหาชื่อ อีเมล หน่วยงาน หรือเบอร์โทร" placeholder="ค้นหาชื่อ อีเมล หน่วยงาน หรือเบอร์โทร" className={`${inputClass} pl-10`} /></div>
+          <button type="submit" className={`${buttonClass} border border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--accent-soft)]`}>ค้นหา</button>
+        </form>
+        <div role="group" aria-label="กรองแหล่งที่มาของรายชื่อ" className="flex flex-wrap gap-2">{[["all", "ทั้งหมด"], ["MANUAL", "เพิ่มเอง"], ["SYNCED", "จาก sync"]].map(([value, label]) => <button key={value} type="button" aria-pressed={source === value} onClick={() => { setSource(value); setPage(1); refreshList(); }} className={`focus-ring min-h-10 rounded-full border px-4 text-xs ${source === value ? "border-[var(--accent)] bg-[var(--accent)] font-medium text-white" : "border-[var(--line-strong)] bg-white hover:border-[var(--accent)]"}`}>{label}</button>)}</div>
+      </div>
+      <div aria-busy={loading}>
+        {loading ? <p role="status" className="flex items-center justify-center gap-2 px-5 py-12 text-sm text-[var(--muted)]"><SpinnerGap size={18} className="animate-spin" />กำลังโหลดรายชื่อ...</p>
+          : loadError ? <div role="alert" className="px-5 py-8 text-sm text-[var(--danger)]"><p>{loadError}</p><button type="button" onClick={refreshList} className={`${buttonClass} mt-3 border border-[var(--line-strong)] text-[var(--accent)]`}>ลองใหม่</button></div>
+          : <>
+            <div className="overflow-x-auto"><table className="data-grid w-full min-w-[640px] text-left text-sm"><caption className="sr-only">รายชื่ออาจารย์และบุคลากรในระบบ</caption>
+              <thead><tr><th scope="col" className="px-5 py-3 lg:px-6">ชื่อ–นามสกุล</th><th scope="col" className="px-4 py-3">ตำแหน่ง / หน่วยงาน</th><th scope="col" className="px-4 py-3">ติดต่อ</th><th scope="col" className="px-5 py-3">แหล่งที่มา</th></tr></thead>
+              <tbody>{list?.data.map((user) => {
+                const name = user.fullName || `${user.prefix} ${user.firstName} ${user.lastName}`.trim();
+                return <tr key={user.id} className="hover:bg-[var(--brand-blue-pale)]">
+                  <td className="px-5 py-4 lg:px-6"><div className="flex items-center gap-3"><span aria-hidden="true" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-medium text-[var(--navy)]">{initials(name)}</span><span className="break-words font-medium">{name}</span></div></td>
+                  <td className="px-4 py-4"><p className="break-words">{user.positionTitle || user.jobTitle || "ไม่ระบุตำแหน่ง"}</p><p className="mt-1 break-words text-xs font-light text-[var(--muted)]">{user.department || user.faculty || "ไม่ระบุหน่วยงาน"}</p></td>
+                  <td className="px-4 py-4"><p className="break-all text-xs">{user.email || "ไม่ระบุอีเมล"}</p><p className="mt-1 text-xs font-light text-[var(--muted)]">{user.phone || "ไม่ระบุเบอร์โทร"}</p></td>
+                  <td className="px-5 py-4"><span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-[var(--muted)]"><StatusDot tone={user.source === "MANUAL" ? "warn" : "info"} />{user.source === "MANUAL" ? "เพิ่มเอง" : "จาก sync"}</span></td>
+                </tr>;
+              })}{!list?.data.length && <tr><td colSpan={4} className="px-5 py-12 text-center leading-7 text-[var(--muted)]">{search || source !== "all" ? "ไม่พบรายชื่อที่ตรงกับการค้นหาหรือตัวกรอง" : "ยังไม่มีรายชื่อในระบบ"}<p className="text-xs font-light">{search || source !== "all" ? "ลองเปลี่ยนคำค้นหรือเลือกแหล่งที่มาเป็นทั้งหมด" : canCreate ? "กรอกแบบฟอร์มด้านบนเพื่อเพิ่มอาจารย์คนแรกได้เลย" : "ติดต่อผู้ดูแลระบบหรือเจ้าหน้าที่เพื่อเพิ่มรายชื่อ"}</p></td></tr>}</tbody>
+            </table></div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs text-[var(--muted)] lg:px-6">
+              <p role="status">แสดง {total ? (currentPage - 1) * limit + 1 : 0}–{Math.min(currentPage * limit, total)} จาก {total.toLocaleString("th-TH")} รายการ</p>
+              <div className="flex items-center gap-2"><button type="button" aria-label="หน้าก่อนหน้า" disabled={currentPage <= 1} onClick={() => { setPage(currentPage - 1); setLoading(true); }} className={`${buttonClass} border border-[var(--line-strong)] px-3`}><CaretLeft size={16} /></button><span>{currentPage} / {pageCount}</span><button type="button" aria-label="หน้าถัดไป" disabled={currentPage >= pageCount} onClick={() => { setPage(currentPage + 1); setLoading(true); }} className={`${buttonClass} border border-[var(--line-strong)] px-3`}><CaretRight size={16} /></button></div>
+            </div>
+          </>}
+      </div>
+    </SettingsCard>
+  </SettingsFrame>;
+}
