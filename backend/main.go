@@ -93,8 +93,11 @@ type ExtractedField struct {
 	Verified        bool       `json:"verified"`
 	VerifiedBy      string     `json:"verifiedBy" gorm:"size:255"`
 	VerifiedAt      *time.Time `json:"verifiedAt"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	UpdatedAt       time.Time  `json:"updatedAt"`
+	// DateStatus บอกหน้าเว็บว่าข้อความวันที่ในช่องนี้อ่านได้หรือไม่ (คำนวณตอนอ่าน ไม่ได้เก็บ)
+	DateStatus string    `json:"dateStatus,omitempty" gorm:"-"`
+	ReadDate   string    `json:"readDate,omitempty" gorm:"-"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }
 
 type OCRPage struct {
@@ -450,6 +453,9 @@ func main() {
 	if err := migrateDatabase(db); err != nil {
 		panic(fmt.Errorf("migrate database: %w", err))
 	}
+	if err := tidyAppointmentNames(db); err != nil {
+		logger.Printf("tidy appointment names: %v", err)
+	}
 
 	ocrConfig := loadOCRAPIConfigFromEnv()
 	processor := NewDocumentProcessor(db, logger, ocrConfig)
@@ -584,6 +590,7 @@ func getDocument(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		attachAppointmentCandidates(db, &document)
+		annotateDateFields(document.Fields)
 		c.JSON(http.StatusOK, gin.H{"data": document})
 	}
 }
@@ -796,6 +803,15 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 		}
 		if document.Status != "REVIEW" && document.Status != "NEEDS_REVIEW" {
 			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารต้องผ่านขั้นตอนตรวจสอบก่อนยืนยัน", "status": document.Status})
+			return
+		}
+		var dateFields []ExtractedField
+		if err := db.Where("document_id = ? AND field_key IN ?", document.ID, []string{"issued_date", "effective_date", "expiry_date"}).Find(&dateFields).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบวันที่ก่อนยืนยันได้"})
+			return
+		}
+		if problems := unreadableDates(dateFields); len(problems) > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "อ่านวันที่ไม่ได้ กรุณาแก้ในแท็บข้อมูลคำสั่งก่อนยืนยัน: " + strings.Join(problems, ", "), "unreadableDates": problems})
 			return
 		}
 		var appointments []Appointment

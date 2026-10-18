@@ -6,12 +6,23 @@ import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info,
 import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 import { canRescan, processingNote, rescanNeedsConfirm } from "@/lib/processing-status";
 
 type PanelView = "original" | "roster" | "members" | "metadata" | "duties" | "history";
+
+// บอกว่าระบบอ่านวันที่ในช่องนี้ได้ว่าอะไร ถ้าอ่านไม่ออกต้องแก้ก่อนกดยืนยัน
+// ค่าที่แก้แล้วยังไม่บันทึกจะถูกตรวจตอนบันทึก เพราะตัวอ่านวันที่ไทยอยู่ที่ระบบหลังบ้าน
+function dateReading(field: ExtractedField, saved?: ExtractedField): { ok: boolean; text: string } | null {
+  if (!field.dateStatus) return null;
+  if (!saved || saved.value !== field.value) return { ok: true, text: "ระบบจะอ่านวันที่ให้ตอนกดบันทึก" };
+  if (field.dateStatus === "read" && field.readDate) return { ok: true, text: `อ่านได้ว่า ${formatThaiDate(field.readDate)}` };
+  if (field.dateStatus === "fromNow") return { ok: true, text: "มีผลตั้งแต่วันที่ออกคำสั่ง" };
+  if (field.dateStatus === "unreadable") return { ok: false, text: "อ่านวันที่ไม่ได้ · พิมพ์ใหม่ เช่น 11 ตุลาคม 2569 แล้วบันทึก" };
+  return null;
+}
 
 const metadataKeys = ["order_type", "order_no", "order_year_be", "committee_name", "issued_date", "effective_date", "expiry_date", "signer_name", "signer_position"];
 
@@ -461,7 +472,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
           })}{departmentGroups.length === 0 && <div className="p-10 text-center text-sm text-[var(--muted)]">ไม่พบรายการตามตัวกรอง</div>}</div>
         </div>}
 
-        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input disabled={!editable} value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span></label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
+        {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input disabled={!editable} value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span>{(() => { const reading = dateReading(field, document.fields?.find((item) => item.id === field.id)); return reading && <span className={`mt-0.5 block text-[11px] ${reading.ok ? "text-[var(--success)]" : "font-medium text-[var(--danger)]"}`}>{reading.text}</span>; })()}</label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
 
         {panel === "duties" && <div className="flex-1 space-y-5 p-5 lg:p-6"><label className="block"><span className="text-sm font-medium text-[var(--navy)]">หน้าที่รับผิดชอบของคณะกรรมการ</span><textarea readOnly={!editable} value={document.responsibilities} onChange={(event) => setDocument((current) => ({ ...current, responsibilities: event.target.value }))} rows={8} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /><span className="mt-1 block text-xs text-[var(--muted)]">แก้ไขข้อความจากเอกสารได้ แล้วกดบันทึกฉบับร่าง</span></label><label className="block"><span className="text-sm font-medium text-[var(--navy)]">การอ้างอิงประกาศเพิ่มเติม</span><textarea readOnly={!editable} value={document.additionalReferences} onChange={(event) => setDocument((current) => ({ ...current, additionalReferences: event.target.value }))} rows={4} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /></label></div>}
       </section>}

@@ -314,25 +314,8 @@ func normalizePersonName(value string) string {
 }
 
 func stripThaiNamePrefixes(value string) string {
-	value = strings.TrimSpace(value)
-	prefixes := []string{
-		"รองศาสตราจารย์ ดร.", "ผู้ช่วยศาสตราจารย์ ดร.", "ศาสตราจารย์ ดร.",
-		"รองศาสตราจารย์", "ผู้ช่วยศาสตราจารย์", "ศาสตราจารย์",
-		"รศ.ดร.", "ผศ.ดร.", "ศ.ดร.", "รศ. ดร.", "ผศ. ดร.", "ศ. ดร.",
-		"ดร.", "รศ.", "ผศ.", "ศ.", "อ.", "อาจารย์", "นาย", "นางสาว", "นาง",
-	}
-	for {
-		before := value
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(value, prefix) {
-				value = strings.TrimSpace(strings.TrimPrefix(value, prefix))
-				break
-			}
-		}
-		if value == before {
-			return value
-		}
-	}
+	_, name := splitThaiHonorific(value)
+	return strings.TrimSpace(strings.TrimPrefix(name, "ดร."))
 }
 
 func similarityScore(left, right string) float32 {

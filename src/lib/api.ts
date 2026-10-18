@@ -17,6 +17,9 @@ export type ExtractedField = {
   verified: boolean;
   verifiedBy?: string;
   verifiedAt?: string;
+  // ระบบหลังบ้านบอกว่าข้อความวันที่อ่านได้หรือไม่ ตามค่าที่บันทึกล่าสุด
+  dateStatus?: "read" | "none" | "fromNow" | "unreadable";
+  readDate?: string;
 };
 
 export type DirectoryCandidate = {

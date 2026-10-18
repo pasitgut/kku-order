@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -244,6 +245,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			if oldValue == newValue {
 				return
 			}
+			newValue = trimToColumn(databaseKey, newValue)
 			updates[databaseKey] = newValue
 			revisions = append(revisions, DocumentRevision{DocumentID: document.ID, FieldKey: key, OldValue: oldValue, NewValue: newValue, ChangedBy: changedBy, ChangedAt: time.Now()})
 		}
@@ -281,6 +283,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			if raw == nil {
 				continue
 			}
+			// ช่องวันที่ตรงๆ ใช้กับ API ที่ส่งวันที่มาเอง จึงยังตอบ 400 ถ้าอ่านไม่ออก
 			parsed, err := parseDateInput(*raw)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -294,36 +297,47 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 		if payload.Fields != nil || payload.Appointments != nil {
 			updates["status"] = "NEEDS_REVIEW"
 		}
+		fromNow := false
 		if payload.Fields != nil {
 			for _, input := range *payload.Fields {
 				switch input.FieldKey {
 				case "order_type":
-					updates["order_type"] = input.Value
+					updates["order_type"] = trimToColumn("order_type", input.Value)
 				case "order_no":
-					updates["order_no"] = input.Value
+					updates["order_no"] = trimToColumn("order_no", input.Value)
 				case "order_year_be":
-					if value, err := strconv.Atoi(strings.TrimSpace(input.Value)); err == nil {
+					if value := parseOrderYearBE(input.Value); value != 0 {
 						updates["order_year_be"] = value
 					}
 				case "committee_name":
-					updates["title"] = input.Value
-					updates["committee"] = input.Value
-				case "issued_date", "effective_date", "expiry_date":
-					parsed, err := parseDateInput(input.Value)
-					if err != nil {
-						c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-						return
+					updates["title"] = trimToColumn("title", input.Value)
+					updates["committee"] = trimToColumn("committee", input.Value)
+				case "issued_date", "expiry_date", "effective_date":
+					// ข้อความที่อ่านวันที่ไม่ออกยังเก็บไว้ในแถวฟิลด์ให้ผู้ตรวจแก้ ไม่ขวางการบันทึกทั้งหน้า
+					// คอลัมน์วันที่ถูกล้าง จะได้ไม่เหลือวันที่เก่าที่ไม่ตรงกับข้อความ ส่วนการยืนยันจะถามให้แก้ก่อน
+					if input.FieldKey == "effective_date" && isFromNow(input.Value) {
+						fromNow = true
+						continue
 					}
+					parsed, _ := parseDateForField(input.FieldKey, input.Value)
 					updates[input.FieldKey] = parsed
 				case "signer_name":
-					updates["signer_name"] = input.Value
+					updates["signer_name"] = trimToColumn("signer_name", input.Value)
 				case "signer_position":
-					updates["signer_position"] = input.Value
+					updates["signer_position"] = trimToColumn("signer_position", input.Value)
 				case "responsibilities":
 					updates["responsibilities"] = input.Value
 				case "additional_references":
 					updates["additional_refs"] = input.Value
 				}
+			}
+		}
+		// "ตั้งแต่บัดนี้เป็นต้นไป" มีผลตั้งแต่วันที่ออกคำสั่ง
+		if fromNow {
+			if issued, inThisSave := updates["issued_date"]; inThisSave {
+				updates["effective_date"] = issued
+			} else {
+				updates["effective_date"] = document.IssuedDate
 			}
 		}
 		if len(updates) == 0 {
@@ -372,7 +386,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					return err
 				}
 				for _, input := range *payload.Appointments {
-					appointment := Appointment{DocumentID: document.ID, FullName: input.FullName, Position: input.Position, Department: input.Department, CommitteeRole: input.CommitteeRole, Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
+					appointment := Appointment{DocumentID: document.ID, FullName: truncateRunes(input.FullName, colLimitAppointmentFullName), Position: truncateRunes(input.Position, colLimitAppointmentPosition), Department: truncateRunes(input.Department, colLimitAppointmentDept), CommitteeRole: truncateRunes(input.CommitteeRole, colLimitAppointmentRole), Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
 					match := resolveAppointmentMatch(input, previous[input.ID].NameMatchMethod, directoryUsers, aliases)
 					applyMatchToAppointment(&appointment, match)
 					if err := tx.Create(&appointment).Error; err != nil {
@@ -533,16 +547,45 @@ func parseOffset(c *gin.Context) int {
 	return (parsePage(c) - 1) * parseLimit(c)
 }
 
+var documentColumnLimits = map[string]int{
+	"order_type":      colLimitDocumentOrderType,
+	"order_no":        colLimitDocumentOrderNo,
+	"title":           colLimitDocumentTitle,
+	"committee":       colLimitDocumentCommittee,
+	"signer_name":     colLimitDocumentSignerName,
+	"signer_position": colLimitDocumentSignerPosition,
+}
+
+// trimToColumn ตัดข้อความให้พอดีคอลัมน์ ข้อความยาวเกินจึงไม่ทำให้บันทึกทั้งหน้าล้ม
+func trimToColumn(column, value string) string {
+	if limit, ok := documentColumnLimits[column]; ok {
+		return truncateRunes(value, limit)
+	}
+	return value
+}
+
+// parseOrderYearBE รับ "2569", "๒๕๖๙", "พ.ศ. 2569" หรือปี ค.ศ. แล้วคืนปี พ.ศ.
+var fourDigitPattern = regexp.MustCompile(`\d{4}`)
+
+func parseOrderYearBE(value string) int {
+	digits := fourDigitPattern.FindString(replaceThaiDigits(value))
+	year, _ := strconv.Atoi(digits)
+	if year > 0 && year < 2400 {
+		year += 543
+	}
+	return year
+}
+
 func parseDateInput(value string) (*time.Time, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil, nil
 	}
-	parsed, err := time.Parse("2006-01-02", value)
-	if err != nil {
-		return nil, errors.New("วันที่ต้องอยู่ในรูปแบบ YYYY-MM-DD")
+	parsed, ok := normalizeThaiDate(value)
+	if !ok {
+		return nil, errors.New("อ่านวันที่ไม่ได้: " + value)
 	}
-	return &parsed, nil
+	return parsed, nil
 }
 
 type createDirectoryUserRequest struct {

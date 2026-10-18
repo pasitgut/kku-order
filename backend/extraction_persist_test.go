@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -317,5 +318,38 @@ func TestBuildExtractionRecordsDerivedFieldsEmptyWithoutSource(t *testing.T) {
 	}
 	if got := fieldByKey(t, rec, "order_year_be").Value; got != "" {
 		t.Fatalf("order_year_be = %q, want empty without order number", got)
+	}
+}
+
+func fieldValue(rec extractionRecords, key string) (string, string) {
+	for _, f := range rec.Fields {
+		if f.FieldKey == key {
+			return f.Value, f.SourceText
+		}
+	}
+	return "", ""
+}
+
+func TestBuildExtractionRecordsStoresReadableDatesAsISOAndKeepsTheOCRText(t *testing.T) {
+	r := sampleResult()
+	r.Header.Date = ExtractedValue{Text: "8 กันยายน 2566"}
+	rec := buildExtractionRecords(r, 0.8)
+	value, source := fieldValue(rec, "issued_date")
+	if value != "2023-09-08" || source != "8 กันยายน 2566" {
+		t.Fatalf("issued_date field = %q (source %q)", value, source)
+	}
+}
+
+func TestBuildExtractionRecordsFromNowTakesEffectOnTheIssueDate(t *testing.T) {
+	r := sampleResult()
+	r.Header.Date = ExtractedValue{Text: "8 กันยายน 2566"}
+	r.Header.EffectiveDate = ExtractedValue{Text: "ตั้งแต่บัดนี้เป็นต้นไป"}
+	rec := buildExtractionRecords(r, 0.8)
+	effective, ok := rec.Updates["effective_date"].(time.Time)
+	if !ok || effective.Format("2006-01-02") != "2023-09-08" {
+		t.Fatalf("effective_date = %v", rec.Updates["effective_date"])
+	}
+	if value, _ := fieldValue(rec, "effective_date"); value != "ตั้งแต่บัดนี้เป็นต้นไป" {
+		t.Fatalf("the 'from now' wording should stay for the report, got %q", value)
 	}
 }

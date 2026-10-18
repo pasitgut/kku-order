@@ -9,14 +9,16 @@ import (
 
 // ขนาดคอลัมน์ตาม struct ใน main.go (Document, Appointment)
 const (
-	colLimitAppointmentFullName = 500
-	colLimitAppointmentPosition = 255
-	colLimitAppointmentRole     = 255
-	colLimitAppointmentDept     = 500
-	colLimitDocumentOrderNo     = 100
-	colLimitDocumentTitle       = 500
-	colLimitDocumentCommittee   = 500
-	colLimitDocumentSignerName  = 500
+	colLimitAppointmentFullName    = 500
+	colLimitAppointmentPosition    = 255
+	colLimitAppointmentRole        = 255
+	colLimitAppointmentDept        = 500
+	colLimitDocumentOrderNo        = 100
+	colLimitDocumentTitle          = 500
+	colLimitDocumentCommittee      = 500
+	colLimitDocumentSignerName     = 500
+	colLimitDocumentSignerPosition = 255
+	colLimitDocumentOrderType      = 50
 )
 
 // extractionRecords คือแถวที่จะเขียนลงฐานข้อมูลจาก ExtractionResult หนึ่งชุด
@@ -151,7 +153,7 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 		{"signer_position", "ตำแหน่งผู้ลงนาม", ExtractedValue{}},
 	} {
 		track(item.v)
-		rec.Fields = append(rec.Fields, fieldRow(item.key, item.label, item.v.Text, item.v, sizes))
+		rec.Fields = append(rec.Fields, fieldRow(item.key, item.label, headerFieldValue(item.key, item.v.Text), item.v, sizes))
 	}
 	// อ้างอิงแต่ละรายการถูกนับความมั่นใจไปแล้วด้านบน แถวรวมนี้จึงไม่นับซ้ำ
 	rec.Fields = append(rec.Fields, fieldRow("additional_references", "เอกสารอ้างอิง", strings.Join(refTexts, "\n"), ExtractedValue{Text: strings.Join(refTexts, "\n")}, sizes))
@@ -179,7 +181,15 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 	rec.Updates["order_year_be"] = findOrderYear(h.OrderNo.Text)
 	rec.Updates["issued_date"] = parseThaiDateOrNil(h.Date.Text)
 	rec.Updates["effective_date"] = parseThaiDateOrNil(h.EffectiveDate.Text)
-	rec.Updates["expiry_date"] = parseThaiDateOrNil(h.ExpiryDate.Text)
+	// "ตั้งแต่บัดนี้เป็นต้นไป" มีผลตั้งแต่วันที่ออกคำสั่ง
+	if isFromNow(h.EffectiveDate.Text) {
+		rec.Updates["effective_date"] = rec.Updates["issued_date"]
+	}
+	if expiry, _ := parseDateForField("expiry_date", h.ExpiryDate.Text); expiry != nil {
+		rec.Updates["expiry_date"] = *expiry
+	} else {
+		rec.Updates["expiry_date"] = nil
+	}
 
 	for _, g := range result.Groups {
 		dept := truncateRunes(g.Department.Text, colLimitAppointmentDept)
@@ -193,9 +203,11 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 			if len(box.Boxes) == 0 {
 				box = m.Position
 			}
+			// ตำแหน่งวิชาการที่ติดมากับชื่อย้ายไปช่องตำแหน่ง ทุกแถวจึงหน้าตาเหมือนกัน
+			fullName, position := nameAndPosition(m.Prefix.Text+" "+m.Name.Text, m.Position.Text)
 			rec.Appointments = append(rec.Appointments, Appointment{
-				FullName:         truncateRunes(m.Prefix.Text+m.Name.Text, colLimitAppointmentFullName),
-				Position:         truncateRunes(m.Position.Text, colLimitAppointmentPosition),
+				FullName:         truncateRunes(fullName, colLimitAppointmentFullName),
+				Position:         truncateRunes(position, colLimitAppointmentPosition),
 				CommitteeRole:    truncateRunes(m.Role.Text, colLimitAppointmentRole),
 				Department:       dept,
 				Responsibilities: g.Duty.Text,
@@ -298,6 +310,18 @@ func matchMethodFor(exOfficio bool) string {
 		return matchMethodExOfficio
 	}
 	return ""
+}
+
+// headerFieldValue เก็บวันที่ที่อ่านออกเป็น YYYY-MM-DD ส่วนข้อความต้นฉบับอยู่ใน SourceText
+// วันที่ที่อ่านไม่ออก และคำว่า "บัดนี้" เก็บตามข้อความเดิมไว้ให้ผู้ตรวจและรายงาน
+func headerFieldValue(key, text string) string {
+	if _, isDate := dateFieldLabels[key]; !isDate || isFromNow(text) {
+		return text
+	}
+	if parsed, ok := parseDateForField(key, text); ok && parsed != nil {
+		return parsed.Format("2006-01-02")
+	}
+	return text
 }
 
 func parseThaiDateOrNil(text string) any {

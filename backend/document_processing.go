@@ -584,22 +584,8 @@ func findDateAfterLabels(text string, labels ...string) *time.Time {
 }
 
 func parseThaiDate(text string) *time.Time {
-	text = replaceThaiDigits(text)
-	months := map[string]time.Month{"มกราคม": 1, "กุมภาพันธ์": 2, "มีนาคม": 3, "เมษายน": 4, "พฤษภาคม": 5, "มิถุนายน": 6, "กรกฎาคม": 7, "สิงหาคม": 8, "กันยายน": 9, "ตุลาคม": 10, "พฤศจิกายน": 11, "ธันวาคม": 12, "ม.ค.": 1, "ก.พ.": 2, "มี.ค.": 3, "เม.ย.": 4, "พ.ค.": 5, "มิ.ย.": 6, "ก.ค.": 7, "ส.ค.": 8, "ก.ย.": 9, "ต.ค.": 10, "พ.ย.": 11, "ธ.ค.": 12}
-	for name, month := range months {
-		re := regexp.MustCompile(`(\d{1,2})\s*` + regexp.QuoteMeta(name) + `\s*(\d{4})`)
-		match := re.FindStringSubmatch(text)
-		if len(match) == 3 {
-			day, _ := strconv.Atoi(match[1])
-			year, _ := strconv.Atoi(match[2])
-			if year > 2400 {
-				year -= 543
-			}
-			parsed := time.Date(year, month, day, 0, 0, 0, 0, time.Local)
-			return &parsed
-		}
-	}
-	return nil
+	parsed, _ := normalizeThaiDate(text)
+	return parsed
 }
 
 func replaceThaiDigits(text string) string {
