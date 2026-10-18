@@ -6,7 +6,7 @@ import { ArrowRight, Eye, EyeSlash, FolderSimple, Info } from "@phosphor-icons/r
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { useToast } from "@/components/toast";
-import { OCRAPIKeyState, OCRConnectionResult, OCRSettings, deleteOCRAPIKey, getOCRSettings, getSystemSettings, saveOCRAPIKey, testOCRConnection, updateOCRSettings } from "@/lib/api";
+import { OCRAPIKeyState, OCRConnectionResult, OCRSettings, deleteOCRAPIKey, getAutoConfirm, getOCRSettings, getSystemSettings, saveOCRAPIKey, testOCRConnection, updateAutoConfirm, updateOCRSettings } from "@/lib/api";
 import { ocrAPIKeyPlaceholder } from "@/lib/ocr-api-key";
 import { can } from "@/lib/permissions";
 import { isInsecureURL } from "@/lib/processing-status";
@@ -136,6 +136,8 @@ export default function OCRSettingsPage() {
   return <SettingsFrame note="เปลี่ยนค่าในหน้านี้ได้โดยไม่ต้องแก้ .env ค่าที่บันทึกจะใช้กับเอกสารที่นำเข้าหลังจากนี้">
     {!editable && <div className="flex items-center gap-3 rounded-lg border border-[var(--line)] bg-white px-4 py-3 text-[13px] text-[var(--muted)]"><Info size={18} className="shrink-0 text-[var(--accent)]" />ดูค่าได้อย่างเดียว เฉพาะผู้ดูแลระบบ (ADMIN) ที่แก้ไขและทดสอบได้</div>}
 
+    <AutoConfirmCard editable={editable} />
+
     <SettingsCard title="เครื่องมือ OCR" description="ตัวอ่านข้อความจากภาพเอกสาร">
       <div role="radiogroup" aria-label="เครื่องมือ OCR" className="grid gap-3.5 p-5 md:grid-cols-3 lg:px-6">
         {engines.map((engine) => {
@@ -200,4 +202,42 @@ export default function OCRSettingsPage() {
       <div className="flex gap-2"><button type="button" disabled={!dirty || saving} onClick={() => setForm(saved)} className="focus-ring h-11 rounded-md border border-[var(--line-strong)] bg-white px-4 text-sm hover:bg-[var(--line-soft)] disabled:opacity-50">ยกเลิกการแก้ไข</button><button type="button" disabled={!dirty || saving} onClick={save} className="focus-ring h-11 rounded-md bg-[var(--accent)] px-5 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกการตั้งค่า"}</button></div>
     </div>}
   </SettingsFrame>;
+}
+
+// สวิตช์ยืนยันอัตโนมัติ: เอกสารที่ผูกชื่อครบและอ่านข้อมูลคำสั่งได้มั่นใจจะถูกยืนยันโดย "ระบบ (อัตโนมัติ)"
+function AutoConfirmCard({ editable }: { editable: boolean }) {
+  const toast = useToast();
+  const [state, setState] = useState<{ enabled: boolean; readyNow: number } | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getAutoConfirm().then((response) => setState(response.data)).catch(() => setState(null));
+  }, []);
+
+  const save = async (enabled: boolean) => {
+    setSaving(true);
+    try {
+      const response = await updateAutoConfirm(enabled);
+      setState((current) => ({ enabled: response.data.enabled, readyNow: enabled ? 0 : current?.readyNow ?? 0 }));
+      setAsking(false);
+      toast(enabled ? `เปิดยืนยันอัตโนมัติแล้ว · ยืนยันเอกสารที่ค้าง ${response.data.confirmed} ฉบับ` : "ปิดยืนยันอัตโนมัติแล้ว");
+    } catch (reason) {
+      toast(reason instanceof Error ? reason.message : "บันทึกไม่สำเร็จ", { kind: "error" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const enabled = state?.enabled ?? false;
+  return <SettingsCard title="การยืนยันเอกสาร" description="เปลี่ยนได้เฉพาะผู้ดูแลระบบ">
+    <div className="flex items-start gap-5 px-5 py-5 lg:px-6">
+      <div className="min-w-0 flex-1">
+        <p className="text-[15px] font-medium">ยืนยันเอกสารอัตโนมัติ</p>
+        <p className="mt-1.5 text-[13px] leading-6 text-[var(--muted)]">เมื่อ OCR อ่านเสร็จ ถ้าผูกรายชื่อครบทุกคน และอ่านเลขที่คำสั่ง วันที่ออกคำสั่ง วันที่มีผล ได้มั่นใจ ระบบจะยืนยันให้เองโดยบันทึกผู้ยืนยันเป็น “ระบบ (อัตโนมัติ)” เอกสารที่ไม่ผ่านจะรอให้คนเปิดตรวจใน “รอยืนยัน”</p>
+        {asking && <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-[var(--accent-soft)] px-3 py-2.5 text-[13px]"><span className="flex-1">เปิดแล้วจะยืนยันเอกสารที่ค้างและผ่านเกณฑ์ทันที {state?.readyNow ?? 0} ฉบับ</span><button type="button" onClick={() => setAsking(false)} className="focus-ring h-9 rounded-md border border-[var(--line-strong)] bg-white px-3 text-xs">ยกเลิก</button><button type="button" disabled={saving} onClick={() => save(true)} className="focus-ring h-9 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white disabled:opacity-50">{saving ? "กำลังบันทึก..." : "เปิดและยืนยันเลย"}</button></div>}
+      </div>
+      <button type="button" role="switch" aria-checked={enabled} aria-label="ยืนยันเอกสารอัตโนมัติ" disabled={!editable || !state || saving} onClick={() => enabled ? save(false) : setAsking(true)} className={`focus-ring relative h-8 w-14 shrink-0 rounded-full transition disabled:opacity-50 ${enabled ? "bg-[var(--accent)]" : "bg-[#c2ccd6]"}`}><span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-all ${enabled ? "left-7" : "left-1"}`} /></button>
+    </div>
+  </SettingsCard>;
 }

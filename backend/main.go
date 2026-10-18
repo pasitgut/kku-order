@@ -361,11 +361,14 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.DELETE("/api/v1/documents/:id", requireRole("ADMIN", "DEVELOPER"), deleteDocument(db))
 	router.POST("/api/v1/documents/:id/cancel", requireRole("ADMIN", "STAFF"), cancelDocument(db))
 	router.POST("/api/v1/documents/:id/confirm", requireRole("ADMIN", "STAFF"), confirmDocument(db))
+	router.POST("/api/v1/documents/:id/return", requireRole("ADMIN", "STAFF"), returnDocument(db))
 	router.POST("/api/v1/sync/users", requireRole("ADMIN", "STAFF"), userSyncHandler(userSync))
 	router.GET("/api/v1/sync/runs", listSyncRuns(db))
 	settingsStore := NewSettingsStore(db)
 	router.GET("/api/v1/settings/ocr", getOCRSettingsHandler(settingsStore, ocrConfig))
 	router.PUT("/api/v1/settings/ocr", requireRole("ADMIN"), updateOCRSettingsHandler(settingsStore))
+	router.GET("/api/v1/settings/auto-confirm", getAutoConfirmHandler(db, settingsStore))
+	router.PUT("/api/v1/settings/auto-confirm", requireRole("ADMIN"), updateAutoConfirmHandler(db, settingsStore))
 	router.PUT("/api/v1/settings/ocr/api-key", requireRole("ADMIN"), saveOCRAPIKeyHandler(settingsStore))
 	router.DELETE("/api/v1/settings/ocr/api-key", requireRole("ADMIN"), deleteOCRAPIKeyHandler(settingsStore))
 	router.POST("/api/v1/settings/ocr/test", requireRole("ADMIN"), testOCRConnectionHandler(settingsStore, ocrConfig))
@@ -804,7 +807,7 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"message": "เอกสารนี้ยืนยันแล้ว", "data": document})
 			return
 		}
-		if document.Status != "REVIEW" && document.Status != "NEEDS_REVIEW" {
+		if document.Status != "REVIEW" && document.Status != "NEEDS_REVIEW" && document.Status != documentReturned {
 			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารต้องผ่านขั้นตอนตรวจสอบก่อนยืนยัน", "status": document.Status})
 			return
 		}
@@ -817,33 +820,15 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusConflict, gin.H{"error": "อ่านวันที่ไม่ได้ กรุณาแก้ในแท็บข้อมูลคำสั่งก่อนยืนยัน: " + strings.Join(problems, ", "), "unreadableDates": problems})
 			return
 		}
-		now := time.Now()
-		confirmedBy := currentUserID(c)
-		if err := db.Transaction(func(tx *gorm.DB) error {
-			if err := lockEditableDocument(tx, document.ID); err != nil {
-				return err
-			}
-			if err := tx.Model(&document).Updates(map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}).Error; err != nil {
-				return err
-			}
-			// กดยืนยันครั้งเดียว ทุกรายชื่อในคำสั่งถือว่าตรวจแล้ว ชื่อที่ยังไม่ผูกเก็บตามเอกสารไว้ ผูกทีหลังได้
-			if err := tx.Model(&Appointment{}).Where("document_id = ?", document.ID).Updates(map[string]any{"verified": true, "verified_by": confirmedBy, "verified_at": now}).Error; err != nil {
-				return err
-			}
-			document.Status = "CONFIRMED"
-			document.ConfirmedBy = confirmedBy
-			document.ConfirmedAt = &now
-			if err := syncCoreConfirmation(tx, &document); err != nil {
-				return err
-			}
-			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: confirmedBy, Action: "DOCUMENT_CONFIRMED", Details: "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล"}).Error
-		}); err != nil {
+		confirmed, err := confirmNow(db, document, currentUserID(c), "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล")
+		if err != nil {
 			if writeCancelledConflict(c, err) {
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถยืนยันเอกสารได้"})
 			return
 		}
+		document = confirmed
 		c.JSON(http.StatusOK, gin.H{"message": "ยืนยันข้อมูลเรียบร้อยแล้ว", "data": document})
 	}
 }

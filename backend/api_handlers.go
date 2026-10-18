@@ -58,7 +58,7 @@ type appointmentRequest struct {
 
 func dashboardHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		var total, processing, review, confirmed, needsReview, expiring int64
+		var total, processing, review, confirmed, needsReview, returned, failed, expiring int64
 		if err := db.Model(&Document{}).Count(&total).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดภาพรวมระบบได้"})
 			return
@@ -69,11 +69,13 @@ func dashboardHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 		_ = db.Model(&Document{}).Where("status = ?", "REVIEW").Count(&review).Error
 		_ = db.Model(&Document{}).Where("status = ?", "CONFIRMED").Count(&confirmed).Error
-		_ = db.Model(&Document{}).Where("status IN ?", []string{"NEEDS_REVIEW", "FAILED"}).Count(&needsReview).Error
-		_ = db.Model(&Document{}).Where("status <> ?", documentCancelled).Where("expiry_date IS NOT NULL AND expiry_date BETWEEN CURRENT_TIMESTAMP AND DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)").Count(&expiring).Error
+		_ = db.Model(&Document{}).Where("status = ?", "NEEDS_REVIEW").Count(&needsReview).Error
+		_ = db.Model(&Document{}).Where("status = ?", documentReturned).Count(&returned).Error
+		_ = db.Model(&Document{}).Where("status = ?", "FAILED").Count(&failed).Error
+		_ = db.Model(&Document{}).Where("status NOT IN ?", []string{documentCancelled, documentReturned}).Where("expiry_date IS NOT NULL AND expiry_date BETWEEN CURRENT_TIMESTAMP AND DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)").Count(&expiring).Error
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"total": total, "processing": processing, "review": review, "confirmed": confirmed,
-			"needsReview": needsReview, "expiring": expiring,
+			"needsReview": needsReview, "returned": returned, "failed": failed, "expiring": expiring,
 		}})
 	}
 }
@@ -294,7 +296,8 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				revisions = append(revisions, DocumentRevision{DocumentID: document.ID, FieldKey: key, OldValue: formatDate(dateOld[key]), NewValue: formatDate(parsed), ChangedBy: changedBy, ChangedAt: time.Now()})
 			}
 		}
-		if payload.Fields != nil || payload.Appointments != nil {
+		// เอกสารที่ถูกส่งกลับไปตรวจสอบคงสถานะ "รอตรวจสอบ" ไว้จนกว่าจะกดยืนยันใหม่
+		if (payload.Fields != nil || payload.Appointments != nil) && document.Status != documentReturned {
 			updates["status"] = "NEEDS_REVIEW"
 		}
 		fromNow := false
@@ -497,7 +500,8 @@ func documentQuery(db *gorm.DB, rawQuery, rawStatus string) *gorm.DB {
 		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR ocr_text LIKE ? OR id IN (?)", like, like, like, like, like, like, like, like, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ?", like, like, like, like))
 	}
 	if status := strings.TrimSpace(rawStatus); status != "" && status != "ALL" {
-		query = query.Where("status = ?", status)
+		// รับได้หลายสถานะคั่นด้วยจุลภาค เช่น "REVIEW,NEEDS_REVIEW" คือกลุ่ม "รอยืนยัน"
+		query = query.Where("status IN ?", strings.Split(status, ","))
 	}
 	return query
 }

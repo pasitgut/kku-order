@@ -7,7 +7,7 @@ import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info,
 import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, returnDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { MatchState, departmentOf, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 import { canRescan, processingNote, rescanNeedsConfirm } from "@/lib/processing-status";
@@ -182,6 +182,21 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       return next;
     });
     setOpenRows((rows) => ({ ...rows, [id]: true }));
+  };
+
+  const [sendingBack, setSendingBack] = useState(false);
+  // ส่งเอกสารที่ยืนยันแล้วกลับไป "รอตรวจสอบ" เพื่อแก้ไข แล้วยืนยันใหม่อีกครั้ง
+  const sendBack = async () => {
+    setSendingBack(true);
+    try {
+      const response = await returnDocument(document.id);
+      setDocument(response.data);
+      toast("ส่งกลับไปตรวจสอบแล้ว · แก้ไขเสร็จกดยืนยันอีกครั้ง");
+    } catch (reason) {
+      showError(reason, "ส่งกลับไปตรวจสอบไม่สำเร็จ");
+    } finally {
+      setSendingBack(false);
+    }
   };
 
   const rejectGuess = (id: number) => setRejectedGuesses((current) => new Set(current).add(id));
@@ -377,6 +392,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 
   const bandMeta = <>
     <StatusBadge status={statusLabel(document.status)} />
+    {document.status === "CONFIRMED" && can(me?.role ?? "", "cancel") && <button type="button" disabled={sendingBack} onClick={sendBack} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-white/45 px-3.5 text-[13px] font-medium text-white hover:bg-white/10 disabled:opacity-50"><ArrowCounterClockwise size={15} />{sendingBack ? "กำลังส่งกลับ..." : "ส่งกลับไปตรวจสอบ"}</button>}
     {!cancelled && can(me?.role ?? "", "cancel") && <button type="button" disabled={saving || replacing || rescanning || cancelling} onClick={() => { setCancelOpen(true); setCancelError(""); }} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-md border border-white/45 px-3.5 text-[13px] font-medium text-white hover:bg-white/10 disabled:opacity-50"><WarningCircle size={15} />ยกเลิกเอกสาร</button>}
     {!cancelled && can(me?.role ?? "", "import") && canRescan(document) && <button type="button" disabled={saving || replacing || rescanning || cancelling} onClick={onRescan} className={`focus-ring inline-flex h-10 items-center gap-1.5 rounded-md px-3.5 text-[13px] font-medium transition disabled:opacity-50 ${rescanArmed ? "bg-[var(--danger)] text-white" : "border border-white/45 text-white hover:bg-white/10"}`}><ArrowCounterClockwise size={15} className={rescanning ? "animate-spin" : ""} />{rescanning ? "กำลังส่งเข้าคิว..." : rescanArmed ? "ยืนยันการสแกนใหม่" : rescanNeedsConfirm(document) ? "สแกนไฟล์เดิมใหม่" : "ประมวลผลใหม่"}</button>}
     {rescanArmed && !rescanning && <button type="button" onClick={() => setRescanArmed(false)} className="focus-ring h-10 rounded-md px-2 text-[13px] text-[var(--band-text)] hover:text-white">ยกเลิก</button>}

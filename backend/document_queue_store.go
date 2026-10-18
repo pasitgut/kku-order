@@ -88,7 +88,7 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 	status, stage := extractionStatus(rec, threshold)
 	docID := doc.ID
 
-	return g.db.Transaction(func(tx *gorm.DB) error {
+	err := g.db.Transaction(func(tx *gorm.DB) error {
 		if err := lockEditableDocument(tx, docID); err != nil {
 			if errors.Is(err, errDocumentCancelled) {
 				return nil
@@ -163,6 +163,10 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 		}
 		return tx.Create(&AuditLog{DocumentID: &docID, UserID: auditSystemUser("document-queue"), Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("engine=%s pages=%d fields=%d appointments=%d", result.Engine, len(rec.OCRPages), len(rec.Fields), len(rec.Appointments))}).Error
 	})
+	if err == nil {
+		autoConfirmAfterExtraction(g.db, docID, threshold)
+	}
+	return err
 }
 
 // SaveStructured บันทึกผล DOCX/XLSX/CSV ทางเดียวกับ PDF (engine = structured-import)

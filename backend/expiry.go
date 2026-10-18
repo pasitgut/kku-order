@@ -15,7 +15,7 @@ import (
 
 func refreshExpiryNotifications(db *gorm.DB, logger *log.Logger) {
 	var documents []Document
-	if err := db.Where("status <> ?", documentCancelled).Where("expiry_date IS NOT NULL AND expiry_date >= CURRENT_TIMESTAMP").Find(&documents).Error; err != nil {
+	if err := db.Where("status NOT IN ?", []string{documentCancelled, documentReturned}).Where("expiry_date IS NOT NULL AND expiry_date >= CURRENT_TIMESTAMP").Find(&documents).Error; err != nil {
 		logger.Printf("load expiry dates failed: %v", err)
 		return
 	}
@@ -97,7 +97,7 @@ func sendPendingExpiryEmails(db *gorm.DB, logger *log.Logger) {
 	}
 
 	var pending []ExpiryNotification
-	if err := db.Where("document_id IN (?)", db.Model(&Document{}).Select("id").Where("status <> ?", documentCancelled)).Where("status = ? AND due_at <= CURRENT_TIMESTAMP", "PENDING").Order("due_at ASC").Limit(100).Find(&pending).Error; err != nil {
+	if err := db.Where("document_id IN (?)", db.Model(&Document{}).Select("id").Where("status NOT IN ?", []string{documentCancelled, documentReturned})).Where("status = ? AND due_at <= CURRENT_TIMESTAMP", "PENDING").Order("due_at ASC").Limit(100).Find(&pending).Error; err != nil {
 		logger.Printf("load pending expiry emails failed: %v", err)
 		return
 	}
@@ -174,7 +174,7 @@ func expiryEmailContent(db *gorm.DB, notification ExpiryNotification) (string, s
 func listExpiryNotifications(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var notifications []ExpiryNotification
-		if err := db.Where("document_id IN (?)", db.Model(&Document{}).Select("id").Where("status <> ?", documentCancelled)).Where("status = ?", "PENDING").Order("due_at ASC").Limit(100).Find(&notifications).Error; err != nil {
+		if err := db.Where("document_id IN (?)", db.Model(&Document{}).Select("id").Where("status NOT IN ?", []string{documentCancelled, documentReturned})).Where("status = ?", "PENDING").Order("due_at ASC").Limit(100).Find(&notifications).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดการแจ้งเตือนวาระได้"})
 			return
 		}

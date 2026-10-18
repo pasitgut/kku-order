@@ -198,11 +198,11 @@ function NotificationBell() {
 
 export function StatusBadge({ status }: { status: string }) {
   const styles: Record<string, string> = {
-    "รอตรวจสอบ": "bg-[var(--warning-soft)] text-[var(--warning)]",
-    "กำลังประมวลผล": "bg-[var(--accent-soft)] text-[#155e97]",
+    "รอยืนยัน": "bg-[var(--accent-soft)] text-[#155e97]",
+    "รอตรวจสอบ": "bg-[#ffead6] text-[#9a4a0c]",
+    "กำลังประมวลผล": "bg-[var(--line-soft)] text-[var(--muted)]",
     "ยืนยันแล้ว": "bg-[var(--success-soft)] text-[var(--success)]",
     "ยกเลิกแล้ว": "bg-[var(--danger-soft)] text-[var(--danger)]",
-    "ต้องตรวจสอบ": "bg-[var(--danger-soft)] text-[var(--danger)]",
     "ต้องแก้ไข": "bg-[var(--danger-soft)] text-[var(--danger)]",
     "ประมวลผลไม่สำเร็จ": "bg-[var(--danger-soft)] text-[var(--danger)]",
   };

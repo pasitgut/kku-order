@@ -134,6 +134,8 @@ export type Dashboard = {
   review: number;
   confirmed: number;
   needsReview: number;
+  returned: number;
+  failed: number;
   expiring: number;
 };
 
@@ -353,6 +355,27 @@ export async function cancelDocument(id: number, reason: string) {
   });
 }
 
+// ส่งเอกสารกลับไป "รอตรวจสอบ" เพื่อแก้ไข เอกสารที่ยืนยันแล้วจะออกจากรายงานจนกว่าจะยืนยันใหม่
+export async function returnDocument(id: number, note = "") {
+  return apiFetch<{ data: ApiDocument }>(`/api/v1/documents/${id}/return`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
+}
+
+export async function getAutoConfirm() {
+  return apiFetch<{ data: { enabled: boolean; readyNow: number } }>("/api/v1/settings/auto-confirm");
+}
+
+export async function updateAutoConfirm(enabled: boolean) {
+  return apiFetch<{ data: { enabled: boolean; confirmed: number } }>("/api/v1/settings/auto-confirm", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export async function confirmDocument(id: number) {
   return apiFetch<{ data: ApiDocument; message: string }>(`/api/v1/documents/${id}/confirm`, {
     method: "POST",
@@ -381,8 +404,9 @@ export function formatFileSize(bytes: number) {
 export function statusLabel(status: string) {
   const labels: Record<string, string> = {
     PROCESSING: "กำลังประมวลผล",
-    REVIEW: "รอตรวจสอบ",
-    NEEDS_REVIEW: "ต้องตรวจสอบ",
+    REVIEW: "รอยืนยัน",
+    NEEDS_REVIEW: "รอยืนยัน",
+    RETURNED: "รอตรวจสอบ",
     CONFIRMED: "ยืนยันแล้ว",
     CANCELLED: "ยกเลิกแล้ว",
     FAILED: "ประมวลผลไม่สำเร็จ",

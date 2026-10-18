@@ -15,6 +15,8 @@ var auditedRoutes = map[string][]string{
 	"DELETE /api/v1/documents/:id":         {"DOCUMENT_DELETED"},
 	"POST /api/v1/documents/:id/cancel":    {"DOCUMENT_CANCELLED"},
 	"POST /api/v1/documents/:id/confirm":   {"DOCUMENT_CONFIRMED"},
+	"POST /api/v1/documents/:id/return":    {"DOCUMENT_RETURNED"},
+	"PUT /api/v1/settings/auto-confirm":    {"AUTO_CONFIRM_CHANGED", "DOCUMENT_CONFIRMED"},
 	"POST /api/v1/sync/users":              {"DIRECTORY_SYNCED"},
 	"PUT /api/v1/settings/ocr":             {"SETTINGS_OCR_UPDATED"},
 	"PUT /api/v1/settings/ocr/api-key":     {"OCR_API_KEY_UPDATED"},
