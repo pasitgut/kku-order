@@ -1,5 +1,8 @@
 export type Period = "all" | "this" | "last" | "custom";
-export type RecentSearch = { kind: "person" | "order"; id: number; label: string };
+// name = ชื่อในคำสั่งที่ยังไม่ผูกกับบุคคลในระบบ ไม่มี id จึงแยกกันด้วยตัวชื่อ
+export type RecentSearch = { kind: "person" | "order" | "name"; id: number; label: string };
+
+const recentKeyOf = (entry: RecentSearch) => `${entry.kind}:${entry.kind === "name" ? entry.label : entry.id}`;
 export type AppointmentState = "ACTIVE" | "EXPIRING" | "EXPIRED" | "CANCELLED";
 
 const recentLimit = 6;
@@ -24,7 +27,7 @@ export function periodRange(period: Period, today: Date, custom: { from: string;
 
 // rememberSearch ใส่รายการล่าสุดไว้หน้าสุด ไม่ซ้ำ และเก็บไม่เกิน 6 รายการ
 export function rememberSearch(list: RecentSearch[], entry: RecentSearch) {
-  return [entry, ...list.filter((item) => item.kind !== entry.kind || item.id !== entry.id)].slice(0, recentLimit);
+  return [entry, ...list.filter((item) => recentKeyOf(item) !== recentKeyOf(entry))].slice(0, recentLimit);
 }
 
 // moveSelection เลื่อนแถวที่เลือกด้วยลูกศร วนจากท้ายกลับไปต้น

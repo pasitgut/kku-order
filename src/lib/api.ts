@@ -283,12 +283,13 @@ export async function setPositionHolder(payload: { positionTitle: string; direct
 }
 
 export type PersonSummary = { id: number; name: string; position: string; orders: number };
+export type NameSummary = { name: string; position: string; orders: number };
 export type OrderSuggestion = { id: number; orderNo: string; title: string; issuedDate?: string; status: string };
 export type PersonHistoryRow = { documentId: number; orderNo: string; title: string; role: string; issuedDate?: string; expiryDate?: string; state: "ACTIVE" | "EXPIRING" | "EXPIRED" | "CANCELLED" };
 export type PersonHistory = { person: PersonSummary & { active: number; expiring: number }; appointments: PersonHistoryRow[] };
 
 export async function getSearchSuggestions(query: string) {
-  return apiFetch<{ data: { people: PersonSummary[]; orders: OrderSuggestion[] } }>(`/api/v1/search/suggest?q=${encodeURIComponent(query)}`);
+  return apiFetch<{ data: { people: PersonSummary[]; names: NameSummary[]; orders: OrderSuggestion[] } }>(`/api/v1/search/suggest?q=${encodeURIComponent(query)}`);
 }
 
 export async function getTopPeople(range: { from?: string; to?: string }) {
@@ -299,6 +300,13 @@ export async function getPersonHistory(id: number, range: { from?: string; to?: 
   const params = new URLSearchParams(range);
   if (activeOnly) params.set("activeOnly", "1");
   return apiFetch<{ data: PersonHistory }>(`/api/v1/search/people/${id}?${params}`);
+}
+
+// getNameHistory ประวัติของชื่อในคำสั่งที่ยังไม่ผูกกับบุคคลในระบบ
+export async function getNameHistory(name: string, range: { from?: string; to?: string }, activeOnly: boolean) {
+  const params = new URLSearchParams({ name, ...range });
+  if (activeOnly) params.set("activeOnly", "1");
+  return apiFetch<{ data: PersonHistory }>(`/api/v1/search/names?${params}`);
 }
 
 export async function syncDirectoryUsers() {

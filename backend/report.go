@@ -22,6 +22,7 @@ var reportColumns = []struct {
 
 type reportFilter struct {
 	PersonID   uint
+	Name       string // ชื่อที่ยังไม่ผูกกับบุคคลในระบบ ใช้แทน PersonID
 	From, To   *time.Time
 	ActiveOnly bool
 }
@@ -160,6 +161,21 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 	if filter.PersonID != 0 {
 		query = query.Where("a.directory_user_id = ?", filter.PersonID)
 	}
+	unlinkedName := ""
+	if filter.Name != "" {
+		matched, err := unlinkedNameRows(db, filter.Name, true)
+		if err != nil {
+			return appointmentReport{}, err
+		}
+		if len(matched) == 0 {
+			// ไม่พบชื่อนี้ หัวรายงานยังบอกว่าเป็นของใคร ไม่ใช่ "คำสั่งทั้งหมด"
+			query = query.Where("1 = 0")
+			unlinkedName = strings.Join(strings.Fields(filter.Name), " ")
+		} else {
+			query = query.Where("a.id IN ?", appointmentIDs(matched))
+			unlinkedName = summarizeUnlinked(matched)[0].Name
+		}
+	}
 	if filter.From != nil {
 		query = query.Where("d.issued_date >= ?", dateOnly(*filter.From))
 	}
@@ -277,7 +293,11 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 		}
 		return left.first < right.first
 	})
-	report := appointmentReport{Title: reportTitle, Scope: reportScope(names[filter.PersonID], filter), PersonName: names[filter.PersonID], Rows: make([]reportRow, 0, len(entries))}
+	subject := names[filter.PersonID]
+	if filter.Name != "" {
+		subject = unlinkedName
+	}
+	report := appointmentReport{Title: reportTitle, Scope: reportScope(subject, filter), PersonName: subject, Rows: make([]reportRow, 0, len(entries))}
 	for i, item := range entries {
 		item.row.No = i + 1
 		item.row.Duty = dashIfEmpty(strings.Join(item.duties, "\n"))

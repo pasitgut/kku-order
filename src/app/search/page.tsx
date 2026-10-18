@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { KeyboardEvent, Suspense, useEffect, useId, useState, useSyncExternalStore } from "react";
+import { KeyboardEvent, Suspense, useEffect, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, ClockCounterClockwise, FilePdf, MagnifyingGlass, SpinnerGap, User } from "@phosphor-icons/react";
 import { AppShell } from "@/components/app-shell";
 import { ExportReportButton } from "@/components/export-report-button";
-import { OrderSuggestion, PersonHistory, PersonSummary, formatThaiDate, getPersonHistory, getSearchSuggestions, getTopPeople, statusLabel } from "@/lib/api";
+import { NameSummary, OrderSuggestion, PersonHistory, PersonSummary, formatThaiDate, getNameHistory, getPersonHistory, getSearchSuggestions, getTopPeople, statusLabel } from "@/lib/api";
 import { initials } from "@/lib/person";
 import { AppointmentState, Period, RecentSearch, appointmentStateLabel, fiscalYearRange, moveSelection, periodRange, rememberSearch } from "@/lib/search";
 
@@ -60,27 +60,41 @@ export default function SearchPage() {
 
 function SearchView() {
   const router = useRouter();
-  const personId = Number(useSearchParams().get("person")) || 0;
+  const params = useSearchParams();
+  const personId = Number(params.get("person")) || 0;
+  const name = params.get("name")?.trim() ?? "";
+  // จำ object ไว้ตามค่า ไม่งั้น PersonView โหลดประวัติใหม่ทุกครั้งที่หน้านี้ render
+  const subject = useMemo<Subject | null>(() => personId ? { person: personId } : name ? { name } : null, [personId, name]);
+  const subjectKey = personId ? `person-${personId}` : `name-${name}`;
   const recent = useSyncExternalStore(subscribeRecent, recentSnapshot, () => noRecent);
 
   const pick = (entry: RecentSearch) => {
     addRecent(entry);
-    router.push(entry.kind === "person" ? `/search?person=${entry.id}` : `/documents/${entry.id}`);
+    router.push(recentHref(entry));
   };
 
   return <div className="space-y-6">
-    <SearchBox key={`search-${personId}`} onPick={pick} />
-    {personId ? <PersonView key={`person-${personId}`} id={personId} /> : <StartView recent={recent} />}
+    <SearchBox key={`search-${subjectKey}`} onPick={pick} />
+    {subject ? <PersonView key={subjectKey} subject={subject} /> : <StartView recent={recent} />}
   </div>;
 }
 
-type Option = { kind: "person"; item: PersonSummary } | { kind: "order"; item: OrderSuggestion };
+// หน้าประวัติเปิดได้ทั้งคนในระบบ (person) และชื่อในคำสั่งที่ยังไม่ผูกกับใคร (name)
+type Subject = { person: number } | { name: string };
+
+function recentHref(entry: RecentSearch) {
+  if (entry.kind === "person") return `/search?person=${entry.id}`;
+  if (entry.kind === "name") return `/search?name=${encodeURIComponent(entry.label)}`;
+  return `/documents/${entry.id}`;
+}
+
+type Option = { kind: "person"; item: PersonSummary } | { kind: "name"; item: NameSummary } | { kind: "order"; item: OrderSuggestion };
 
 function SearchBox({ onPick }: { onPick: (entry: RecentSearch) => void }) {
   const listId = useId();
   const [query, setQuery] = useState("");
   // ผลค้นหาจำไว้คู่กับคำค้นที่ใช้ ผลของคำเก่าจึงไม่ถูกเปิดตอนกด Enter ระหว่างรอผลใหม่
-  const [results, setResults] = useState<{ query: string; people: PersonSummary[]; orders: OrderSuggestion[] } | null>(null);
+  const [results, setResults] = useState<{ query: string; people: PersonSummary[]; names: NameSummary[]; orders: OrderSuggestion[] } | null>(null);
   const [selected, setSelected] = useState(-1);
   const [open, setOpen] = useState(false);
 
@@ -89,16 +103,18 @@ function SearchBox({ onPick }: { onPick: (entry: RecentSearch) => void }) {
     if (!text) return;
     let active = true;
     const timer = setTimeout(() => {
-      getSearchSuggestions(text).then((response) => { if (active) { setResults({ query: text, ...response.data }); setSelected(-1); } }).catch(() => { if (active) setResults({ query: text, people: [], orders: [] }); });
+      getSearchSuggestions(text).then((response) => { if (active) { setResults({ query: text, ...response.data }); setSelected(-1); } }).catch(() => { if (active) setResults({ query: text, people: [], names: [], orders: [] }); });
     }, 200);
     return () => { active = false; clearTimeout(timer); };
   }, [query]);
 
   const shown = results && results.query === query.trim() ? results : null;
-  const options: Option[] = shown ? [...shown.people.map((item) => ({ kind: "person" as const, item })), ...shown.orders.map((item) => ({ kind: "order" as const, item }))] : [];
+  const options: Option[] = shown ? [...shown.people.map((item) => ({ kind: "person" as const, item })), ...shown.names.map((item) => ({ kind: "name" as const, item })), ...shown.orders.map((item) => ({ kind: "order" as const, item }))] : [];
   const choose = (option: Option) => {
     setOpen(false);
-    onPick(option.kind === "person" ? { kind: "person", id: option.item.id, label: option.item.name } : { kind: "order", id: option.item.id, label: option.item.orderNo || option.item.title });
+    if (option.kind === "person") onPick({ kind: "person", id: option.item.id, label: option.item.name });
+    else if (option.kind === "name") onPick({ kind: "name", id: 0, label: option.item.name });
+    else onPick({ kind: "order", id: option.item.id, label: option.item.orderNo || option.item.title });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -111,10 +127,14 @@ function SearchBox({ onPick }: { onPick: (entry: RecentSearch) => void }) {
     }
   };
   const optionId = (index: number) => `${listId}-option-${index}`;
-  const renderOption = (option: Option, index: number) => <li key={`${option.kind}-${option.item.id}`} id={optionId(index)} role="option" aria-selected={selected === index} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(option)} onMouseEnter={() => setSelected(index)} className={`flex cursor-pointer items-center gap-3 px-4 py-2.5 ${selected === index ? "bg-[var(--brand-blue-pale)]" : ""}`}>
+  const renderOption = (option: Option, index: number) => <li key={`${option.kind}-${option.kind === "name" ? option.item.name : option.item.id}`} id={optionId(index)} role="option" aria-selected={selected === index} onMouseDown={(event) => event.preventDefault()} onClick={() => choose(option)} onMouseEnter={() => setSelected(index)} className={`flex cursor-pointer items-center gap-3 px-4 py-2.5 ${selected === index ? "bg-[var(--brand-blue-pale)]" : ""}`}>
     {option.kind === "person" ? <>
       <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-medium text-[var(--navy)]">{initials(option.item.name)}</span>
       <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-[var(--ink)]">{option.item.name}</span><span className="block truncate text-xs text-[var(--muted)]">{option.item.position || "ไม่ระบุตำแหน่ง"}</span></span>
+      <span className="shrink-0 text-xs text-[var(--muted)]">{option.item.orders.toLocaleString("th-TH")} คำสั่ง</span>
+    </> : option.kind === "name" ? <>
+      <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#ffead6] text-xs font-medium text-[#9a4a0c]">{initials(option.item.name)}</span>
+      <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-[var(--ink)]">{option.item.name}</span><span className="block truncate text-xs text-[var(--muted)]">{option.item.position ? `${option.item.position} · ` : ""}ยังไม่ผูกกับบุคคลในระบบ</span></span>
       <span className="shrink-0 text-xs text-[var(--muted)]">{option.item.orders.toLocaleString("th-TH")} คำสั่ง</span>
     </> : <>
       <span aria-hidden="true" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-soft)] text-[var(--accent)]"><FilePdf size={17} weight="duotone" /></span>
@@ -132,7 +152,8 @@ function SearchBox({ onPick }: { onPick: (entry: RecentSearch) => void }) {
     {open && shown && <div id={listId} role="listbox" aria-label="ผลการค้นหา" className="absolute inset-x-4 top-full z-20 -mt-1 max-h-[60vh] overflow-y-auto rounded-xl border border-[var(--line)] bg-white py-2 shadow-lg sm:inset-x-5">
       {options.length === 0 && <p className="px-4 py-3 text-sm text-[var(--muted)]">ไม่พบคนหรือคำสั่งที่ตรงกับ &quot;{query.trim()}&quot;</p>}
       {shown.people.length > 0 && <ul role="group" aria-label="คน"><li role="presentation" className="px-4 pb-1 pt-2 text-xs font-medium text-[var(--muted)]">คน</li>{shown.people.map((item, index) => renderOption({ kind: "person", item }, index))}</ul>}
-      {shown.orders.length > 0 && <ul role="group" aria-label="คำสั่ง"><li role="presentation" className="px-4 pb-1 pt-3 text-xs font-medium text-[var(--muted)]">คำสั่ง</li>{shown.orders.map((item, index) => renderOption({ kind: "order", item }, shown.people.length + index))}</ul>}
+      {shown.names.length > 0 && <ul role="group" aria-label="ชื่อในเอกสาร (ยังไม่ผูก)"><li role="presentation" className="px-4 pb-1 pt-3 text-xs font-medium text-[var(--muted)]">ชื่อในเอกสาร (ยังไม่ผูก)</li>{shown.names.map((item, index) => renderOption({ kind: "name", item }, shown.people.length + index))}</ul>}
+      {shown.orders.length > 0 && <ul role="group" aria-label="คำสั่ง"><li role="presentation" className="px-4 pb-1 pt-3 text-xs font-medium text-[var(--muted)]">คำสั่ง</li>{shown.orders.map((item, index) => renderOption({ kind: "order", item }, shown.people.length + shown.names.length + index))}</ul>}
       <p className="hidden border-t border-[var(--line-soft)] px-4 pt-2 text-[11px] text-[var(--subtle)] sm:block">↑↓ เลือก · Enter เปิด · Esc ปิด</p>
     </div>}
   </section>;
@@ -153,8 +174,8 @@ function StartView({ recent }: { recent: RecentSearch[] }) {
   return <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
     <section className="card overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-[var(--line)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด · {fiscal.label}</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้ว ตั้งแต่ {formatThaiDate(fiscal.from)}</p></div>
-        <ExportReportButton filters={{ from: fiscal.from, to: fiscal.to }} label={`ส่งออกรายงาน${fiscal.label}`} />
+        <div><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้ว ตั้งแต่ {formatThaiDate(fiscal.from)}</p></div>
+        <ExportReportButton filters={{ from: fiscal.from, to: fiscal.to }} description={`ส่งออกรายงาน${fiscal.label}`} />
       </div>
       {error && <p role="alert" className="px-5 py-3 text-sm text-[var(--danger)]">{error}</p>}
       {top === null ? <p role="status" className="flex items-center gap-2 px-5 py-8 text-sm text-[var(--muted)]"><SpinnerGap size={18} className="animate-spin" />กำลังโหลด...</p>
@@ -171,15 +192,15 @@ function StartView({ recent }: { recent: RecentSearch[] }) {
     <section className="card overflow-hidden">
       <div className="border-b border-[var(--line)] px-5 py-4"><h2 className="text-lg font-semibold text-[var(--navy)]">ค้นหาล่าสุด</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">เก็บไว้ในเบราว์เซอร์นี้เท่านั้น</p></div>
       {recent.length === 0 ? <p className="px-5 py-6 text-sm text-[var(--muted)]">ยังไม่มีรายการ ลองพิมพ์ชื่อคนหรือเลขที่คำสั่งด้านบน</p>
-        : <ul className="divide-y divide-[var(--line-soft)]">{recent.map((entry) => <li key={`${entry.kind}-${entry.id}`}><Link href={entry.kind === "person" ? `/search?person=${entry.id}` : `/documents/${entry.id}`} className="focus-ring flex min-h-11 items-center gap-3 px-5 py-2 text-sm hover:bg-[var(--brand-blue-pale)]">
-          {entry.kind === "person" ? <User size={17} className="shrink-0 text-[var(--muted)]" /> : <ClockCounterClockwise size={17} className="shrink-0 text-[var(--muted)]" />}
+        : <ul className="divide-y divide-[var(--line-soft)]">{recent.map((entry) => <li key={`${entry.kind}-${entry.kind === "name" ? entry.label : entry.id}`}><Link href={recentHref(entry)} className="focus-ring flex min-h-11 items-center gap-3 px-5 py-2 text-sm hover:bg-[var(--brand-blue-pale)]">
+          {entry.kind !== "order" ? <User size={17} className="shrink-0 text-[var(--muted)]" /> : <ClockCounterClockwise size={17} className="shrink-0 text-[var(--muted)]" />}
           <span className="min-w-0 truncate">{entry.label}</span>
         </Link></li>)}</ul>}
     </section>
   </div>;
 }
 
-function PersonView({ id }: { id: number }) {
+function PersonView({ subject }: { subject: Subject }) {
   const [period, setPeriod] = useState<Period>("this");
   const [custom, setCustom] = useState({ from: "", to: "" });
   const [activeOnly, setActiveOnly] = useState(false);
@@ -191,11 +212,13 @@ function PersonView({ id }: { id: number }) {
 
   useEffect(() => {
     let active = true;
-    getPersonHistory(id, periodRange(period, new Date(), custom), activeOnly).then((response) => { if (active) { setHistory(response.data); setError(""); } })
+    const range = periodRange(period, new Date(), custom);
+    const request = "person" in subject ? getPersonHistory(subject.person, range, activeOnly) : getNameHistory(subject.name, range, activeOnly);
+    request.then((response) => { if (active) { setHistory(response.data); setError(""); } })
       .catch((reason: Error) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [id, period, custom, activeOnly]);
+  }, [subject, period, custom, activeOnly]);
 
   const choosePeriod = (value: Period) => { setLoading(true); setPeriod(value); };
   const person = history?.person;
@@ -210,8 +233,9 @@ function PersonView({ id }: { id: number }) {
         <h2 className="break-words text-xl font-semibold text-[var(--navy)]">{person.name}</h2>
         <p className="mt-0.5 text-sm text-[var(--muted)]">{person.position || "ไม่ระบุตำแหน่ง"}</p>
         <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm"><span><b className="font-semibold">{person.orders.toLocaleString("th-TH")}</b> คำสั่ง</span><span className="text-[var(--success)]">ยังมีผล {person.active.toLocaleString("th-TH")}</span><span className="text-[#9a4a0c]">ใกล้หมดวาระ {person.expiring.toLocaleString("th-TH")}</span></p>
+        {"name" in subject && <p className="mt-2 text-xs leading-5 text-[#9a4a0c]">ชื่อนี้มาจากคำสั่ง ยังไม่ผูกกับบุคคลในระบบ · <Link href="/settings/teachers#add-teacher" className="focus-ring rounded underline underline-offset-4">เพิ่มเป็นบุคลากร</Link></p>}
       </div>
-      <ExportReportButton filters={{ person: id, ...periodRange(period, new Date(), custom), activeOnly }} label="ส่งออกรายงานของคนนี้" />
+      <ExportReportButton filters={{ ...subject, ...periodRange(period, new Date(), custom), activeOnly }} description={`ส่งออกรายงานของ ${person.name}`} />
     </section>}
 
     <section className="card overflow-hidden">

@@ -1,5 +1,5 @@
 export type ReportFormat = "pdf" | "docx" | "xlsx";
-export type ReportFilters = { person?: number; from?: string; to?: string; activeOnly?: boolean };
+export type ReportFilters = { person?: number; name?: string; from?: string; to?: string; activeOnly?: boolean };
 
 export const reportFormats: { format: ReportFormat; label: string }[] = [
   { format: "pdf", label: "PDF" },
@@ -11,6 +11,7 @@ export const reportFormats: { format: ReportFormat; label: string }[] = [
 export function reportQuery(format: ReportFormat, filters: ReportFilters) {
   const params = new URLSearchParams({ format });
   if (filters.person) params.set("person", String(filters.person));
+  if (filters.name) params.set("name", filters.name);
   if (filters.from) params.set("from", filters.from);
   if (filters.to) params.set("to", filters.to);
   if (filters.activeOnly) params.set("activeOnly", "1");

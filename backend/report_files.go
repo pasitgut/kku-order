@@ -352,6 +352,7 @@ func appointmentReportHandler(db *gorm.DB) gin.HandlerFunc {
 			filter.PersonID = uint(id)
 		}
 		filter.From, filter.To = requestedDates(c)
+		filter.Name = strings.TrimSpace(c.Query("name"))
 		report, err := buildAppointmentReport(db, filter, time.Now())
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถรวบรวมข้อมูลรายงานได้"})

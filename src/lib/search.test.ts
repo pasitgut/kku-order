@@ -28,6 +28,13 @@ test("rememberSearch keeps the newest first without repeats", () => {
   assert.equal(many[0].id, 9);
 });
 
+test("rememberSearch tells unlinked names apart by their text", () => {
+  const first = { kind: "name" as const, id: 0, label: "ชญาดา สุระวนิชกุล" };
+  const second = { kind: "name" as const, id: 0, label: "ภัทรียา ลาสุนนท์" };
+  assert.deepEqual(rememberSearch(rememberSearch([], first), second), [second, first]);
+  assert.deepEqual(rememberSearch([second, first], first), [first, second]);
+});
+
 test("moveSelection wraps around the result list", () => {
   assert.equal(moveSelection(-1, 1, 3), 0);
   assert.equal(moveSelection(2, 1, 3), 0);

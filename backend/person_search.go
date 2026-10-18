@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -58,9 +59,95 @@ type orderSuggestion struct {
 	Status     string     `json:"status"`
 }
 
+// nameSummary คือชื่อที่เขียนอยู่ในคำสั่งแต่ยังไม่ได้ผูกกับบุคคลในระบบ (เช่น อาจารย์ต่างคณะ)
+type nameSummary struct {
+	Name     string `json:"name"`
+	Position string `json:"position"`
+	Orders   int    `json:"orders"`
+}
+
 type searchSuggestions struct {
 	People []personSummary   `json:"people"`
+	Names  []nameSummary     `json:"names"`
 	Orders []orderSuggestion `json:"orders"`
+}
+
+type unlinkedAppointment struct {
+	ID         uint
+	DocumentID uint
+	FullName   string
+	Position   string
+	Status     string
+}
+
+// nameProbe คือคำแรกของชื่อที่พิมพ์ (ตัดคำนำหน้าแล้ว) ใช้กรองหยาบใน SQL ก่อนเทียบจริงด้วย normalizePersonName
+// ใช้คำเดียวเพราะ SQL ตัดช่องว่างพิเศษหรือเครื่องหมายจาก OCR แบบเดียวกับ Go ไม่ได้
+func nameProbe(text string) string {
+	words := strings.Fields(stripThaiNamePrefixes(text))
+	if len(words) == 0 {
+		return ""
+	}
+	return strings.TrimFunc(words[0], func(r rune) bool { return unicode.IsPunct(r) })
+}
+
+// unlinkedNameRows หาแถวรายชื่อที่ยังไม่ผูกคนในคำสั่งที่นับเป็นประวัติ เทียบชื่อแบบตัดคำนำหน้า ช่องว่าง และเครื่องหมาย
+// exact = ชื่อต้องตรงทั้งชื่อ ไม่งั้นแค่มีคำค้นอยู่ในชื่อ เรียงแถวใหม่ก่อน ตำแหน่งที่แสดงจึงมาจากคำสั่งล่าสุด
+func unlinkedNameRows(db *gorm.DB, text string, exact bool) ([]unlinkedAppointment, error) {
+	key, probe := normalizePersonName(text), nameProbe(text)
+	if key == "" || probe == "" {
+		return nil, nil
+	}
+	var rows []unlinkedAppointment
+	query := db.Table("appointments AS a").Select("a.id, a.document_id, a.full_name, a.position, d.status").
+		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Where("a.directory_user_id IS NULL AND TRIM(COALESCE(a.full_name, '')) <> '' AND "+historyDocuments).
+		Where("a.full_name LIKE ? ESCAPE '!'", "%"+auditLikeEscaper.Replace(probe)+"%").
+		Order("a.id DESC")
+	if !exact {
+		// ช่องค้นหาแค่ต้องการรายการแนะนำ ไม่ต้องอ่านทุกแถว
+		query = query.Limit(2000)
+	}
+	err := query.Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	matched := rows[:0]
+	for _, row := range rows {
+		name := normalizePersonName(row.FullName)
+		if name == key || (!exact && strings.Contains(name, key)) {
+			matched = append(matched, row)
+		}
+	}
+	return matched, nil
+}
+
+// summarizeUnlinked รวมแถวของชื่อเดียวกันเป็นหนึ่งรายการ นับเฉพาะคำสั่งที่ยืนยันแล้วเหมือนการนับของคนในระบบ
+func summarizeUnlinked(rows []unlinkedAppointment) []nameSummary {
+	order := []string{}
+	byKey := map[string]*nameSummary{}
+	documents := map[string]map[uint]bool{}
+	for _, row := range rows {
+		key := normalizePersonName(row.FullName)
+		item, ok := byKey[key]
+		if !ok {
+			item = &nameSummary{Name: strings.Join(strings.Fields(row.FullName), " ")}
+			byKey[key], documents[key] = item, map[uint]bool{}
+			order = append(order, key)
+		}
+		if item.Position == "" {
+			item.Position = strings.TrimSpace(row.Position)
+		}
+		if row.Status == "CONFIRMED" && !documents[key][row.DocumentID] {
+			documents[key][row.DocumentID] = true
+			item.Orders++
+		}
+	}
+	summaries := make([]nameSummary, 0, len(order))
+	for _, key := range order {
+		summaries = append(summaries, *byKey[key])
+	}
+	sort.SliceStable(summaries, func(i, j int) bool { return summaries[i].Orders > summaries[j].Orders })
+	return summaries
 }
 
 func dateOnly(value time.Time) time.Time {
@@ -214,7 +301,7 @@ func sortByOrders(people []personSummary) {
 
 func searchSuggestHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		result := searchSuggestions{People: []personSummary{}, Orders: []orderSuggestion{}}
+		result := searchSuggestions{People: []personSummary{}, Names: []nameSummary{}, Orders: []orderSuggestion{}}
 		text := strings.TrimSpace(c.Query("q"))
 		if text == "" {
 			c.JSON(http.StatusOK, gin.H{"data": result})
@@ -261,6 +348,22 @@ func searchSuggestHandler(db *gorm.DB) gin.HandlerFunc {
 		sortByOrders(result.People)
 		sort.SliceStable(result.People, func(i, j int) bool { return rank[result.People[i].ID] < rank[result.People[j].ID] })
 		result.People = result.People[:minInt(len(result.People), suggestionLimit)]
+
+		unlinked, err := unlinkedNameRows(db, text, false)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหาชื่อในคำสั่งได้"})
+			return
+		}
+		// ชื่อที่ตรงกับคนในรายการ "คน" อยู่แล้วไม่ต้องแสดงซ้ำ
+		known := map[string]bool{}
+		for _, user := range matched {
+			known[directoryUserKey(user)] = true
+		}
+		for _, name := range summarizeUnlinked(unlinked) {
+			if !known[normalizePersonName(name.Name)] && len(result.Names) < suggestionLimit {
+				result.Names = append(result.Names, name)
+			}
+		}
 
 		like := "%" + auditLikeEscaper.Replace(text) + "%"
 		var documents []Document
@@ -310,6 +413,11 @@ func topPeopleHandler(db *gorm.DB) gin.HandlerFunc {
 
 // loadPersonHistory คืนคำสั่งที่ยืนยันแล้วและยกเลิกแล้วของคนคนนี้ เรียงจากใหม่ไปเก่า หนึ่งแถวต่อหนึ่งคำสั่ง
 func loadPersonHistory(db *gorm.DB, personID uint, today time.Time) ([]historyRow, error) {
+	return loadHistory(db, today, "a.directory_user_id = ?", personID)
+}
+
+// loadHistory คืนคำสั่งของแถวรายชื่อที่ตรงเงื่อนไข เรียงจากใหม่ไปเก่า หนึ่งแถวต่อหนึ่งคำสั่ง
+func loadHistory(db *gorm.DB, today time.Time, condition string, args ...any) ([]historyRow, error) {
 	var rows []struct {
 		DocumentID    uint
 		OrderNo       string
@@ -323,7 +431,7 @@ func loadPersonHistory(db *gorm.DB, personID uint, today time.Time) ([]historyRo
 	err := db.Table("appointments AS a").
 		Select("d.id AS document_id, d.order_no, d.title, d.status, d.issued_date, d.expiry_date, a.committee_role, a.position").
 		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
-		Where("a.directory_user_id = ? AND "+historyDocuments, personID).
+		Where(historyDocuments).Where(condition, args...).
 		Order("d.issued_date IS NULL, d.issued_date DESC, d.order_no DESC, a.id").Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -375,24 +483,62 @@ func personHistoryHandler(db *gorm.DB) gin.HandlerFunc {
 		}
 		// การ์ดคนนับทุกช่วงเวลา ตารางกรองตามช่วงที่เลือก
 		card := personCard{personSummary: personSummary{ID: user.ID, Name: personName(*user), Position: personPosition(*user)}}
-		from, to := issuedRange(c)
-		activeOnly := c.Query("activeOnly") == "1"
-		shown := []historyRow{}
-		for _, row := range history {
-			if row.State != appointmentCancelled {
-				card.Orders++
-			}
-			if row.State == appointmentActive || row.State == appointmentExpiring {
-				card.Active++
-			}
-			if row.State == appointmentExpiring {
-				card.Expiring++
-			}
-			if !withinRange(row.IssuedDate, from, to) || (activeOnly && row.State != appointmentActive && row.State != appointmentExpiring) {
-				continue
-			}
-			shown = append(shown, row)
+		shown := summarizeHistory(&card, history, c)
+		c.JSON(http.StatusOK, gin.H{"data": personHistory{Person: card, Appointments: shown}})
+	}
+}
+
+// summarizeHistory นับตัวเลขบนการ์ด (ทุกช่วงเวลา) และคืนแถวตามช่วงวันที่และตัวกรอง "เฉพาะที่ยังมีผล" ที่ส่งมา
+func summarizeHistory(card *personCard, history []historyRow, c *gin.Context) []historyRow {
+	from, to := issuedRange(c)
+	activeOnly := c.Query("activeOnly") == "1"
+	shown := []historyRow{}
+	for _, row := range history {
+		if row.State != appointmentCancelled {
+			card.Orders++
 		}
+		if row.State == appointmentActive || row.State == appointmentExpiring {
+			card.Active++
+		}
+		if row.State == appointmentExpiring {
+			card.Expiring++
+		}
+		if !withinRange(row.IssuedDate, from, to) || (activeOnly && row.State != appointmentActive && row.State != appointmentExpiring) {
+			continue
+		}
+		shown = append(shown, row)
+	}
+	return shown
+}
+
+func appointmentIDs(rows []unlinkedAppointment) []uint {
+	ids := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	return ids
+}
+
+// nameHistoryHandler ประวัติของชื่อที่ยังไม่ผูกกับบุคคลในระบบ (/search?name=…) หน้าตาเหมือนประวัติของคน
+func nameHistoryHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		rows, err := unlinkedNameRows(db, c.Query("name"), true)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหาชื่อในคำสั่งได้"})
+			return
+		}
+		if len(rows) == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบชื่อนี้ในคำสั่งที่ยืนยันแล้ว"})
+			return
+		}
+		history, err := loadHistory(db, time.Now(), "a.id IN ?", appointmentIDs(rows))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดประวัติการแต่งตั้งได้"})
+			return
+		}
+		summary := summarizeUnlinked(rows)[0]
+		card := personCard{personSummary: personSummary{Name: summary.Name, Position: summary.Position}}
+		shown := summarizeHistory(&card, history, c)
 		c.JSON(http.StatusOK, gin.H{"data": personHistory{Person: card, Appointments: shown}})
 	}
 }

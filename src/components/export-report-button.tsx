@@ -6,8 +6,9 @@ import { useToast } from "@/components/toast";
 import { downloadReport } from "@/lib/api";
 import { ReportFilters, ReportFormat, reportFormats } from "@/lib/report";
 
-// ปุ่ม "ส่งออกรายงาน" เลือก PDF / Word / Excel ไฟล์ใช้ตัวกรองชุดเดียวกับที่เห็นบนหน้า
-export function ExportReportButton({ filters, label = "ส่งออกรายงาน" }: { filters: ReportFilters; label?: string }) {
+// ปุ่ม "ส่งออก" เลือก PDF / Word / Excel ไฟล์ใช้ตัวกรองชุดเดียวกับที่เห็นบนหน้า
+// description บอกโปรแกรมอ่านหน้าจอว่าส่งออกอะไร เพราะบนปุ่มเขียนแค่ "ส่งออก"
+export function ExportReportButton({ filters, label = "ส่งออก", description }: { filters: ReportFilters; label?: string; description?: string }) {
   const toast = useToast();
   const menuId = useId();
   const wrapper = useRef<HTMLDivElement>(null);
@@ -36,7 +37,7 @@ export function ExportReportButton({ filters, label = "ส่งออกรา�
   };
 
   return <div ref={wrapper} className="relative shrink-0">
-    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} disabled={busy !== null} onClick={() => setOpen((current) => !current)}
+    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} aria-label={busy ? undefined : description} title={description} disabled={busy !== null} onClick={() => setOpen((current) => !current)}
       className="focus-ring inline-flex min-h-11 items-center gap-2 rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:opacity-60">
       {busy ? <SpinnerGap size={18} className="animate-spin" /> : <DownloadSimple size={18} weight="bold" />}
       {busy ? `กำลังสร้างไฟล์ ${reportFormats.find((item) => item.format === busy)?.label}...` : label}

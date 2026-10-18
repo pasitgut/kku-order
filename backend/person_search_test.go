@@ -215,3 +215,52 @@ func TestSuggestPutsNamesThatStartWithTheQueryFirstAndTreatsOrderWildcardsAsText
 		t.Fatalf("%% and _ must match only themselves, got %+v", result.Data.Orders)
 	}
 }
+
+func TestNamesWrittenInOrdersButNotLinkedCanBeFound(t *testing.T) {
+	db := testDatabase(t)
+	stamp := searchStamp()
+	name := "ชญาดา" + stamp + " สุระวนิชกุล"
+	unlinked := func(status, orderNo, issued string) Document {
+		document := reportOrder(t, db, map[string]any{"status": status, "order_no": orderNo, "issued_date": day(issued)}, "",
+			Appointment{FullName: name, Position: "รองศาสตราจารย์", CommitteeRole: "กรรมการ", NameMatchMethod: "NOT_FOUND"})
+		return document
+	}
+	unlinked("CONFIRMED", "1/"+stamp, "2026-01-10")
+	unlinked("CONFIRMED", "2/"+stamp, "2026-02-10")
+	unlinked("REVIEW", "3/"+stamp, "2026-03-10")
+	// OCR บางครั้งใส่ช่องว่างพิเศษ (NBSP) กลางชื่อ ยังต้องนับเป็นคนเดียวกัน
+	reportOrder(t, db, map[string]any{"status": "CONFIRMED", "order_no": "4/" + stamp, "issued_date": day("2026-04-10")}, "",
+		Appointment{FullName: "ชญาดา" + stamp + "\u00a0สุระวนิชกุล", Position: "ศาสตราจารย์", CommitteeRole: "กรรมการ", NameMatchMethod: "NOT_FOUND"})
+
+	var suggest struct {
+		Data searchSuggestions `json:"data"`
+	}
+	getJSON(t, "/api/v1/search/suggest", "/api/v1/search/suggest?q="+url.QueryEscape("ชญาดา"+stamp), searchSuggestHandler(db), &suggest)
+	if len(suggest.Data.Names) != 1 || suggest.Data.Names[0].Name != name || suggest.Data.Names[0].Orders != 3 || suggest.Data.Names[0].Position != "ศาสตราจารย์" {
+		t.Fatalf("names = %+v", suggest.Data.Names)
+	}
+
+	var history struct {
+		Data personHistory `json:"data"`
+	}
+	getJSON(t, "/api/v1/search/names", "/api/v1/search/names?name="+url.QueryEscape(" ชญาดา"+stamp+"  สุระวนิชกุล"), nameHistoryHandler(db), &history)
+	got := []string{}
+	for _, row := range history.Data.Appointments {
+		got = append(got, row.OrderNo)
+	}
+	if fmt.Sprint(got) != fmt.Sprintf("[4/%[1]s 2/%[1]s 1/%[1]s]", stamp) || history.Data.Person.Name != name || history.Data.Person.Orders != 3 {
+		t.Fatalf("history = %+v rows %v", history.Data.Person, got)
+	}
+
+	report, err := buildAppointmentReport(db, reportFilter{Name: name}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Rows) != 3 || report.PersonName != name || report.Rows[0].Name != name {
+		t.Fatalf("report = %q %v", report.PersonName, report.Rows)
+	}
+	missing, _ := buildAppointmentReport(db, reportFilter{Name: "ไม่มีชื่อนี้" + stamp}, time.Now())
+	if len(missing.Rows) != 0 || missing.PersonName != "ไม่มีชื่อนี้"+stamp {
+		t.Fatalf("an unknown name must not read as a report of everyone: %q", missing.Scope)
+	}
+}

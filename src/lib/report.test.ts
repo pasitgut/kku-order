@@ -6,6 +6,7 @@ test("reportQuery sends only the filters that are set", () => {
   assert.equal(reportQuery("pdf", { person: 12, from: "2025-10-01", to: "2026-09-30", activeOnly: true }), "format=pdf&person=12&from=2025-10-01&to=2026-09-30&activeOnly=1");
   assert.equal(reportQuery("xlsx", {}), "format=xlsx");
   assert.equal(reportQuery("docx", { from: "2026-01-01", activeOnly: false }), "format=docx&from=2026-01-01");
+  assert.equal(reportQuery("pdf", { name: "ชญาดา สุระวนิชกุล" }), `format=pdf&name=${new URLSearchParams({ n: "ชญาดา สุระวนิชกุล" }).toString().slice(2)}`);
 });
 
 test("filenameFromDisposition prefers the UTF-8 Thai name", () => {
