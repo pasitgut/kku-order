@@ -60,12 +60,13 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
       </header>
 
       {title && <section className={`shrink-0 bg-[var(--band)] px-5 text-white sm:px-8 lg:px-12 xl:px-16 ${heroBand ? "pb-24 pt-8 lg:pt-10" : "py-6 lg:py-7"}`}>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex min-w-0 items-start gap-4">
+        {/* ชื่อยาวได้ความกว้างอย่างน้อย 640px ปุ่มที่วางไม่พอจึงขึ้นแถวใหม่ แทนที่จะบีบชื่อเป็นคอลัมน์แคบ */}
+        <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+          <div className="flex min-w-0 flex-[1_1_640px] items-start gap-4">
             {backHref && <Link href={backHref} aria-label="ย้อนกลับ" className="focus-ring mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-white/45 hover:bg-white/10"><ArrowLeft size={18} weight="bold" /></Link>}
             <div className="min-w-0">
               {breadcrumb && <p className="text-[13px] text-[var(--band-text)]">{breadcrumb}</p>}
-              <h1 className={`mt-1 font-semibold leading-snug ${heroBand ? "text-[28px] lg:text-[36px]" : "text-[22px] lg:text-[28px]"}`}>{title}</h1>
+              <h1 title={title} className={`mt-1 max-w-6xl lg:line-clamp-2 font-semibold leading-snug ${heroBand ? "text-[28px] lg:text-[36px]" : "text-[22px] lg:text-[26px]"}`}>{title}</h1>
               {description && <p className="mt-1.5 max-w-2xl text-sm font-light leading-6 text-[#e6f1fa] lg:text-[15px]">{description}</p>}
             </div>
           </div>

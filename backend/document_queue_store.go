@@ -114,6 +114,12 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 		if err := tx.Model(&Document{}).Where("id = ?", docID).Updates(rec.Updates).Error; err != nil {
 			return err
 		}
+		// หน้าที่ที่ผู้ตรวจเขียนเพิ่มไม่ได้มาจาก OCR สแกนใหม่แล้วต้องยังอยู่กับฝ่ายเดิม
+		var previous []Appointment
+		if err := tx.Select("department", "extra_duties").Where("document_id = ? AND COALESCE(extra_duties, '') <> ''", docID).Find(&previous).Error; err != nil {
+			return err
+		}
+		carryExtraDuties(previous, rec.Appointments)
 		for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
 			if err := tx.Where("document_id = ?", docID).Delete(model).Error; err != nil {
 				return err

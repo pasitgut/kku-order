@@ -63,10 +63,20 @@ func thaiDateOrDash(value *time.Time) string {
 	return dashIfEmpty(thaiDateText(value))
 }
 
-// reportDuty: ใช้หน้าที่ของฝ่ายตามคำสั่ง ถ้าคำสั่งไม่ได้ระบุ ใช้บทบาทที่ถูกแต่งตั้ง เช่น "เป็นกรรมการและเลขานุการ"
-func reportDuty(responsibilities, role string) string {
+// reportDuty: ใช้หน้าที่ของฝ่ายตามคำสั่ง ตามด้วยหน้าที่ที่ผู้ตรวจเขียนเพิ่ม (บรรทัดละข้อ)
+// ถ้าไม่มีทั้งสองอย่าง ใช้บทบาทที่ถูกแต่งตั้ง เช่น "เป็นกรรมการและเลขานุการ"
+func reportDuty(responsibilities, extra, role string) string {
+	lines := []string{}
 	if duty := strings.TrimSpace(responsibilities); duty != "" {
-		return duty
+		lines = append(lines, duty)
+	}
+	for _, line := range strings.Split(extra, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 0 {
+		return strings.Join(lines, "\n")
 	}
 	role = strings.TrimSpace(role)
 	if role == "" {
@@ -152,7 +162,7 @@ func reportScope(name string, filter reportFilter) string {
 // เรียงตามวันที่ออกคำสั่ง แล้วตามเลขที่คำสั่ง (filter.To คือวันสุดท้ายที่รวมด้วย)
 func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (appointmentReport, error) {
 	query := db.Table("appointments AS a").
-		Select(`a.id, a.directory_user_id, a.full_name, a.position, a.committee_role, a.responsibilities,
+		Select(`a.id, a.directory_user_id, a.full_name, a.position, a.committee_role, a.responsibilities, COALESCE(a.extra_duties, '') AS extra_duties,
 			d.id AS document_id, d.order_no, d.title, d.issuing_unit, d.issued_date, d.effective_date, d.expiry_date,
 			d.status, d.cancellation_reason, d.replaced_by_order_no, COALESCE(ef.value, '') AS effective_text`).
 		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
@@ -189,6 +199,7 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 		Position           string
 		CommitteeRole      string
 		Responsibilities   string
+		ExtraDuties        string
 		DocumentID         uint
 		OrderNo            string
 		Title              string
@@ -259,12 +270,10 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 			}
 		}
 		key = strconv.FormatUint(uint64(row.DocumentID), 10) + "|" + key
-		duty := reportDuty(row.Responsibilities, row.CommitteeRole)
+		duty := reportDuty(row.Responsibilities, row.ExtraDuties, row.CommitteeRole)
 		// คนเดียวมีหลายบทบาทในคำสั่งเดียว รวมไว้แถวเดียว
 		if existing, ok := byKey[key]; ok {
-			if duty != "" && !containsString(existing.duties, duty) {
-				existing.duties = append(existing.duties, duty)
-			}
+			existing.duties = appendDutyLines(existing.duties, duty)
 			continue
 		}
 		item := &entry{issued: row.IssuedDate, first: row.ID, row: reportRow{
@@ -272,9 +281,7 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 			Issued: thaiDateOrDash(row.IssuedDate), Effective: reportEffective(row.EffectiveText, row.EffectiveDate), Expiry: thaiDateOrDash(row.ExpiryDate),
 			Note: reportNote(row.Status, row.CancellationReason, row.ReplacedByOrderNo),
 		}}
-		if duty != "" {
-			item.duties = []string{duty}
-		}
+		item.duties = appendDutyLines(nil, duty)
 		byKey[key] = item
 		entries = append(entries, item)
 	}
@@ -304,6 +311,31 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 		report.Rows = append(report.Rows, item.row)
 	}
 	return report, nil
+}
+
+// carryExtraDuties ใส่หน้าที่ที่ผู้ตรวจเขียนเพิ่มไว้กลับให้แถวใหม่ของฝ่ายชื่อเดียวกัน (ใช้ตอนสแกนเอกสารใหม่)
+func carryExtraDuties(previous, fresh []Appointment) {
+	extras := map[string]string{}
+	for _, row := range previous {
+		if key := strings.TrimSpace(row.Department); strings.TrimSpace(row.ExtraDuties) != "" && extras[key] == "" {
+			extras[key] = row.ExtraDuties
+		}
+	}
+	for i := range fresh {
+		if extra, ok := extras[strings.TrimSpace(fresh[i].Department)]; ok && strings.TrimSpace(fresh[i].ExtraDuties) == "" {
+			fresh[i].ExtraDuties = extra
+		}
+	}
+}
+
+// appendDutyLines เพิ่มหน้าที่ทีละบรรทัด บรรทัดที่มีอยู่แล้วไม่ใส่ซ้ำ (คนเดียวอยู่หลายแถวในคำสั่งเดียว)
+func appendDutyLines(duties []string, duty string) []string {
+	for _, line := range strings.Split(duty, "\n") {
+		if line = strings.TrimSpace(line); line != "" && !containsString(duties, line) {
+			duties = append(duties, line)
+		}
+	}
+	return duties
 }
 
 func containsString(values []string, target string) bool {

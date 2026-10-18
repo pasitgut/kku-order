@@ -50,6 +50,7 @@ type appointmentRequest struct {
 	Department       string  `json:"department"`
 	CommitteeRole    string  `json:"committeeRole"`
 	Responsibilities string  `json:"responsibilities"`
+	ExtraDuties      string  `json:"extraDuties"`
 	Confidence       float32 `json:"confidence"`
 	PageNo           int     `json:"pageNo"`
 	BoundingBox      string  `json:"boundingBox"`
@@ -391,7 +392,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					return err
 				}
 				for _, input := range *payload.Appointments {
-					appointment := Appointment{DocumentID: document.ID, FullName: truncateRunes(input.FullName, colLimitAppointmentFullName), Position: truncateRunes(input.Position, colLimitAppointmentPosition), Department: truncateRunes(input.Department, colLimitAppointmentDept), CommitteeRole: truncateRunes(input.CommitteeRole, colLimitAppointmentRole), Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
+					appointment := Appointment{DocumentID: document.ID, FullName: truncateRunes(input.FullName, colLimitAppointmentFullName), Position: truncateRunes(input.Position, colLimitAppointmentPosition), Department: truncateRunes(input.Department, colLimitAppointmentDept), CommitteeRole: truncateRunes(input.CommitteeRole, colLimitAppointmentRole), Responsibilities: input.Responsibilities, ExtraDuties: input.ExtraDuties, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
 					before := previous[input.ID]
 					match := resolveAppointmentMatch(input, before.NameMatchMethod, directoryUsers, aliases)
 					// คนเดิมที่ระบบผูกให้ (ชื่อตรง, เคยผูกไว้, ตามตำแหน่ง) คงที่มาเดิม ป้ายในหน้าเว็บจะได้ไม่กลายเป็น "เลือกเอง"
@@ -519,7 +520,7 @@ func documentQuery(db *gorm.DB, rawQuery, rawStatus string) *gorm.DB {
 	query := db.Model(&Document{})
 	if q := strings.TrimSpace(rawQuery); q != "" {
 		like := "%" + q + "%"
-		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR ocr_text LIKE ? OR id IN (?)", like, like, like, like, like, like, like, like, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ?", like, like, like, like))
+		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR ocr_text LIKE ? OR id IN (?)", like, like, like, like, like, like, like, like, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ? OR extra_duties LIKE ?", like, like, like, like, like))
 	}
 	if status := strings.TrimSpace(rawStatus); status != "" && status != "ALL" {
 		// รับได้หลายสถานะคั่นด้วยจุลภาค เช่น "REVIEW,NEEDS_REVIEW" คือกลุ่ม "รอยืนยัน"

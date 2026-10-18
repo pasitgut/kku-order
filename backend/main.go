@@ -154,7 +154,9 @@ type Appointment struct {
 	Department       string           `json:"department" gorm:"size:500"`
 	CommitteeRole    string           `json:"committeeRole" gorm:"size:255"`
 	Responsibilities string           `json:"responsibilities" gorm:"type:text"`
-	NameMatchMethod  string           `json:"nameMatchMethod" gorm:"size:50"`
+	// ExtraDuties หน้าที่ที่ผู้ตรวจเขียนเพิ่มเอง (บรรทัดละข้อ) แยกจากข้อความตามคำสั่ง หน้าเว็บจึงติดป้าย "เพิ่มเอง" ได้
+	ExtraDuties     string `json:"extraDuties" gorm:"type:text"`
+	NameMatchMethod string `json:"nameMatchMethod" gorm:"size:50"`
 	// Candidates is computed per request, never stored: the directory
 	// changes, and a stale suggestion is worse than none.
 	Candidates      []directoryCandidate `json:"candidates" gorm:"-"`

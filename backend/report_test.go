@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,5 +111,52 @@ func TestReportForEveryoneListsNamesNotLinkedToAPerson(t *testing.T) {
 	}
 	if fmt.Sprint(names) != fmt.Sprintf("[บุคคลภายนอก%s คณบดีวิทยาลัยการคอมพิวเตอร์]", stamp) {
 		t.Fatalf("names = %v", names)
+	}
+}
+
+func TestReportDutyAddsWhatReviewersWrote(t *testing.T) {
+	for _, tc := range []struct{ responsibilities, extra, role, want string }{
+		{"วางแผนและประสานงาน", "", "กรรมการ", "วางแผนและประสานงาน"},
+		{"วางแผนและประสานงาน", "จัดทำรายงานสรุป\n\nดูแลงบประมาณ", "กรรมการ", "วางแผนและประสานงาน\nจัดทำรายงานสรุป\nดูแลงบประมาณ"},
+		{"", "ดูแลการรับชำระค่าลงทะเบียน", "กรรมการ", "ดูแลการรับชำระค่าลงทะเบียน"},
+		{"", "", "กรรมการ", "เป็นกรรมการ"},
+	} {
+		if got := reportDuty(tc.responsibilities, tc.extra, tc.role); got != tc.want {
+			t.Errorf("reportDuty(%q, %q) = %q, want %q", tc.responsibilities, tc.extra, got, tc.want)
+		}
+	}
+}
+
+func TestSavingADocumentKeepsExtraDuties(t *testing.T) {
+	db := testDatabase(t)
+	document, _ := createReviewDocument(t, db, map[string]string{})
+	row := Appointment{DocumentID: document.ID, FullName: "ทดสอบ หน้าที่", Department: "ฝ่ายทดสอบ", Responsibilities: "ตามคำสั่ง", BoundingBoxJSON: "null"}
+	db.Create(&row)
+	response := patchDocument(t, db, document.ID, map[string]any{"appointments": []map[string]any{{"id": row.ID, "fullName": row.FullName, "department": row.Department, "responsibilities": "ตามคำสั่ง", "extraDuties": "เขียนเพิ่ม", "boundingBox": "null"}}})
+	if response.Code != 200 {
+		t.Fatalf("save = %d %s", response.Code, response.Body.String())
+	}
+	saved := rowOf(t, db, document.ID)
+	if saved.ExtraDuties != "เขียนเพิ่ม" || saved.Responsibilities != "ตามคำสั่ง" {
+		t.Fatalf("saved = %q / %q", saved.Responsibilities, saved.ExtraDuties)
+	}
+}
+
+func TestRescanKeepsDutiesReviewersWrote(t *testing.T) {
+	previous := []Appointment{{Department: "ฝ่ายดำเนินงาน", ExtraDuties: "จัดทำรายงานสรุป"}, {Department: "ฝ่ายดำเนินงาน", ExtraDuties: "จัดทำรายงานสรุป"}, {Department: "ฝ่ายเก่า", ExtraDuties: "ไม่มีแล้ว"}}
+	fresh := []Appointment{{Department: "ฝ่ายดำเนินงาน"}, {Department: " ฝ่ายดำเนินงาน "}, {Department: "ฝ่ายใหม่"}}
+	carryExtraDuties(previous, fresh)
+	if fresh[0].ExtraDuties != "จัดทำรายงานสรุป" || fresh[1].ExtraDuties != "จัดทำรายงานสรุป" || fresh[2].ExtraDuties != "" {
+		t.Fatalf("after rescan = %+v", fresh)
+	}
+}
+
+func TestMergedDutiesDoNotRepeatSharedLines(t *testing.T) {
+	duties := []string{}
+	for _, duty := range []string{"ประสานงาน\nงาน A", "ประสานงาน\nงาน B"} {
+		duties = appendDutyLines(duties, duty)
+	}
+	if strings.Join(duties, "|") != "ประสานงาน|งาน A|งาน B" {
+		t.Fatalf("duties = %v", duties)
 	}
 }

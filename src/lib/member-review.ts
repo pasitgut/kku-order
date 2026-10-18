@@ -92,7 +92,7 @@ export function rosterRows(rows: Appointment[]): RosterRow[] {
 }
 
 // แถวโดยตำแหน่งที่ระบบหาคนให้แล้ว แสดงชื่อคนนั้นแทนช่องว่าง
-function rosterName(row: Appointment) {
+export function rosterName(row: Appointment) {
   if (row.fullName.trim() || !isLinked(row) || !row.directoryUser?.fullName) return row.fullName;
   return `${row.directoryUser.fullName} (ตามตำแหน่ง)`;
 }

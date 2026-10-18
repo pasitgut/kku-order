@@ -39,6 +39,8 @@ export type Appointment = {
   department: string;
   committeeRole: string;
   responsibilities: string;
+  // หน้าที่ที่ผู้ตรวจเขียนเพิ่มเอง บรรทัดละข้อ
+  extraDuties?: string;
   directoryUserId?: number;
   directoryUser?: DirectoryUser;
   nameMatchMethod?: string;
