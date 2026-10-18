@@ -205,10 +205,19 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 			}
 			// ตำแหน่งวิชาการที่ติดมากับชื่อย้ายไปช่องตำแหน่ง ทุกแถวจึงหน้าตาเหมือนกัน
 			fullName, position := nameAndPosition(m.Prefix.Text+" "+m.Name.Text, m.Position.Text)
+			role := m.Role.Text
+			if fullName == "" {
+				// แถวโดยตำแหน่ง: OCR มักติด "… เป็นประธานกรรมการ" มาท้ายตำแหน่ง แยกออกเป็นบทบาท
+				var tail string
+				position, tail = splitExOfficioPosition(position)
+				if strings.TrimSpace(role) == "" {
+					role = tail
+				}
+			}
 			rec.Appointments = append(rec.Appointments, Appointment{
 				FullName:         truncateRunes(fullName, colLimitAppointmentFullName),
 				Position:         truncateRunes(position, colLimitAppointmentPosition),
-				CommitteeRole:    truncateRunes(m.Role.Text, colLimitAppointmentRole),
+				CommitteeRole:    truncateRunes(role, colLimitAppointmentRole),
 				Department:       dept,
 				Responsibilities: g.Duty.Text,
 				NameMatchMethod:  matchMethodFor(m.ExOfficio),

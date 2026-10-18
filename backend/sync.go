@@ -129,6 +129,12 @@ func (s *UserSyncService) SyncUsers(ctx context.Context, actor string) (UserSync
 			result.Unchanged++
 		}
 	}
+	// ตำแหน่งบริหารเปลี่ยนตามข้อมูล sync และเอกสารที่ค้างอยู่ได้ผูกคนให้ทันที
+	if err := syncPositionHolders(s.db); err != nil {
+		s.logger.Printf("sync position holders: %v", err)
+	} else if err := refreshPendingMatches(s.db); err != nil {
+		s.logger.Printf("refresh pending matches after sync: %v", err)
+	}
 	return finish("SUCCESS", nil)
 }
 

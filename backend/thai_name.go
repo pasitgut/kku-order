@@ -107,7 +107,7 @@ func refreshPendingMatches(db *gorm.DB) error {
 	err := db.Table("appointments AS a").Select("a.*").
 		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
 		Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
-		Where("(a.directory_user_id IS NULL AND a.full_name <> '') OR a.name_match_method = ?", matchMethodFuzzy).
+		Where("a.directory_user_id IS NULL OR a.name_match_method IN ?", []string{matchMethodFuzzy, matchMethodPosition}).
 		Scan(&rows).Error
 	if err != nil || len(rows) == 0 {
 		return err
@@ -116,8 +116,22 @@ func refreshPendingMatches(db *gorm.DB) error {
 	if err != nil {
 		return err
 	}
+	holders, err := loadPositionHolders(db)
+	if err != nil {
+		return err
+	}
+	issuedDates, err := pendingIssuedDates(db, rows)
+	if err != nil {
+		return err
+	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		for _, row := range rows {
+			if strings.TrimSpace(row.FullName) == "" {
+				if err := relinkByPosition(tx, row, holders, issuedDates[row.DocumentID]); err != nil {
+					return err
+				}
+				continue
+			}
 			if row.NameMatchMethod == matchMethodFuzzy && row.DirectoryUserID != nil {
 				if err := tx.Model(&Appointment{}).Where("id = ?", row.ID).Updates(map[string]any{"directory_user_id": nil, "name_match_score": 0}).Error; err != nil {
 					return err
@@ -136,4 +150,37 @@ func refreshPendingMatches(db *gorm.DB) error {
 		}
 		return nil
 	})
+}
+
+// relinkByPosition ผูกแถวโดยตำแหน่งกับผู้ดำรงตำแหน่งตามข้อมูลล่าสุด แถวที่ระบบเคยผูกไว้เปลี่ยนคนตามได้เมื่อแก้ผู้ดำรงตำแหน่ง
+// ส่วนแถวที่ผู้ตรวจเอาคนออกเอง (MANUAL ไม่มีคน) ปล่อยไว้ตามนั้น
+func relinkByPosition(tx *gorm.DB, row Appointment, holders map[string][]PositionHolder, issued *time.Time) error {
+	if row.NameMatchMethod == matchMethodManual && row.DirectoryUserID == nil {
+		return nil
+	}
+	holder := holderFor(row.Position, holders, issued)
+	switch {
+	case holder == nil && row.NameMatchMethod == matchMethodPosition && row.DirectoryUserID != nil:
+		return tx.Model(&Appointment{}).Where("id = ?", row.ID).Updates(map[string]any{"directory_user_id": nil, "name_match_method": matchMethodExOfficio, "name_match_score": 0}).Error
+	case holder == nil || (row.DirectoryUserID != nil && *row.DirectoryUserID == holder.DirectoryPersonID):
+		return nil
+	}
+	return tx.Model(&Appointment{}).Where("id = ?", row.ID).Updates(map[string]any{"directory_user_id": holder.DirectoryPersonID, "name_match_method": matchMethodPosition, "name_match_score": 1}).Error
+}
+
+// pendingIssuedDates คืนวันที่ออกคำสั่งของเอกสารที่มีแถวต้องจับคู่ ใช้เลือกผู้ดำรงตำแหน่ง ณ วันนั้น
+func pendingIssuedDates(db *gorm.DB, rows []Appointment) (map[uint]*time.Time, error) {
+	ids := make([]uint, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.DocumentID)
+	}
+	var documents []Document
+	if err := db.Select("id", "issued_date").Where("id IN ?", ids).Find(&documents).Error; err != nil {
+		return nil, err
+	}
+	dates := make(map[uint]*time.Time, len(documents))
+	for _, document := range documents {
+		dates[document.ID] = document.IssuedDate
+	}
+	return dates, nil
 }

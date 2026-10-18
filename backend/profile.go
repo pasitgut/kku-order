@@ -71,6 +71,7 @@ var activityLabels = map[string]string{
 	"DOCUMENT_RETURNED":            "ส่งกลับไปตรวจสอบ",
 	"AUTO_CONFIRM_CHANGED":         "ตั้งค่ายืนยันอัตโนมัติ",
 	"DIRECTORY_USER_CREATED":       "เพิ่มบุคคล",
+	"POSITION_HOLDER_SET":          "กำหนดผู้ดำรงตำแหน่ง",
 	"SETTINGS_OCR_UPDATED":         "ตั้งค่า OCR",
 	"OCR_API_KEY_UPDATED":          "ตั้งค่า API key OCR",
 	"OCR_API_KEY_REMOVED":          "ลบ API key OCR",

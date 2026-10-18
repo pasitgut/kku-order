@@ -5,11 +5,12 @@ import { CaretLeft, CaretRight, CheckCircle, MagnifyingGlass, Plus, SpinnerGap }
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { useToast } from "@/components/toast";
-import { ApiError, DirectoryUser, createDirectoryUser, getDirectoryUsersPage } from "@/lib/api";
+import { ApiError, DirectoryUser, VacantPosition, createDirectoryUser, getDirectoryUsers, getDirectoryUsersPage, getVacantPositions, setPositionHolder } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { initials } from "@/lib/person";
+import { TeacherDraft, linkedRowsNote, teacherPayload } from "@/lib/position-holder";
 
-const emptyDraft = { prefix: "", firstName: "", lastName: "", positionTitle: "", department: "", email: "", phone: "" };
+const emptyDraft: TeacherDraft = { prefix: "", firstName: "", lastName: "", positionTitle: "", department: "", email: "", phone: "", managePosition: "", managePositionSince: "" };
 const inputClass = "focus-ring h-11 w-full rounded-md border border-[var(--line-strong)] bg-white px-3 text-sm outline-none focus:border-[var(--accent)]";
 const buttonClass = "focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:opacity-50";
 
@@ -31,11 +32,19 @@ export default function TeachersSettingsPage() {
   const [list, setList] = useState<{ data: DirectoryUser[]; pagination: { total: number; page: number; limit: number } } | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [vacancies, setVacancies] = useState<VacantPosition[] | null>(null);
+  const [vacancyRevision, setVacancyRevision] = useState(0);
   const canCreate = can(me?.role ?? "", "createPerson");
 
   useEffect(() => {
     if (success && !saving) firstNameRef.current?.focus();
   }, [success, saving]);
+
+  useEffect(() => {
+    let active = true;
+    getVacantPositions().then((response) => { if (active) setVacancies(response.data); }).catch(() => { if (active) setVacancies([]); });
+    return () => { active = false; };
+  }, [vacancyRevision]);
 
   useEffect(() => {
     let active = true;
@@ -55,7 +64,7 @@ export default function TeachersSettingsPage() {
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canCreate || savingRef.current) return;
-    const payload = Object.fromEntries(Object.entries(draft).map(([key, value]) => [key, value.trim()])) as typeof emptyDraft;
+    const payload = teacherPayload(draft);
     setFormError(""); setConflictName(""); setSuccess("");
     if (!payload.firstName || !payload.lastName) {
       setFormError("กรุณาระบุชื่อและนามสกุล โดยไม่ใช้ช่องว่างเพียงอย่างเดียว");
@@ -63,11 +72,12 @@ export default function TeachersSettingsPage() {
     }
     savingRef.current = true; setSaving(true);
     try {
-      const { data } = await createDirectoryUser(payload);
+      const { data, linked } = await createDirectoryUser(payload);
       const name = data.fullName || `${data.firstName} ${data.lastName}`;
-      setSuccess(`เพิ่ม ${name} แล้ว สามารถค้นหาและเลือกใช้ในเอกสารได้ทันที`);
+      setSuccess(`เพิ่ม ${name} แล้ว สามารถค้นหาและเลือกใช้ในเอกสารได้ทันที${linkedRowsNote(linked)}`);
       toast(`เพิ่มข้อมูล ${name} แล้ว`);
       setDraft(emptyDraft); setQuery(""); setSearch(""); setSource("MANUAL"); setPage(1); refreshList();
+      if (payload.managePosition) setVacancyRevision((current) => current + 1);
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : "ไม่สามารถเพิ่มข้อมูลอาจารย์ได้ กรุณาลองอีกครั้ง");
       if (reason instanceof ApiError && reason.status === 409) {
@@ -89,6 +99,7 @@ export default function TeachersSettingsPage() {
       <p className="mt-1 text-sm font-light leading-6 text-[var(--muted)]">เตรียมรายชื่อไว้ก่อนเริ่มงานเอกสาร รวมถึงบุคลากรจากหน่วยงานภายนอก</p>
     </div>
 
+    <div className={canCreate ? "grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_340px]" : ""}>
     {canCreate && <SettingsCard id="add-teacher" title="เพิ่มข้อมูลอาจารย์" description="ระบุชื่อและนามสกุล ส่วนข้อมูลอื่นสามารถเว้นว่างได้">
       <form onSubmit={submit} className="space-y-5 p-5 lg:p-6" aria-busy={saving}>
         {formError && <div role="alert" className="rounded-md bg-[var(--danger-soft)] px-4 py-3 text-sm text-[var(--danger)]">
@@ -104,6 +115,11 @@ export default function TeachersSettingsPage() {
           <label className="space-y-1.5 text-sm"><span className="block">หน่วยงาน / สังกัด</span><input name="department" value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} maxLength={255} placeholder="เช่น วิทยาลัยการคอมพิวเตอร์" autoComplete="organization" className={inputClass} /></label>
           <label className="space-y-1.5 text-sm"><span className="block">อีเมล</span><input name="email" type="email" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} maxLength={255} placeholder="name@example.com" autoComplete="email" className={inputClass} /></label>
           <label className="space-y-1.5 text-sm"><span className="block">เบอร์โทรศัพท์</span><input name="phone" type="tel" value={draft.phone} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} maxLength={20} autoComplete="tel" className={inputClass} /></label>
+          <div className="grid gap-4 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] p-4 sm:col-span-2 sm:grid-cols-2">
+            <label className="space-y-1.5 text-sm"><span className="block">ตำแหน่งบริหาร (ถ้ามี)</span><input name="managePosition" list="vacant-position-titles" value={draft.managePosition} onChange={(event) => setDraft({ ...draft, managePosition: event.target.value })} maxLength={255} placeholder="เช่น ผู้ช่วยคณบดีฝ่ายวิชาการ" className={inputClass} /></label>
+            <label className="space-y-1.5 text-sm"><span className="block">ดำรงตำแหน่งตั้งแต่</span><input name="managePositionSince" value={draft.managePositionSince} onChange={(event) => setDraft({ ...draft, managePositionSince: event.target.value })} disabled={!draft.managePosition.trim()} maxLength={40} placeholder="เช่น 1 ต.ค. 2568" className={inputClass} /></label>
+            <p className="text-xs font-light leading-5 text-[var(--muted)] sm:col-span-2">กรอกเมื่อเป็นตำแหน่งที่มีผู้ดำรงคนเดียว เช่น คณบดี ผู้ช่วยคณบดี ประธานหลักสูตร ระบบจะผูกแถว &quot;โดยตำแหน่ง&quot; ในเอกสารที่รอยืนยันให้ทันที ถ้ากรอกวันเริ่ม ระบบใช้คนนี้กับคำสั่งตั้งแต่วันนั้นจนกว่าจะกรอกผู้ดำรงคนถัดไป</p>
+          </div>
         </fieldset>
         <div className="flex flex-col gap-3 border-t border-[var(--line-soft)] pt-4 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs font-light leading-5 text-[var(--muted)]">รายชื่อนี้ใช้กับเอกสารเท่านั้น ไม่มีการสร้างบัญชีเข้าสู่ระบบ</p>
@@ -111,6 +127,9 @@ export default function TeachersSettingsPage() {
         </div>
       </form>
     </SettingsCard>}
+    <VacantPositionsCard vacancies={vacancies} canAssign={canCreate} onAssigned={() => { setVacancyRevision((current) => current + 1); refreshList(); }} />
+    <datalist id="vacant-position-titles">{vacancies?.map((item) => <option key={item.positionTitle} value={item.positionTitle} />)}</datalist>
+    </div>
     {!canCreate && status === "ready" && <p className="rounded-md border border-[var(--line)] bg-[var(--surface-muted)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">ผู้ดูแลระบบและเจ้าหน้าที่สามารถเพิ่มข้อมูลอาจารย์ได้ คุณสามารถค้นหาและดูรายชื่อด้านล่าง</p>}
 
     <SettingsCard id="teacher-list" title="รายชื่อในระบบ" description="รายชื่อชุดเดียวกับที่ใช้เลือกบุคคลในเอกสาร เรียงตามรายการที่เพิ่มล่าสุด">
@@ -145,4 +164,73 @@ export default function TeachersSettingsPage() {
       </div>
     </SettingsCard>
   </SettingsFrame>;
+}
+
+// VacantPositionsCard แสดงตำแหน่งที่เอกสารรอยืนยันอ้างถึงแต่ยังไม่มีผู้ดำรง ให้เลือกคนที่มีอยู่แล้วในระบบได้ทันที
+function VacantPositionsCard({ vacancies, canAssign, onAssigned }: { vacancies: VacantPosition[] | null; canAssign: boolean; onAssigned: () => void }) {
+  const [open, setOpen] = useState("");
+  return <SettingsCard id="vacant-positions" title="ตำแหน่งที่ยังไม่มีผู้ดำรง" description="จากเอกสารที่รอยืนยัน กรอกให้ครบครั้งเดียวก่อนเริ่มใช้งานจริง">
+    {vacancies === null ? <p role="status" className="flex items-center gap-2 px-5 py-6 text-sm text-[var(--muted)]"><SpinnerGap size={18} className="animate-spin" />กำลังโหลด...</p>
+      : !vacancies.length ? <p className="flex items-start gap-2 px-5 py-6 text-sm leading-6 text-[var(--success)]"><CheckCircle size={20} className="mt-0.5 shrink-0" />ทุกตำแหน่งในเอกสารที่รอยืนยันมีผู้ดำรงแล้ว</p>
+      : <ul className="divide-y divide-[var(--line-soft)]">{vacancies.map((item) => <li key={item.positionTitle} className="px-5 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <p className="min-w-0 break-words text-sm">{item.positionTitle}</p>
+          <span className="shrink-0 whitespace-nowrap text-xs text-[var(--muted)]">{item.documents.toLocaleString("th-TH")} คำสั่ง</span>
+        </div>
+        {canAssign && open !== item.positionTitle && <button type="button" onClick={() => setOpen(item.positionTitle)} className="focus-ring mt-1 min-h-9 text-xs font-medium text-[var(--accent)] underline underline-offset-4">กำหนดผู้ดำรงตำแหน่ง</button>}
+        {canAssign && open === item.positionTitle && <AssignHolderForm positionTitle={item.positionTitle} onCancel={() => setOpen("")} onAssigned={() => { setOpen(""); onAssigned(); }} />}
+      </li>)}</ul>}
+    <p className="border-t border-[var(--line)] px-5 py-3 text-xs font-light leading-5 text-[var(--muted)]">บทบาทในคณะกรรมการ เช่น ประธานกรรมการ ไม่อยู่ในรายการนี้ ให้เลือกคนในหน้าตรวจเอกสาร</p>
+  </SettingsCard>;
+}
+
+function AssignHolderForm({ positionTitle, onCancel, onAssigned }: { positionTitle: string; onCancel: () => void; onAssigned: () => void }) {
+  const toast = useToast();
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState<DirectoryUser[]>([]);
+  const [personId, setPersonId] = useState(0);
+  const [startsOn, setStartsOn] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const text = query.trim();
+    if (!text) return;
+    let active = true;
+    const timer = setTimeout(() => {
+      getDirectoryUsers(text).then((response) => { if (active) setMatches(response.data.slice(0, 6)); }).catch(() => { if (active) setMatches([]); });
+    }, 250);
+    return () => { active = false; clearTimeout(timer); };
+  }, [query]);
+
+  const save = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!personId || saving) { setError(personId ? "" : "กรุณาเลือกผู้ดำรงตำแหน่ง"); return; }
+    setSaving(true); setError("");
+    try {
+      const { linked } = await setPositionHolder({ positionTitle, directoryUserId: personId, startsOn: startsOn.trim() });
+      toast(`บันทึกผู้ดำรงตำแหน่ง ${positionTitle} แล้ว${linkedRowsNote(linked)}`);
+      onAssigned();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "บันทึกผู้ดำรงตำแหน่งไม่สำเร็จ");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const shown = query.trim() ? matches : [];
+  return <form onSubmit={save} className="mt-3 space-y-3 rounded-lg border border-[var(--line-strong)] bg-[var(--surface-muted)] p-3" aria-busy={saving}>
+    {error && <p role="alert" className="rounded-md bg-[var(--danger-soft)] px-3 py-2 text-xs text-[var(--danger)]">{error}</p>}
+    <label className="block space-y-1.5 text-xs"><span className="block">ค้นหาผู้ดำรงตำแหน่ง</span><input value={query} onChange={(event) => { setQuery(event.target.value); setPersonId(0); }} placeholder="พิมพ์ชื่อหรือนามสกุล" autoFocus className={`${inputClass} h-10`} /></label>
+    {shown.length > 0 && <fieldset className="space-y-1"><legend className="sr-only">เลือกบุคคล</legend>{shown.map((user) => {
+      const name = user.fullName || `${user.prefix} ${user.firstName} ${user.lastName}`.trim();
+      return <label key={user.id} className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-xs ${personId === user.id ? "border-[var(--accent)] bg-white" : "border-transparent hover:bg-white"}`}><input type="radio" name="holder" checked={personId === user.id} onChange={() => setPersonId(user.id)} /><span className="min-w-0 break-words">{name}<span className="block font-light text-[var(--muted)]">{user.positionTitle || user.jobTitle || ""}</span></span></label>;
+    })}</fieldset>}
+    {query.trim() && !shown.length && <p className="text-xs text-[var(--muted)]">ไม่พบรายชื่อ เพิ่มคนใหม่ได้จากแบบฟอร์ม &quot;เพิ่มข้อมูลอาจารย์&quot;</p>}
+    <label className="block space-y-1.5 text-xs"><span className="block">ดำรงตำแหน่งตั้งแต่</span><input value={startsOn} onChange={(event) => setStartsOn(event.target.value)} maxLength={40} placeholder="เช่น 1 ต.ค. 2568 (ว่างได้)" className={`${inputClass} h-10`} /></label>
+    <div className="flex justify-end gap-2">
+      <button type="button" onClick={onCancel} className={`${buttonClass} min-h-10 border border-[var(--line-strong)] bg-white px-3`}>ยกเลิก</button>
+      <button type="submit" disabled={saving} className={`${buttonClass} min-h-10 bg-[var(--accent)] px-3 text-white hover:bg-[var(--accent-strong)]`}>{saving && <SpinnerGap size={16} className="animate-spin" />}บันทึก</button>
+    </div>
+  </form>;
 }

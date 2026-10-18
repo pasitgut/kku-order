@@ -390,13 +390,33 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				}
 				for _, input := range *payload.Appointments {
 					appointment := Appointment{DocumentID: document.ID, FullName: truncateRunes(input.FullName, colLimitAppointmentFullName), Position: truncateRunes(input.Position, colLimitAppointmentPosition), Department: truncateRunes(input.Department, colLimitAppointmentDept), CommitteeRole: truncateRunes(input.CommitteeRole, colLimitAppointmentRole), Responsibilities: input.Responsibilities, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
-					match := resolveAppointmentMatch(input, previous[input.ID].NameMatchMethod, directoryUsers, aliases)
+					before := previous[input.ID]
+					match := resolveAppointmentMatch(input, before.NameMatchMethod, directoryUsers, aliases)
+					// คนเดิมที่ระบบผูกให้ (ชื่อตรง, เคยผูกไว้, ตามตำแหน่ง) คงที่มาเดิม ป้ายในหน้าเว็บจะได้ไม่กลายเป็น "เลือกเอง"
+					keptSystemLink := match.Method == matchMethodManual && before.DirectoryUserID != nil && match.User.ID == *before.DirectoryUserID && (before.NameMatchMethod == matchMethodExact || before.NameMatchMethod == matchMethodAlias || before.NameMatchMethod == matchMethodPosition)
+					if keptSystemLink {
+						match.Method = before.NameMatchMethod
+					}
+					// แถวที่ไม่มีชื่อตามเอกสารคือแถวโดยตำแหน่ง ไม่ว่าเคยผูกคนด้วยวิธีไหน
+					exOfficio := strings.TrimSpace(input.FullName) == ""
 					applyMatchToAppointment(&appointment, match)
+					if exOfficio && match.Matched {
+						// แถวโดยตำแหน่งแสดงชื่อคนจากระบบ ไม่ต้องเขียนชื่อทับลงช่องชื่อตามเอกสาร
+						appointment.FullName = ""
+					}
+					if exOfficio && !match.Matched && before.DirectoryUserID != nil {
+						// ผู้ตรวจเอาคนออกเอง ระบบจะไม่ผูกตามตำแหน่งกลับเข้าไปอีก
+						appointment.NameMatchMethod = matchMethodManual
+					}
 					if err := tx.Create(&appointment).Error; err != nil {
 						return err
 					}
-					if match.Method == matchMethodManual {
-						if err := rememberNameAlias(tx, previous[input.ID], input, match, changedBy); err != nil {
+					if match.Method == matchMethodManual && exOfficio {
+						if err := assignPositionHolder(tx, input.Position, match.User.ID, document.IssuedDate, positionSourceLearned, changedBy); err != nil {
+							return err
+						}
+					} else if match.Method == matchMethodManual {
+						if err := rememberNameAlias(tx, before, input, match, changedBy); err != nil {
 							return err
 						}
 					}
@@ -600,6 +620,9 @@ type createDirectoryUserRequest struct {
 	Department    string `json:"department"`
 	Email         string `json:"email"`
 	Phone         string `json:"phone"`
+	// ตำแหน่งบริหารที่คนนี้ดำรงอยู่ ใช้ผูกแถว "โดยตำแหน่ง" ในเอกสาร (ไม่บังคับ)
+	ManagePosition      string `json:"managePosition"`
+	ManagePositionSince string `json:"managePositionSince"`
 }
 
 // createDirectoryUser records somebody the university directory does not
@@ -617,6 +640,16 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 		if firstName == "" || lastName == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องระบุชื่อและนามสกุล"})
 			return
+		}
+
+		var managed string
+		var managedSince *time.Time
+		if strings.TrimSpace(payload.ManagePosition) != "" {
+			var problem string
+			if managed, managedSince, problem = readPositionHolderInput(payload.ManagePosition, payload.ManagePositionSince); problem != "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": problem})
+				return
+			}
 		}
 
 		users, _, err := loadDirectory(db)
@@ -639,14 +672,25 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		if err := db.Transaction(func(tx *gorm.DB) error {
-			return createDirectoryPersonWithProfile(tx, &person, &profile)
+			if err := createDirectoryPersonWithProfile(tx, &person, &profile); err != nil {
+				return err
+			}
+			if managed == "" {
+				return nil
+			}
+			return assignPositionHolder(tx, managed, person.ID, managedSince, positionSourceManual, createdBy)
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกบุคคลใหม่ได้"})
 			return
 		}
 		user := directoryPersonAPI(person, profile)
 		_ = db.Create(&AuditLog{UserID: createdBy, Action: "DIRECTORY_USER_CREATED", Details: user.FullName}).Error
-		c.JSON(http.StatusCreated, gin.H{"data": user})
+		linked := 0
+		if managed != "" {
+			// เอกสารที่รอยืนยันและอ้างถึงตำแหน่งนี้ได้คนทันที
+			linked, _ = linkPendingByPosition(db, person.ID)
+		}
+		c.JSON(http.StatusCreated, gin.H{"data": user, "linked": linked})
 	}
 }
 
@@ -660,7 +704,7 @@ func newManualDirectoryPerson(payload createDirectoryUserRequest, createdBy stri
 		"prefix": strings.TrimSpace(payload.Prefix), "first_name": firstName, "last_name": lastName,
 		"position_title": positionTitle, "department": strings.TrimSpace(payload.Department),
 		"email": strings.TrimSpace(payload.Email), "tel": strings.TrimSpace(payload.Phone),
-		"entered_by": createdBy,
+		"manage_position": strings.TrimSpace(payload.ManagePosition), "entered_by": createdBy,
 	})
 	if err != nil {
 		return DirectoryPerson{}, DirectoryPersonProfile{}, err

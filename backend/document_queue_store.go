@@ -85,6 +85,13 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 	threshold := loadOCRSettingsOrDefault(g.settings).ReviewThreshold
 	rec := buildExtractionRecords(result, threshold)
 	matchRecordAppointments(g.db, rec.Appointments)
+	if holders, err := loadPositionHolders(g.db); err == nil {
+		var issued *time.Time
+		if value, ok := rec.Updates["issued_date"].(time.Time); ok {
+			issued = &value
+		}
+		linkByPosition(rec.Appointments, holders, issued)
+	}
 	status, stage := extractionStatus(rec, threshold)
 	docID := doc.ID
 

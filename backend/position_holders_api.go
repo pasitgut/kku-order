@@ -1,0 +1,167 @@
+package main
+
+import (
+	"errors"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+)
+
+// VacantPosition คือตำแหน่งที่เอกสารรอยืนยันอ้างถึง แต่ระบบยังหาผู้ดำรงไม่ได้
+type VacantPosition struct {
+	PositionTitle string `json:"positionTitle"`
+	Documents     int    `json:"documents"`
+}
+
+// vacantPositions รวมแถวโดยตำแหน่งที่ยังไม่ผูกคน ในเอกสารที่ยังไม่ยืนยันหรือยกเลิก นับเป็นจำนวนเอกสารต่อตำแหน่ง
+func vacantPositions(db *gorm.DB) ([]VacantPosition, error) {
+	var rows []struct {
+		DocumentID uint
+		Position   string
+	}
+	err := db.Table("appointments AS a").Select("a.document_id, a.position").
+		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
+		Where("a.directory_user_id IS NULL AND TRIM(COALESCE(a.full_name, '')) = '' AND TRIM(COALESCE(a.position, '')) <> ''").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	titles := map[string]string{}
+	documents := map[string]map[uint]bool{}
+	for _, row := range rows {
+		if committeeRoleOnly(row.Position) {
+			continue
+		}
+		key := positionKey(row.Position)
+		if key == "" {
+			continue
+		}
+		// แสดงชื่อตำแหน่งแบบสั้นที่สุดที่พบ (ตัดชื่อหน่วยงานและบทบาทท้ายออกแล้ว)
+		title, _ := splitExOfficioPosition(row.Position)
+		title = strings.TrimSpace(positionSpacing.ReplaceAllString(organisationWords.ReplaceAllString(title, ""), " "))
+		if current, ok := titles[key]; !ok || len([]rune(title)) < len([]rune(current)) {
+			titles[key] = title
+		}
+		if documents[key] == nil {
+			documents[key] = map[uint]bool{}
+		}
+		documents[key][row.DocumentID] = true
+	}
+	vacant := make([]VacantPosition, 0, len(titles))
+	for key, title := range titles {
+		vacant = append(vacant, VacantPosition{PositionTitle: title, Documents: len(documents[key])})
+	}
+	sort.Slice(vacant, func(i, j int) bool {
+		if vacant[i].Documents != vacant[j].Documents {
+			return vacant[i].Documents > vacant[j].Documents
+		}
+		return vacant[i].PositionTitle < vacant[j].PositionTitle
+	})
+	return vacant, nil
+}
+
+func listVacantPositions(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		vacant, err := vacantPositions(db)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดตำแหน่งที่ยังไม่มีผู้ดำรงได้"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": vacant})
+	}
+}
+
+// readPositionHolderInput ตรวจชื่อตำแหน่งและวันที่เริ่มดำรงตำแหน่งที่ผู้ใช้กรอก คืนข้อความ error ภาษาไทยถ้าใช้ไม่ได้
+func readPositionHolderInput(title, startsOn string) (string, *time.Time, string) {
+	title, _ = splitExOfficioPosition(title)
+	if positionKey(title) == "" {
+		return "", nil, "กรุณาระบุตำแหน่งบริหาร"
+	}
+	if committeeRoleOnly(title) {
+		return "", nil, "ตำแหน่งนี้เป็นบทบาทในคณะกรรมการ ระบบดึงคนตามตำแหน่งไม่ได้ ให้เลือกคนในหน้าตรวจเอกสาร"
+	}
+	since, ok := normalizeThaiDate(startsOn)
+	if !ok {
+		return "", nil, "อ่านวันที่เริ่มดำรงตำแหน่งไม่ได้ ลองพิมพ์แบบ 1 ต.ค. 2568"
+	}
+	return truncateRunes(title, 255), since, ""
+}
+
+// assignPositionHolder บันทึกผู้ดำรงตำแหน่ง ถ้าตำแหน่งเดียวกันเริ่มวันเดียวกันเคยบันทึกคนอื่นไว้ ถือว่าแก้ไขรายการเดิม
+func assignPositionHolder(tx *gorm.DB, title string, personID uint, startsOn *time.Time, source, createdBy string) error {
+	replaced := tx.Where("position_key = ? AND source <> ?", positionKey(title), positionSourceSync)
+	if startsOn == nil {
+		replaced = replaced.Where("starts_on IS NULL")
+	} else {
+		replaced = replaced.Where("starts_on = ?", startsOn.Format("2006-01-02"))
+	}
+	if err := replaced.Where("directory_person_id <> ?", personID).Delete(&PositionHolder{}).Error; err != nil {
+		return err
+	}
+	return rememberPositionHolder(tx, title, personID, startsOn, source, createdBy)
+}
+
+// linkPendingByPosition ผูกแถวโดยตำแหน่งในเอกสารที่รอยืนยัน แล้วคืนจำนวนแถวที่เพิ่งผูกกับคนนี้
+func linkPendingByPosition(db *gorm.DB, personID uint) (int, error) {
+	count := func() (int64, error) {
+		var total int64
+		err := db.Table("appointments AS a").Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+			Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
+			Where("a.directory_user_id = ? AND a.name_match_method = ?", personID, matchMethodPosition).
+			Count(&total).Error
+		return total, err
+	}
+	before, err := count()
+	if err != nil {
+		return 0, err
+	}
+	if err := refreshPendingMatches(db); err != nil {
+		return 0, err
+	}
+	after, err := count()
+	return int(after - before), err
+}
+
+func setPositionHolder(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload struct {
+			PositionTitle   string `json:"positionTitle"`
+			DirectoryUserID uint   `json:"directoryUserId"`
+			StartsOn        string `json:"startsOn"`
+		}
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		title, startsOn, problem := readPositionHolderInput(payload.PositionTitle, payload.StartsOn)
+		if problem != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": problem})
+			return
+		}
+		var person DirectoryPerson
+		if err := db.First(&person, payload.DirectoryUserID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบบุคคลนี้ในระบบ"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบบุคคลได้"})
+			return
+		}
+		createdBy := currentUserID(c)
+		if err := assignPositionHolder(db, title, person.ID, startsOn, positionSourceManual, createdBy); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกผู้ดำรงตำแหน่งได้"})
+			return
+		}
+		linked, err := linkPendingByPosition(db, person.ID)
+		if err != nil {
+			linked = 0
+		}
+		_ = db.Create(&AuditLog{UserID: createdBy, Action: "POSITION_HOLDER_SET", Details: title + ": " + strings.TrimSpace(person.Prefix+" "+person.FirstName+" "+person.LastName)}).Error
+		c.JSON(http.StatusCreated, gin.H{"data": gin.H{"positionTitle": title, "directoryUserId": person.ID, "startsOn": startsOn}, "linked": linked})
+	}
+}

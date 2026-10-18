@@ -8,6 +8,7 @@ package main
 // Keys are "METHOD /path" exactly as registered in newAPIRouter.
 var auditedRoutes = map[string][]string{
 	"POST /api/v1/directory-users":         {"DIRECTORY_USER_CREATED"},
+	"POST /api/v1/position-holders":        {"POSITION_HOLDER_SET"},
 	"POST /api/v1/documents":               {"DOCUMENT_UPLOADED", "DOCUMENT_OVERWRITTEN"},
 	"POST /api/v1/documents/:id/file":      {"DOCUMENT_FILE_REPLACED"},
 	"POST /api/v1/documents/:id/reprocess": {"DOCUMENT_RESCAN_REQUESTED", "DOCUMENT_REPROCESS_REQUESTED"},

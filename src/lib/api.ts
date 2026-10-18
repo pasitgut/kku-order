@@ -270,8 +270,24 @@ export async function createDirectoryUser(payload: {
   department?: string;
   email?: string;
   phone?: string;
+  managePosition?: string;
+  managePositionSince?: string;
 }) {
-  return apiFetch<{ data: DirectoryUser }>("/api/v1/directory-users", {
+  return apiFetch<{ data: DirectoryUser; linked: number }>("/api/v1/directory-users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export type VacantPosition = { positionTitle: string; documents: number };
+
+export async function getVacantPositions() {
+  return apiFetch<{ data: VacantPosition[] }>("/api/v1/position-holders/vacant");
+}
+
+export async function setPositionHolder(payload: { positionTitle: string; directoryUserId: number; startsOn: string }) {
+  return apiFetch<{ data: { positionTitle: string; directoryUserId: number }; linked: number }>("/api/v1/position-holders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

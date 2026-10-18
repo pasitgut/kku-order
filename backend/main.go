@@ -348,6 +348,8 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.GET("/api/v1/reports/workload", workloadReport(db))
 	router.GET("/api/v1/directory-users", listDirectoryUsers(db))
 	router.POST("/api/v1/directory-users", requireRole("ADMIN", "STAFF"), createDirectoryUser(db))
+	router.GET("/api/v1/position-holders/vacant", listVacantPositions(db))
+	router.POST("/api/v1/position-holders", requireRole("ADMIN", "STAFF"), setPositionHolder(db))
 	router.GET("/api/v1/documents", listDocuments(db))
 	router.GET("/api/v1/documents/:id", getDocument(db))
 	router.GET("/api/v1/documents/:id/file", documentFile(db))
@@ -458,6 +460,9 @@ func main() {
 	}
 	if err := tidyAppointmentNames(db); err != nil {
 		logger.Printf("tidy appointment names: %v", err)
+	}
+	if err := syncPositionHolders(db); err != nil {
+		logger.Printf("sync position holders: %v", err)
 	}
 	if err := refreshPendingMatches(db); err != nil {
 		logger.Printf("refresh pending matches: %v", err)
