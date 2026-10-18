@@ -1,13 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info, MagnifyingGlass, MapPin, PencilSimple, Trash, UploadSimple, UserPlus, UsersThree, WarningCircle } from "@phosphor-icons/react";
+import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowCounterClockwise, CaretLeft, CaretRight, Check, CheckCircle, Info, MagnifyingGlass, MapPin, Trash, UploadSimple, UserPlus, UsersThree, WarningCircle } from "@phosphor-icons/react";
 import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
 import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
-import { MatchState, MemberFilter, countByFilter, departmentOf, filterMembers, groupByDepartment, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
+import { MatchState, departmentOf, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 import { canRescan, processingNote, rescanNeedsConfirm } from "@/lib/processing-status";
 
@@ -35,12 +36,13 @@ const panelTabs: { value: PanelView; label: string }[] = [
   { value: "history", label: "ประวัติการแก้ไข" },
 ];
 
-const memberFilters: { value: MemberFilter; label: string }[] = [
-  { value: "all", label: "ทั้งหมด" },
-  { value: "warning", label: "ต้องตรวจรายชื่อ" },
-  { value: "pending", label: "รอตรวจ" },
-  { value: "verified", label: "ตรวจแล้ว" },
-];
+// ป้ายบอกว่าใครเป็นคนผูกชื่อนี้ ผู้ตรวจจะเห็นทันทีว่าแถวไหนระบบผูกให้เอง
+const linkedBy: Record<string, string> = { EXACT: "ระบบผูกให้ · ชื่อตรง", ALIAS: "ระบบผูกให้ · เคยผูกไว้", POSITION: "ระบบผูกให้ · ตามตำแหน่ง", MANUAL: "เลือกเอง" };
+
+// ชื่อที่แค่ใกล้เคียง ระบบเลือกคนที่เดาไว้ให้ ถ้าถูกต้องก็ไม่ต้องกดอะไร บันทึกแล้วผูกให้เลย
+function guessFor(row: Appointment) {
+  return !isLinked(row) && row.nameMatchMethod === "FUZZY" && row.candidates?.length ? row.candidates[0] : undefined;
+}
 
 type RestorePoint = { fullName: string; position: string; nameMatchMethod: string; nameMatchScore: number };
 type DirectoryPicker = { appointmentId: number; query: string; results: DirectoryUser[]; loading: boolean };
@@ -63,9 +65,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [panel, setPanel] = useState<PanelView>("original");
   const tabRefs = useRef<Partial<Record<PanelView, HTMLButtonElement | null>>>({});
   const panelRef = useRef<HTMLDivElement>(null);
-  const [memberFilter, setMemberFilter] = useState<MemberFilter>("all");
+  const [onlyUnlinked, setOnlyUnlinked] = useState(false);
   const [memberQuery, setMemberQuery] = useState("");
-  const [departmentFilter, setDepartmentFilter] = useState("");
+  const [rejectedGuesses, setRejectedGuesses] = useState<Set<number>>(new Set());
   const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
   const [saving, setSaving] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -96,11 +98,16 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const lowConfidenceCount = useMemo(() => fields.filter((field) => field.confidence < reviewThreshold || !field.value).length + appointments.filter((item) => item.confidence < reviewThreshold || item.nameMatchMethod !== "EXACT").length, [fields, appointments, reviewThreshold]);
 
   const departmentSummary = useMemo(() => summarizeDepartments(appointments), [appointments]);
-  const activeDepartment = departmentSummary.some((entry) => entry.name === departmentFilter) ? departmentFilter : "";
-  const filterCounts = useMemo(() => countByFilter(appointments), [appointments]);
-  const unlinkedAppointments = useMemo(() => appointments.filter((row) => !isLinked(row)), [appointments]);
-  const verifiedCount = appointments.filter((row) => row.verified).length;
-  const departmentGroups = useMemo(() => groupByDepartment(filterMembers(appointments, { filter: memberFilter, department: activeDepartment, query: memberQuery })), [appointments, memberFilter, activeDepartment, memberQuery]);
+  const unlinkedAppointments = useMemo(() => appointments.filter((row) => !isLinked(row) && !(guessFor(row) && !rejectedGuesses.has(row.id))), [appointments, rejectedGuesses]);
+  const linkedCount = appointments.length - unlinkedAppointments.length;
+  const linkedByPosition = appointments.filter((row) => isLinked(row) && row.nameMatchMethod === "POSITION").length;
+  const pendingGuesses = appointments.filter((row) => guessFor(row) && !rejectedGuesses.has(row.id));
+  const missingHolders = unlinkedAppointments.filter((row) => !row.fullName.trim()).length;
+  const missingPeople = unlinkedAppointments.filter((row) => row.fullName.trim() && !row.candidates?.length).length;
+  const memberRows = useMemo(() => {
+    const query = memberQuery.trim().toLowerCase();
+    return appointments.map((row, index) => ({ row, no: index + 1 })).filter(({ row }) => (!onlyUnlinked || unlinkedAppointments.includes(row)) && (!query || [row.fullName, row.position, row.committeeRole, row.department].join(" ").toLowerCase().includes(query)));
+  }, [appointments, onlyUnlinked, unlinkedAppointments, memberQuery]);
   const roster = useMemo(() => rosterRows(appointments), [appointments]);
 
   const parseBox = (raw: string) => {
@@ -177,10 +184,12 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     setOpenRows((rows) => ({ ...rows, [id]: true }));
   };
 
-  const toggleGroupVerified = (department: string, rows: Appointment[], checked: boolean) => {
-    const ids = new Set(rows.map((row) => row.id));
-    setAppointments((current) => current.map((item) => ids.has(item.id) ? { ...item, verified: checked } : item));
-    if (checked) toast(`ตรวจแล้วทั้งฝ่าย · ${department}`);
+  const rejectGuess = (id: number) => setRejectedGuesses((current) => new Set(current).add(id));
+  const acceptAllGuesses = () => {
+    for (const row of pendingGuesses) {
+      const guess = guessFor(row);
+      if (guess) linkAppointment(row.id, guess.userId, guess.fullName, guess.positionTitle);
+    }
   };
 
   const runDirectorySearch = async (appointmentId: number, query: string) => {
@@ -262,13 +271,13 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     tabRefs.current[selected]?.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
   const toggleRow = (id: number, open: boolean) => setOpenRows((rows) => ({ ...rows, [id]: !open }));
-  const showWarnings = () => { setPanel("members"); setMemberFilter("warning"); setDepartmentFilter(""); setMemberQuery(""); setOpenRows({}); };
+  const showUnlinked = () => { setPanel("members"); setOnlyUnlinked(true); setMemberQuery(""); };
 
   const buildPayload = () => ({
     responsibilities: document.responsibilities,
     additionalReferences: document.additionalReferences,
     fields: fields.map((field) => ({ id: field.id, fieldKey: field.fieldKey, fieldLabel: field.fieldLabel, value: field.value, verified: field.verified })),
-    appointments: appointments.map((item) => ({ id: item.id, directoryUserId: item.directoryUserId, fullName: item.fullName, position: item.position, department: item.department, committeeRole: item.committeeRole, responsibilities: item.responsibilities, confidence: item.confidence, pageNo: item.pageNo, boundingBox: item.boundingBox, verified: item.verified })),
+    appointments: appointments.map((item) => ({ id: item.id, directoryUserId: item.directoryUserId ?? (rejectedGuesses.has(item.id) ? undefined : guessFor(item)?.userId), fullName: item.fullName, position: item.position, department: item.department, committeeRole: item.committeeRole, responsibilities: item.responsibilities, confidence: item.confidence, pageNo: item.pageNo, boundingBox: item.boundingBox, verified: item.verified })),
   });
 
   const saveDraft = async (confirm = false) => {
@@ -403,10 +412,10 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 </div></div>}
           {!cancelled && (document.processingStage === "QUEUED" || document.processingStage === "PREPARING" || document.processingStage === "EXTRACTING") && <p role="status" className="rounded-lg bg-[var(--accent-soft)] px-4 py-3 text-sm text-[var(--navy)]">กำลังประมวลผลเอกสาร ระบบจะอัปเดตข้อมูลให้อัตโนมัติ</p>}
           <div role="status" className="flex flex-wrap items-center gap-x-4 gap-y-2">
-            <div className="min-w-[180px] flex-1"><p className="text-xs text-[var(--muted)]">ตรวจแล้ว <span className="font-medium text-[var(--ink)]">{verifiedCount}</span> จาก {appointments.length} รายชื่อ</p><span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${appointments.length ? Math.round((verifiedCount / appointments.length) * 100) : 0}%` }} /></span></div>
+            <div className="min-w-[180px] flex-1"><p className="text-xs text-[var(--muted)]">ผูกกับบุคคลแล้ว <span className="font-medium text-[var(--ink)]">{linkedCount}</span> จาก {appointments.length} รายชื่อ</p><span className="mt-1.5 block h-1 overflow-hidden rounded-full bg-[var(--line)]"><span className="block h-full rounded-full bg-[var(--accent)] transition-all" style={{ width: `${appointments.length ? Math.round((linkedCount / appointments.length) * 100) : 0}%` }} /></span></div>
             {unlinkedAppointments.length > 0 && <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs"><span className="h-2 w-2 rounded-full bg-[var(--highlight)]" />ยังไม่ผูก {unlinkedAppointments.length}</span>}
             {lowConfidenceCount > 0 && <span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs"><span className="h-2 w-2 rounded-full bg-[var(--warning-dot)]" />ควรตรวจ {lowConfidenceCount}</span>}
-            {filterCounts.warning > 0 && <button type="button" onClick={showWarnings} className="focus-ring h-8 whitespace-nowrap rounded text-xs font-medium text-[var(--accent)] hover:underline">ดูรายการที่ต้องแก้ →</button>}
+            {unlinkedAppointments.length > 0 && <button type="button" onClick={showUnlinked} className="focus-ring h-8 whitespace-nowrap rounded text-xs font-medium text-[var(--accent)] hover:underline">ดูชื่อที่ยังไม่ผูก →</button>}
           </div>
         </div>
       <div role="tablist" aria-label="ส่วนของเอกสาร" aria-orientation="horizontal" className="shell-scrollbar flex overflow-x-auto border-t border-[var(--line)] px-3">{panelTabs.map((tab) => <button key={tab.value} ref={(button) => { tabRefs.current[tab.value] = button; }} id={`document-tab-${tab.value}`} type="button" role="tab" aria-selected={panel === tab.value} aria-controls="document-tab-panel" tabIndex={panel === tab.value ? 0 : -1} onClick={() => setPanel(tab.value)} onKeyDown={(event) => onTabKeyDown(event, tab.value)} className={`focus-ring flex h-14 shrink-0 items-center gap-2 whitespace-nowrap px-4 text-sm transition ${panel === tab.value ? "font-medium text-[var(--accent)] shadow-[inset_0_-3px_0_var(--accent)]" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}>{tab.label}{(tab.value === "roster" || tab.value === "members" || tab.value === "history") && <span className={`rounded-full px-2 py-0.5 text-[11px] ${panel === tab.value ? "bg-[var(--accent-soft)]" : "bg-[var(--line-soft)]"}`}>{tab.value === "history" ? revisions.length : appointments.length}</span>}</button>)}</div>
@@ -423,53 +432,56 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
         <div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">{panelTabs.find((tab) => tab.value === panel)?.label}</h2></div>
         {panel === "roster" && <div className="flex-1">
           <div className="flex items-baseline justify-between px-5 py-3.5 lg:px-6"><p className="text-sm font-semibold text-[var(--navy)]">รายชื่อทั้งหมดในคำสั่ง</p><p className="text-xs text-[var(--muted)]">{appointments.length} รายชื่อ · {departmentSummary.length} ฝ่าย</p></div>
-          <div className="overflow-x-auto"><table className="data-grid w-full min-w-[520px] text-left text-sm"><thead><tr><th className="w-12 px-5 py-2.5 lg:pl-6">#</th><th className="px-3 py-2.5">ชื่อ</th><th className="px-3 py-2.5">ฝ่าย</th><th className="px-5 py-2.5 lg:pr-6">ตำแหน่ง</th></tr></thead><tbody>{roster.map((row) => <tr key={row.id}><td className="px-5 py-3 text-xs text-[var(--subtle)] lg:pl-6">{row.no}</td><td className="px-3 py-3 font-medium">{row.fullName || "-"}</td><td className="px-3 py-3">{row.department}</td><td className="px-5 py-3 text-[var(--muted)] lg:pr-6">{row.position || "-"}</td></tr>)}{roster.length === 0 && <tr><td colSpan={4} className="px-5 py-12 text-center text-sm text-[var(--muted)]">ยังไม่มีรายชื่อจากเอกสาร</td></tr>}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="data-grid w-full min-w-[680px] text-left text-sm"><thead><tr><th className="w-12 px-5 py-2.5 lg:pl-6">#</th><th className="px-3 py-2.5">ชื่อ</th><th className="px-3 py-2.5">ฝ่าย</th><th className="px-3 py-2.5">ตำแหน่ง</th><th className="px-5 py-2.5 lg:pr-6">บทบาท</th></tr></thead><tbody>{roster.map((row) => <tr key={row.id}><td className="px-5 py-3 text-xs text-[var(--subtle)] lg:pl-6">{row.no}</td><td className="px-3 py-3 font-medium"><span className="inline-flex items-center gap-2">{row.unlinked && <span aria-label="ยังไม่ผูกกับบุคคล" className="h-2 w-2 shrink-0 rounded-full bg-[#f0882a]" />}{row.fullName || "-"}</span></td><td className="px-3 py-3">{row.department}</td><td className="px-3 py-3 text-[var(--muted)]">{row.position || "-"}</td><td className="px-5 py-3 lg:pr-6">{row.role || "-"}</td></tr>)}{roster.length === 0 && <tr><td colSpan={5} className="px-5 py-12 text-center text-sm text-[var(--muted)]">ยังไม่มีรายชื่อจากเอกสาร</td></tr>}</tbody></table></div>
         </div>}
 
         {panel === "members" && <div className="flex-1">
-          <div className="space-y-2.5 border-b border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 lg:px-6">
-            <div className="relative"><MagnifyingGlass size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)]" /><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} aria-label="ค้นหารายชื่อ" placeholder="ค้นหาฝ่าย ชื่อ ตำแหน่ง หรือบทบาท" className="focus-ring h-10 w-full rounded-full border border-[var(--line-strong)] bg-white pl-10 pr-4 text-[13px] outline-none focus:border-[var(--accent)]" /></div>
-            <div role="group" aria-label="กรองตามสถานะ" className="flex flex-wrap items-center gap-1.5"><span className="w-11 text-xs text-[var(--muted)]">สถานะ</span>{memberFilters.map((item) => <button key={item.value} type="button" aria-pressed={memberFilter === item.value} onClick={() => { setMemberFilter(item.value); setOpenRows({}); }} className={`focus-ring h-8 rounded-full border px-3 text-xs transition ${memberFilter === item.value ? "border-[var(--accent)] bg-[var(--accent)] font-medium text-white" : "border-[var(--line-strong)] bg-white hover:border-[var(--accent)] hover:text-[var(--accent)]"}`}>{item.label} <span className={memberFilter === item.value ? "" : "text-[var(--muted)]"}>{filterCounts[item.value]}</span></button>)}</div>
-            {departmentSummary.length > 1 && <div role="group" aria-label="กรองตามฝ่าย" className="flex flex-wrap items-center gap-1.5"><span className="w-11 text-xs text-[var(--muted)]">ฝ่าย</span>{[{ name: "", label: "ทุกฝ่าย", total: appointments.length, unlinked: 0 }, ...departmentSummary.map((entry) => ({ ...entry, label: entry.name }))].map((entry) => <button key={entry.name || "all"} type="button" title={entry.label} aria-pressed={activeDepartment === entry.name} onClick={() => setDepartmentFilter(entry.name)} className={`focus-ring inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border px-3 text-xs transition ${activeDepartment === entry.name ? "border-[var(--accent)] bg-[var(--accent-soft)] font-medium text-[#155e97]" : "border-[var(--line-strong)] bg-white hover:border-[var(--accent)] hover:text-[var(--accent)]"}`}><span className="max-w-[190px] truncate">{entry.label}</span><span className="tabular-nums text-[var(--muted)]">{entry.total}</span>{entry.unlinked > 0 && <span aria-label={`ยังไม่ผูก ${entry.unlinked}`} className="h-1.5 w-1.5 rounded-full bg-[var(--highlight)]" />}</button>)}</div>}
+          <div className="flex flex-wrap items-center gap-2.5 border-b border-[var(--line)] px-5 py-3.5 lg:px-6">
+            <span className="inline-flex items-baseline gap-1.5 rounded-lg border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]"><b className="text-base font-semibold text-[var(--navy)]">{linkedCount - linkedByPosition}</b>ผูกจากชื่อ</span>
+            <span className="inline-flex items-baseline gap-1.5 rounded-lg border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]"><b className="text-base font-semibold text-[var(--navy)]">{linkedByPosition}</b>ผูกจากตำแหน่ง</span>
+            <button type="button" aria-pressed={onlyUnlinked} onClick={() => setOnlyUnlinked((value) => !value)} className={`focus-ring inline-flex items-baseline gap-1.5 rounded-lg border px-3 py-2 text-xs ${onlyUnlinked ? "border-[#f0882a] bg-[#f0882a] text-white" : "border-[#f0882a] bg-[#fff5ec] text-[#9a4a0c]"}`}><b className="text-base font-semibold">{unlinkedAppointments.length}</b>ยังไม่ผูก · {onlyUnlinked ? "แสดงทั้งหมด" : "ดูเฉพาะแถวนี้"}</button>
+            {editable && (pendingGuesses.length > 0 || missingHolders > 0 || missingPeople > 0) && <span aria-hidden="true" className="mx-1 h-7 w-px bg-[var(--line)]" />}
+            {editable && pendingGuesses.length > 0 && <button type="button" onClick={acceptAllGuesses} className="focus-ring inline-flex h-10 items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 text-[13px] font-medium text-white hover:bg-[var(--accent-strong)]"><Check size={15} weight="bold" />ใช้คนที่ระบบเดาทั้งหมด ({pendingGuesses.length})</button>}
+            {editable && missingHolders > 0 && <Link href="/settings/teachers" className="focus-ring inline-flex h-10 items-center rounded-lg border border-[var(--accent)] px-3.5 text-[13px] font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]">+ กรอกผู้ดำรงตำแหน่งที่ขาด ({missingHolders})</Link>}
+            {editable && missingPeople > 0 && <Link href="/settings/teachers" className="focus-ring inline-flex h-10 items-center rounded-lg border border-[var(--accent)] px-3.5 text-[13px] font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]">+ เพิ่มคนที่ไม่พบในระบบ ({missingPeople})</Link>}
+            <input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} aria-label="ค้นหารายชื่อ" placeholder="ค้นหาชื่อหรือตำแหน่ง" className="focus-ring ml-auto h-10 w-full rounded-full border border-[var(--line-strong)] bg-white px-4 text-[13px] outline-none focus:border-[var(--accent)] sm:w-64" />
           </div>
-
-          <div>{departmentGroups.map(([department, rows]) => {
-            const duty = rows.find((row) => row.responsibilities?.trim())?.responsibilities || "ยังไม่พบหน้าที่ของฝ่ายนี้จาก PDF";
-            const unlinked = appointments.filter((row) => departmentOf(row) === department && !isLinked(row)).length;
-            return <section key={department}>
-              <div className="flex items-start gap-3 border-b border-[var(--line)] bg-[var(--canvas)] px-5 py-3 lg:px-6">
-                <input disabled={!editable} type="checkbox" aria-label={`ตรวจแล้วทั้งฝ่าย ${department}`} checked={rows.length > 0 && rows.every((row) => row.verified)} ref={(element) => { if (element) element.indeterminate = rows.some((row) => row.verified) && !rows.every((row) => row.verified); }} onChange={(event) => toggleGroupVerified(department, rows, event.target.checked)} className="mt-0.5 h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
-                <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2"><h3 className="text-sm font-semibold text-[var(--navy)]">{department}</h3><span className="text-xs text-[var(--muted)]">{rows.length} รายชื่อ</span>{unlinked > 0 && <span className="inline-flex items-center gap-1.5 text-xs text-[var(--muted)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--highlight)]" />ยังไม่ผูก {unlinked}</span>}</div><p className="mt-0.5 line-clamp-2 text-xs font-light leading-5 text-[var(--muted)]">หน้าที่ฝ่าย: {duty}</p></div>
-              </div>
-              <ul>{rows.map((row) => {
-                const state = matchState(row);
-                const problem = state.tone !== "good";
-                const open = openRows[row.id] ?? (memberFilter === "warning" && problem);
-                return <li key={row.id} className={`border-b border-[var(--line-soft)] ${selectedAppointmentId === row.id ? "bg-[var(--brand-blue-pale)]" : ""}`}>
-                  <div className="flex min-h-[52px] items-center gap-3 px-5 py-2 lg:px-6">
-                    <input disabled={!editable} type="checkbox" checked={row.verified} onChange={(event) => updateAppointment(row.id, "verified", event.target.checked)} aria-label={`ตรวจแล้ว ${personLabel(row)}`} className="h-[18px] w-[18px] shrink-0 accent-[var(--accent)]" />
-                    <div className="min-w-0 flex-1 sm:flex sm:items-baseline sm:gap-2.5"><p className="truncate text-sm font-medium sm:max-w-[60%] sm:shrink-0">{personLabel(row)}</p><p className="truncate text-xs font-light text-[var(--muted)]">{[row.position, row.committeeRole].filter(Boolean).join(" · ") || "-"}</p></div>
-                    <span className="hidden whitespace-nowrap text-xs text-[var(--subtle)] sm:inline">{Math.round(row.confidence * 100)}% · น.{row.pageNo || "-"}</span>
-                    <MatchTag state={state} />
-                    {problem
-                      ? <button type="button" aria-expanded={open} onClick={() => toggleRow(row.id, open)} className={`${smallButton} h-8 border-[var(--line-strong)] bg-white font-medium text-[var(--accent)] hover:bg-[var(--line-soft)]`}>{open ? "ซ่อน" : "จัดการ"}</button>
-                      : <button type="button" aria-expanded={open} aria-label={`${open ? "ปิด" : "แก้ไข"} ${personLabel(row)}`} onClick={() => toggleRow(row.id, open)} className="focus-ring flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--accent)]"><PencilSimple size={15} /></button>}
-                  </div>
-                  {open && <div className="space-y-3 px-5 pb-4 lg:pr-6 sm:pl-[52px] lg:pl-[54px]">
-                    <fieldset disabled={!editable} className="grid gap-2 sm:grid-cols-3">
-                      <label className="block"><span className="text-[11px] text-[var(--muted)]">ชื่อตามเอกสาร</span><input value={row.fullName} onChange={(event) => updateAppointment(row.id, "fullName", event.target.value)} className={`${inputClass} mt-1`} /></label>
-                      <label className="block"><span className="text-[11px] text-[var(--muted)]">ตำแหน่ง</span><input value={row.position} onChange={(event) => updateAppointment(row.id, "position", event.target.value)} className={`${inputClass} mt-1`} /></label>
-                      <label className="block"><span className="text-[11px] text-[var(--muted)]">บทบาท</span><input value={row.committeeRole} onChange={(event) => updateAppointment(row.id, "committeeRole", event.target.value)} className={`${inputClass} mt-1`} /></label>
-                    </fieldset>
-                    {isLinked(row)
-                      ? <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><Check size={14} className="text-[var(--success)]" />{row.directoryUser?.fullName ? `ผูกกับ ${row.directoryUser.fullName}` : "ผูกกับบุคคลในระบบแล้ว"} · {state.detail}<button disabled={!editable} type="button" onClick={() => unlinkAppointment(row.id)} className={`${smallButton} h-8 border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><ArrowCounterClockwise size={13} /> เปลี่ยนคน</button></p>
-                      : <fieldset disabled={!editable}><UnlinkedResolver row={row} state={state} picker={picker} draft={draft} onPick={linkAppointment} onCompare={() => openCompare(row)} onPickerChange={setPicker} onSearch={runDirectorySearch} onDraftChange={setDraft} onOpenDraft={() => openDraft(row)} onSubmitDraft={submitDraft} /></fieldset>}
-                    <div className="flex gap-2"><button type="button" onClick={() => locateAppointment(row.id, row.pageNo)} className={`${smallButton} border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><MapPin size={14} /> ดูกรอบในเอกสาร</button><button disabled={!editable} type="button" onClick={() => removeAppointment(row.id)} className={`${smallButton} border-transparent text-[var(--muted)] hover:text-[var(--danger)]`}><Trash size={13} /> ลบแถว</button></div>
-                  </div>}
-                </li>;
-              })}</ul>
-            </section>;
-          })}{departmentGroups.length === 0 && <div className="p-10 text-center text-sm text-[var(--muted)]">ไม่พบรายการตามตัวกรอง</div>}</div>
+          <div className="overflow-x-auto"><table className="data-grid w-full min-w-[860px] text-left text-sm"><thead><tr><th className="w-14 px-5 py-3 lg:px-6">#</th><th className="px-4 py-3">ชื่อ</th><th className="px-4 py-3">ฝ่าย</th><th className="px-4 py-3">ตำแหน่ง</th><th className="w-[32%] px-5 py-3 lg:px-6">บุคคลในระบบ</th></tr></thead>
+            <tbody>{memberRows.map(({ row, no }) => {
+              const state = matchState(row);
+              const guess = guessFor(row);
+              const showGuess = guess && !rejectedGuesses.has(row.id);
+              const open = openRows[row.id] ?? false;
+              return <Fragment key={row.id}>
+                <tr className={selectedAppointmentId === row.id ? "bg-[var(--brand-blue-pale)]" : ""}>
+                  <td className="px-5 py-3 text-[var(--subtle)] lg:px-6">{no}</td>
+                  <td className="px-4 py-3">{row.fullName.trim() || "-"}</td>
+                  <td className="px-4 py-3">{departmentOf(row)}</td>
+                  <td className="px-4 py-3 text-[var(--muted)]">{[row.position, row.committeeRole].filter(Boolean).join(" · ") || "-"}</td>
+                  <td className="px-5 py-2 lg:px-6">{isLinked(row)
+                    ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{row.directoryUser?.fullName || row.fullName}</span>{linkedBy[row.nameMatchMethod ?? ""] && <span className="rounded-full bg-[var(--line-soft)] px-2 py-0.5 text-[11px] text-[var(--muted)]">{linkedBy[row.nameMatchMethod ?? ""]}</span>}{editable && <button type="button" onClick={() => toggleRow(row.id, open)} className="focus-ring rounded text-xs text-[var(--accent)] hover:underline">{open ? "ปิด" : "เปลี่ยน"}</button>}</div>
+                    : showGuess
+                      ? <select disabled={!editable} aria-label={`เลือกบุคคลสำหรับ ${personLabel(row)}`} value={String(guess.userId)} onChange={(event) => { if (event.target.value === "other") { rejectGuess(row.id); setOpenRows((rows) => ({ ...rows, [row.id]: true })); } else if (event.target.value === "none") rejectGuess(row.id); else { const chosen = row.candidates?.find((candidate) => String(candidate.userId) === event.target.value); if (chosen) linkAppointment(row.id, chosen.userId, chosen.fullName, chosen.positionTitle); } }} className="focus-ring h-9 w-full rounded-md border border-[#f0882a] bg-[#fffaf5] px-2.5 text-[13px]">
+                        {row.candidates?.map((candidate) => <option key={candidate.userId} value={candidate.userId}>{candidate.fullName}{candidate.userId === guess.userId ? " (ระบบเดา)" : ""}</option>)}
+                        <option value="none">ไม่ใช่คนนี้ · ปล่อยว่างไว้ก่อน</option>
+                        <option value="other">ค้นหาหรือเพิ่มคนอื่น…</option>
+                      </select>
+                      : <button type="button" disabled={!editable} aria-expanded={open} onClick={() => toggleRow(row.id, open)} className="focus-ring flex h-9 w-full items-center justify-between rounded-md border border-dashed border-[#f0882a] bg-[#fffaf5] px-2.5 text-left text-[13px] text-[#9a4a0c]">{row.fullName.trim() ? state.label : "เลือกผู้ดำรงตำแหน่ง"} · เลือกบุคคล…<span aria-hidden="true">{open ? "▴" : "▾"}</span></button>}</td>
+                </tr>
+                {open && <tr><td colSpan={5} className="space-y-3 bg-[var(--surface-muted)] px-5 py-4 lg:px-6">
+                  <fieldset disabled={!editable} className="grid gap-2 sm:grid-cols-3">
+                    <label className="block"><span className="text-[11px] text-[var(--muted)]">ชื่อตามเอกสาร</span><input value={row.fullName} onChange={(event) => updateAppointment(row.id, "fullName", event.target.value)} className={`${inputClass} mt-1`} /></label>
+                    <label className="block"><span className="text-[11px] text-[var(--muted)]">ตำแหน่ง</span><input value={row.position} onChange={(event) => updateAppointment(row.id, "position", event.target.value)} className={`${inputClass} mt-1`} /></label>
+                    <label className="block"><span className="text-[11px] text-[var(--muted)]">บทบาท</span><input value={row.committeeRole} onChange={(event) => updateAppointment(row.id, "committeeRole", event.target.value)} className={`${inputClass} mt-1`} /></label>
+                  </fieldset>
+                  {isLinked(row)
+                    ? <p className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted)]"><Check size={14} className="text-[var(--success)]" />{row.directoryUser?.fullName ? `ผูกกับ ${row.directoryUser.fullName}` : "ผูกกับบุคคลในระบบแล้ว"} · {state.detail}<button disabled={!editable} type="button" onClick={() => unlinkAppointment(row.id)} className={`${smallButton} h-8 border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><ArrowCounterClockwise size={13} /> เปลี่ยนคน</button></p>
+                    : <fieldset disabled={!editable}><UnlinkedResolver row={row} state={state} picker={picker} draft={draft} onPick={linkAppointment} onCompare={() => openCompare(row)} onPickerChange={setPicker} onSearch={runDirectorySearch} onDraftChange={setDraft} onOpenDraft={() => openDraft(row)} onSubmitDraft={submitDraft} /></fieldset>}
+                  <div className="flex gap-2"><button type="button" onClick={() => locateAppointment(row.id, row.pageNo)} className={`${smallButton} border-[var(--line-strong)] bg-white text-[var(--accent)] hover:bg-[var(--line-soft)]`}><MapPin size={14} /> ดูกรอบในเอกสาร</button><button disabled={!editable} type="button" onClick={() => removeAppointment(row.id)} className={`${smallButton} border-transparent text-[var(--muted)] hover:text-[var(--danger)]`}><Trash size={13} /> ลบแถว</button></div>
+                </td></tr>}
+              </Fragment>;
+            })}{memberRows.length === 0 && <tr><td colSpan={5} className="p-10 text-center text-sm text-[var(--muted)]">{onlyUnlinked ? "ผูกครบทุกชื่อแล้ว" : "ไม่พบรายการตามที่ค้นหา"}</td></tr>}</tbody>
+          </table></div>
         </div>}
 
         {panel === "metadata" && <div className="grid flex-1 content-start gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3 lg:p-6">{metadataFields.map((field) => <label className={`block ${field.fieldKey === "committee_name" ? "sm:col-span-2" : ""}`} key={field.id}><span className="text-xs text-[var(--muted)]">{field.fieldLabel}</span><input disabled={!editable} value={field.value} onChange={(event) => updateField(field.id, event.target.value)} className={`focus-ring mt-1.5 h-10 w-full rounded-md border px-3 text-sm font-medium outline-none focus:border-[var(--accent)] ${field.confidence < reviewThreshold || !field.value ? "border-[var(--warning-dot)] bg-[#fffbf0]" : "border-[var(--line-strong)]"}`} /><span className="mt-1 block text-[11px] text-[var(--muted)]">หน้า {field.pageNo || "-"} · ความมั่นใจ {Math.round(field.confidence * 100)}% · {field.sourceText || "ไม่พบข้อความอ้างอิง"}</span>{(() => { const reading = dateReading(field, document.fields?.find((item) => item.id === field.id)); return reading && <span className={`mt-0.5 block text-[11px] ${reading.ok ? "text-[var(--success)]" : "font-medium text-[var(--danger)]"}`}>{reading.text}</span>; })()}</label>)}{metadataFields.length === 0 && <p className="text-sm text-[var(--muted)]">ยังไม่มีข้อมูลคำสั่งจาก OCR</p>}</div>}
@@ -479,18 +491,12 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     {panel === "history" && <section className="card overflow-hidden"><div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">ประวัติการแก้ไข</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">บันทึกการเปลี่ยนแปลงข้อมูลและการยกเลิกเอกสาร</p></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-6 py-3">ฟิลด์</th><th className="px-4 py-3">ค่าเดิม</th><th className="px-4 py-3">ค่าที่แก้ไข</th><th className="px-6 py-3">ผู้แก้ไข / เวลา</th></tr></thead><tbody>{revisions.map((revision) => <tr key={revision.id}><td className="px-6 py-3 font-medium">{revision.fieldKey === "cancellation_reason" ? "เหตุผลที่ยกเลิก" : revision.fieldKey === "status" ? "สถานะเอกสาร" : revision.fieldKey}</td><td className="max-w-[180px] truncate px-4 py-3 text-[var(--muted)]">{revision.fieldKey === "status" ? statusLabel(revision.oldValue) : revision.oldValue || "-"}</td><td className="max-w-[180px] truncate px-4 py-3">{revision.fieldKey === "status" ? statusLabel(revision.newValue) : revision.newValue || "-"}</td><td className="px-6 py-3 text-xs text-[var(--muted)]">{revision.changedBy}<br />{formatThaiDate(revision.changedAt)}</td></tr>)}{revisions.length === 0 && <tr><td colSpan={4} className="px-6 py-12 text-center text-[var(--muted)]">ยังไม่มีประวัติการแก้ไขเอกสาร</td></tr>}</tbody></table></div></section>}
     </div>
         {editable && <div className="card flex flex-col gap-3 border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between lg:px-6">
-          <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5 sm:flex-1">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : unlinkedAppointments.length > 0 ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="font-medium text-[var(--danger)]">เหลือ {unlinkedAppointments.length} รายชื่อที่ยังไม่ได้ผูกกับบุคคล</span></> : document.status === "CONFIRMED" ? <><CheckCircle size={18} weight="fill" className="shrink-0 text-[var(--success)]" /><span>ยืนยันข้อมูลแล้วโดย {document.confirmedBy || "เจ้าหน้าที่"}</span></> : <><Info size={18} className="shrink-0 text-[var(--accent)]" /><span className="text-[var(--muted)]">ระบบจะไม่ถือเป็นข้อมูลสมบูรณ์จนกว่าจะยืนยัน</span></>}</div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || document.status === "CONFIRMED" || unlinkedAppointments.length > 0} title={unlinkedAppointments.length > 0 ? `ยังมี ${unlinkedAppointments.length} รายชื่อที่ยังไม่ได้ผูกกับบุคคลในระบบ` : undefined} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></div>
+          <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5 sm:flex-1">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : unlinkedAppointments.length > 0 ? <><Info size={18} className="shrink-0 text-[#9a4a0c]" /><span className="text-[#9a4a0c]">ยังไม่ผูก {unlinkedAppointments.length} ชื่อ · ยืนยันได้เลย ชื่อเหล่านี้เก็บตามเอกสารไว้ก่อน ผูกทีหลังได้</span></> : document.status === "CONFIRMED" ? <><CheckCircle size={18} weight="fill" className="shrink-0 text-[var(--success)]" /><span>ยืนยันข้อมูลแล้วโดย {document.confirmedBy || "เจ้าหน้าที่"}</span></> : <><Info size={18} className="shrink-0 text-[var(--accent)]" /><span className="text-[var(--muted)]">ระบบจะไม่ถือเป็นข้อมูลสมบูรณ์จนกว่าจะยืนยัน</span></>}</div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || document.status === "CONFIRMED"} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></div>
         </div>}
 
     {editable && compare && <CandidateCompareDialog compare={compare} onSelect={(userId) => setCompare({ ...compare, selected: userId })} onClose={() => setCompare(null)} onConfirm={(candidate) => linkAppointment(compare.appointment.id, candidate.userId, candidate.fullName, candidate.positionTitle)} onCreate={() => { const row = compare.appointment; setCompare(null); openDraft(row); }} />}
   </div></AppShell>;
-}
-
-function MatchTag({ state }: { state: MatchState }) {
-  if (state.tone === "good") return <span className="hidden items-center gap-1 whitespace-nowrap text-xs text-[var(--muted)] md:inline-flex"><Check size={14} weight="bold" className="text-[var(--success)]" />{state.label}</span>;
-  const tone = state.tone === "danger" ? "bg-[var(--danger-soft)] text-[var(--danger)]" : "bg-[var(--warning-soft)] text-[var(--warning)]";
-  return <span className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${tone}`}>{state.label}</span>;
 }
 
 type ResolverProps = {

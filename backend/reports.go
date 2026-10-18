@@ -20,7 +20,7 @@ func workloadReport(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		rows := make([]workloadReportRow, 0)
 		query := db.Table("appointments AS a").
-			Select("COALESCE(MAX(CONCAT_WS(' ', NULLIF(u.prefix, ''), NULLIF(u.first_name, ''), NULLIF(u.last_name, ''))), MAX(a.full_name)) AS full_name, COALESCE(MAX(u.position_title), MAX(a.position)) AS position, COUNT(DISTINCT a.document_id) AS document_count, COUNT(*) AS appointment_count, SUM(CASE WHEN a.verified = 1 THEN 1 ELSE 0 END) AS verified_count").
+			Select("COALESCE(MAX(CONCAT_WS(' ', NULLIF(u.prefix, ''), NULLIF(u.first_name, ''), NULLIF(u.last_name, ''))), MAX(a.full_name)) AS full_name, COALESCE(MAX(u.position_title), MAX(a.position)) AS position, COUNT(DISTINCT a.document_id) AS document_count, COUNT(*) AS appointment_count, COUNT(*) AS verified_count").
 			Joins("JOIN document_workflows AS d ON d.id = a.document_id").
 			Joins("LEFT JOIN directory_people AS u ON u.id = a.directory_user_id").
 			Where("d.status = ?", "CONFIRMED")

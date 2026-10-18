@@ -99,3 +99,41 @@ func tidyAppointmentNames(db *gorm.DB) error {
 		return nil
 	})
 }
+
+// refreshPendingMatches จับคู่รายชื่อในเอกสารที่ยังไม่ยืนยันใหม่อีกครั้ง: ผูกชื่อที่ตอนนี้ตรงเป๊ะกับคนในระบบ
+// และถอดการผูกแบบชื่อใกล้เคียงที่ระบบเคยผูกเองออก ให้เป็นตัวเลือก "ใช่คนนี้" แทน
+func refreshPendingMatches(db *gorm.DB) error {
+	var rows []Appointment
+	err := db.Table("appointments AS a").Select("a.*").
+		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
+		Where("(a.directory_user_id IS NULL AND a.full_name <> '') OR a.name_match_method = ?", matchMethodFuzzy).
+		Scan(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+	users, aliases, err := loadDirectory(db)
+	if err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		for _, row := range rows {
+			if row.NameMatchMethod == matchMethodFuzzy && row.DirectoryUserID != nil {
+				if err := tx.Model(&Appointment{}).Where("id = ?", row.ID).Updates(map[string]any{"directory_user_id": nil, "name_match_score": 0}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			match := matchDirectoryUser(row.FullName, users, aliases)
+			if !match.Matched || (match.Method != matchMethodExact && match.Method != matchMethodAlias) {
+				continue
+			}
+			linked := row
+			applyMatchToAppointment(&linked, match)
+			if err := tx.Model(&Appointment{}).Where("id = ?", row.ID).Updates(map[string]any{"directory_user_id": linked.DirectoryUserID, "name_match_method": linked.NameMatchMethod, "name_match_score": linked.NameMatchScore, "full_name": linked.FullName, "position": linked.Position}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}

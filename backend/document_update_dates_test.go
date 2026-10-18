@@ -144,3 +144,22 @@ func TestConfirmAsksForADateItCannotRead(t *testing.T) {
 		t.Fatalf("confirm status = %d body = %s", response.Code, response.Body.String())
 	}
 }
+
+// Names the system could not link are kept as written in the order; they do
+// not stop the reviewer confirming, and confirming counts every name as checked.
+func TestConfirmWithUnlinkedNamesMarksEveryNameChecked(t *testing.T) {
+	db := testDatabase(t)
+	document, _ := createReviewDocument(t, db, map[string]string{"issued_date": "8 กันยายน 2566"})
+	row := Appointment{DocumentID: document.ID, FullName: "ดร.วิไล ศรีสุข", NameMatchMethod: matchMethodNotFound, BoundingBoxJSON: "null"}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := confirmRequest(t, db, document.ID)
+	if response.Code != http.StatusOK {
+		t.Fatalf("confirm status = %d body = %s", response.Code, response.Body.String())
+	}
+	db.First(&row, row.ID)
+	if !row.Verified {
+		t.Fatal("confirming should mark every name in the order as checked")
+	}
+}

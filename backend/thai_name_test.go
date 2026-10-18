@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestSplitThaiHonorificSeparatesRankFromName(t *testing.T) {
 	for _, tc := range []struct{ in, rank, name string }{
@@ -93,5 +96,33 @@ func TestTidyLeavesConfirmedDocumentsAlone(t *testing.T) {
 	db.First(&row, row.ID)
 	if row.FullName != "ผู้ช่วยศาสตราจารย์ภาณุพงษ์ วันจันทึก" {
 		t.Fatalf("confirmed row changed to %q", row.FullName)
+	}
+}
+
+func TestRefreshPendingMatchesLinksExactNamesAndUnlinksGuesses(t *testing.T) {
+	db := testDatabase(t)
+	stamp := time.Now().Format("150405.000000")
+	person := DirectoryPerson{FirstName: "ทดสอบ" + stamp, LastName: "ตรงเป๊ะ", Status: "A", SyncedAt: time.Now()}
+	if err := db.Create(&person).Error; err != nil {
+		t.Fatal(err)
+	}
+	document, _ := createReviewDocument(t, db, map[string]string{})
+	exact := Appointment{DocumentID: document.ID, FullName: person.FirstName + " " + person.LastName, NameMatchMethod: matchMethodNotFound, BoundingBoxJSON: "null"}
+	guess := Appointment{DocumentID: document.ID, FullName: "ทดสอบ" + stamp + " ตรงเป", DirectoryUserID: &person.ID, NameMatchMethod: matchMethodFuzzy, BoundingBoxJSON: "null"}
+	for _, row := range []*Appointment{&exact, &guess} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := refreshPendingMatches(db); err != nil {
+		t.Fatal(err)
+	}
+	db.First(&exact, exact.ID)
+	db.First(&guess, guess.ID)
+	if exact.DirectoryUserID == nil || *exact.DirectoryUserID != person.ID || exact.NameMatchMethod != matchMethodExact {
+		t.Fatalf("exact row = %+v", exact)
+	}
+	if guess.DirectoryUserID != nil {
+		t.Fatalf("a near-miss guess should wait for the reviewer, got %+v", guess)
 	}
 }

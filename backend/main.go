@@ -456,6 +456,9 @@ func main() {
 	if err := tidyAppointmentNames(db); err != nil {
 		logger.Printf("tidy appointment names: %v", err)
 	}
+	if err := refreshPendingMatches(db); err != nil {
+		logger.Printf("refresh pending matches: %v", err)
+	}
 
 	ocrConfig := loadOCRAPIConfigFromEnv()
 	processor := NewDocumentProcessor(db, logger, ocrConfig)
@@ -814,15 +817,6 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusConflict, gin.H{"error": "อ่านวันที่ไม่ได้ กรุณาแก้ในแท็บข้อมูลคำสั่งก่อนยืนยัน: " + strings.Join(problems, ", "), "unreadableDates": problems})
 			return
 		}
-		var appointments []Appointment
-		if err := db.Where("document_id = ?", document.ID).Find(&appointments).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบรายชื่อก่อนยืนยันได้"})
-			return
-		}
-		if blockers := confirmBlockers(appointments); len(blockers) > 0 {
-			c.JSON(http.StatusConflict, gin.H{"error": "ยังมีรายชื่อที่ยังไม่ได้ผูกกับบุคคลในระบบ", "unmatchedNames": blockers})
-			return
-		}
 		now := time.Now()
 		confirmedBy := currentUserID(c)
 		if err := db.Transaction(func(tx *gorm.DB) error {
@@ -830,6 +824,10 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 				return err
 			}
 			if err := tx.Model(&document).Updates(map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}).Error; err != nil {
+				return err
+			}
+			// กดยืนยันครั้งเดียว ทุกรายชื่อในคำสั่งถือว่าตรวจแล้ว ชื่อที่ยังไม่ผูกเก็บตามเอกสารไว้ ผูกทีหลังได้
+			if err := tx.Model(&Appointment{}).Where("document_id = ?", document.ID).Updates(map[string]any{"verified": true, "verified_by": confirmedBy, "verified_at": now}).Error; err != nil {
 				return err
 			}
 			document.Status = "CONFIRMED"

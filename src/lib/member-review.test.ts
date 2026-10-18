@@ -64,13 +64,24 @@ test("groupByDepartment keeps the order names appear in", () => {
   ]);
 });
 
-test("rosterRows lists every name with department and position only", () => {
-  const roster = rosterRows([rows[3], rows[0], rows[4]]);
+test("rosterRows lists every name with department, position, role and whether it is linked", () => {
+  const roster = rosterRows([rows[3], rows[0], rows[4]]).map(({ id, no, fullName, department, position }) => ({ id, no, fullName, department, position }));
   assert.deepEqual(roster, [
     { id: 4, no: 1, fullName: "ศ.ดร.ประเสริฐ วงศ์ใหญ่", department: "ที่ปรึกษา", position: "ผู้ช่วยศาสตราจารย์" },
     { id: 1, no: 2, fullName: "ผศ.ดร.สมชาย ใจดี", department: "คณะกรรมการบริหารหลักสูตร", position: "ผู้ช่วยศาสตราจารย์" },
     { id: 5, no: 3, fullName: "นางสาวพิมพ์ชนก อินทร์แก้ว", department: "ไม่ระบุฝ่าย", position: "นักวิชาการศึกษา" },
   ]);
+});
+
+test("an ex-officio row linked by position shows the person who holds it", () => {
+  const holder = appointment({ id: 9, fullName: "", position: "คณบดี", committeeRole: "ประธานกรรมการ", directoryUserId: 3, nameMatchMethod: "POSITION", directoryUser: { id: 3, fullName: "รศ.ดร.วิชัย มั่นคง" } as Appointment["directoryUser"] });
+  const vacant = appointment({ id: 10, fullName: "", position: "ผู้ช่วยคณบดี", committeeRole: "กรรมการ", directoryUserId: undefined });
+  const [linked, unlinked] = rosterRows([holder, vacant]);
+  assert.equal(linked.fullName, "รศ.ดร.วิชัย มั่นคง (ตามตำแหน่ง)");
+  assert.equal(linked.role, "ประธานกรรมการ");
+  assert.equal(linked.unlinked, false);
+  assert.equal(unlinked.fullName, "");
+  assert.equal(unlinked.unlinked, true);
 });
 
 test("ex-officio row without name is labelled by position", () => {

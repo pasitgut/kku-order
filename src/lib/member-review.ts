@@ -4,7 +4,7 @@ export type MemberFilter = "all" | "warning" | "pending" | "verified";
 export type MatchTone = "good" | "warning" | "danger";
 export type MatchState = { label: string; detail: string; tone: MatchTone };
 export type DepartmentSummary = { name: string; total: number; unlinked: number };
-export type RosterRow = { id: number; no: number; fullName: string; department: string; position: string };
+export type RosterRow = { id: number; no: number; fullName: string; department: string; position: string; role: string; unlinked: boolean };
 
 export const NO_DEPARTMENT = "ไม่ระบุฝ่าย";
 
@@ -88,5 +88,11 @@ export function groupByDepartment(rows: Appointment[]): [string, Appointment[]][
 export function rosterRows(rows: Appointment[]): RosterRow[] {
   return groupByDepartment(rows)
     .flatMap(([, group]) => group)
-    .map((row, index) => ({ id: row.id, no: index + 1, fullName: row.fullName, department: departmentOf(row), position: row.position }));
+    .map((row, index) => ({ id: row.id, no: index + 1, fullName: rosterName(row), department: departmentOf(row), position: row.position, role: row.committeeRole, unlinked: !isLinked(row) }));
+}
+
+// แถวโดยตำแหน่งที่ระบบหาคนให้แล้ว แสดงชื่อคนนั้นแทนช่องว่าง
+function rosterName(row: Appointment) {
+  if (row.fullName.trim() || !isLinked(row) || !row.directoryUser?.fullName) return row.fullName;
+  return `${row.directoryUser.fullName} (ตามตำแหน่ง)`;
 }

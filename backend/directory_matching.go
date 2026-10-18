@@ -183,7 +183,7 @@ func matchAppointments(appointments []Appointment, users []DirectoryUser, aliase
 		if strings.TrimSpace(appointment.FullName) == "" {
 			continue
 		}
-		match := matchDirectoryUser(appointment.FullName, users, aliases)
+		match := asSuggestion(matchDirectoryUser(appointment.FullName, users, aliases))
 		applyMatchToAppointment(appointment, match)
 		if !match.Matched || match.Score < 0.90 || appointment.Confidence < 0.90 {
 			weak = true
@@ -368,7 +368,16 @@ func resolveAppointmentDirectoryUser(input appointmentRequest, users []Directory
 			}
 		}
 	}
-	return matchDirectoryUser(input.FullName, users, aliases)
+	return asSuggestion(matchDirectoryUser(input.FullName, users, aliases))
+}
+
+// asSuggestion: ชื่อที่แค่ใกล้เคียงอาจเป็นคนนามสกุลเดียวกัน จึงไม่ผูกเอง แต่เสนอให้ผู้ตรวจกด "ใช่คนนี้"
+// ผูกเองเฉพาะชื่อที่ตรงเป๊ะกับคนเดียวในระบบ หรือชื่อที่เคยผูกไว้แล้ว
+func asSuggestion(match directoryMatch) directoryMatch {
+	if match.Method != matchMethodFuzzy || !match.Matched {
+		return match
+	}
+	return directoryMatch{Method: matchMethodFuzzy, Score: match.Score, Candidates: candidatesFor([]DirectoryUser{match.User}, match.Score)}
 }
 
 // resolveAppointmentMatch is resolveAppointmentDirectoryUser for a saved row. A row with no
@@ -380,16 +389,4 @@ func resolveAppointmentMatch(input appointmentRequest, previousMethod string, us
 		return directoryMatch{Method: previousMethod}
 	}
 	return resolveAppointmentDirectoryUser(input, users, aliases)
-}
-
-// confirmBlockers names the rows that still have nobody attached. A document
-// is not confirmable while this is non-empty.
-func confirmBlockers(appointments []Appointment) []string {
-	blockers := make([]string, 0)
-	for _, appointment := range appointments {
-		if appointment.DirectoryUserID == nil || *appointment.DirectoryUserID == 0 {
-			blockers = append(blockers, personLabel(appointment))
-		}
-	}
-	return blockers
 }

@@ -93,21 +93,6 @@ func TestResolveAppointmentFallsBackToMatchingWhenReviewerChoseNobody(t *testing
 	}
 }
 
-func TestConfirmBlockersNamesEveryAppointmentWithoutAPerson(t *testing.T) {
-	linked := uint(7)
-	appointments := []Appointment{
-		{FullName: "นายสมชาย ใจดี", DirectoryUserID: &linked},
-		{FullName: "นายไม่พบ ในระบบ"},
-		{FullName: "นางสาวยังไม่ผูก ชื่อสกุล"},
-	}
-
-	blockers := confirmBlockers(appointments)
-
-	if len(blockers) != 2 || blockers[0] != "นายไม่พบ ในระบบ" || blockers[1] != "นางสาวยังไม่ผูก ชื่อสกุล" {
-		t.Fatalf("blockers = %#v, want the two unlinked rows in order", blockers)
-	}
-}
-
 func TestCandidatesToOfferGivesAnUnlinkedRowSomethingToClick(t *testing.T) {
 	// A row can be unlinked while its name still resolves: the person was
 	// added to the directory after the document was processed.
@@ -213,16 +198,6 @@ func TestReplacedFileUpdatesClearsEverythingDerivedFromTheOldFile(t *testing.T) 
 	}
 }
 
-func TestConfirmBlockersLabelsExOfficioRows(t *testing.T) {
-	blockers := confirmBlockers([]Appointment{
-		{FullName: "", Position: "เลขานุการ"},
-		{FullName: "สมชาย", Position: "ผอ."},
-	})
-	if len(blockers) != 2 || blockers[0] != "เลขานุการ (โดยตำแหน่ง)" || blockers[1] != "สมชาย" {
-		t.Fatalf("blockers = %v", blockers)
-	}
-}
-
 func TestMatchAppointmentsSkipsBlankNames(t *testing.T) {
 	apps := []Appointment{{FullName: "", Position: "เลขานุการ", NameMatchMethod: matchMethodExOfficio}}
 	users := []DirectoryUser{{ID: 7, FirstName: "สมชาย", LastName: "ใจดี"}}
@@ -252,5 +227,31 @@ func TestSuggestCandidatesSkipsNamelessRows(t *testing.T) {
 
 	if apps[0].NameMatchMethod != matchMethodExOfficio || len(apps[0].Candidates) != 0 {
 		t.Fatalf("apps[0] = %+v, want EX_OFFICIO kept with no candidates", apps[0])
+	}
+}
+
+// A near-miss spelling is offered as a guess the reviewer accepts with one
+// click; only exact names and remembered spellings are linked on their own.
+func TestNearMissNamesAreSuggestedNotLinked(t *testing.T) {
+	users := []DirectoryUser{{ID: 7, FirstName: "สมชาย", LastName: "ใจดี", FullName: "นาย สมชาย ใจดี"}}
+	rows := []Appointment{{FullName: "สมชาย ใจด"}, {FullName: "สมชาย ใจดี"}}
+	matchAppointments(rows, users, nil)
+	if rows[0].DirectoryUserID != nil || rows[0].NameMatchMethod != matchMethodFuzzy {
+		t.Fatalf("near miss = %+v, want an unlinked FUZZY suggestion", rows[0])
+	}
+	if rows[1].DirectoryUserID == nil || *rows[1].DirectoryUserID != 7 {
+		t.Fatalf("exact name should be linked, got %+v", rows[1])
+	}
+	suggestCandidates(rows, users, nil)
+	if len(rows[0].Candidates) != 1 || rows[0].Candidates[0].UserID != 7 {
+		t.Fatalf("candidates = %+v, want the near miss offered", rows[0].Candidates)
+	}
+}
+
+func TestSavingANearMissWithoutAChoiceKeepsItUnlinked(t *testing.T) {
+	users := []DirectoryUser{{ID: 7, FirstName: "สมชาย", LastName: "ใจดี", FullName: "นาย สมชาย ใจดี"}}
+	match := resolveAppointmentMatch(appointmentRequest{FullName: "สมชาย ใจด"}, "", users, nil)
+	if match.Matched || match.Method != matchMethodFuzzy {
+		t.Fatalf("match = %+v, want unlinked FUZZY", match)
 	}
 }
