@@ -308,13 +308,14 @@ export async function getExpiryNotifications() {
   return apiFetch<{ data: ExpiryNotification[] }>("/api/v1/notifications/expiry");
 }
 
-export async function uploadDocument(file: File, overwrite = false) {
+export async function uploadDocument(file: File, overwrite = false, signal?: AbortSignal) {
   const body = new FormData();
   body.append("file", file);
   body.append("overwrite", String(overwrite));
   return apiFetch<{ data: ApiDocument }>("/api/v1/documents", {
     method: "POST",
     body,
+    signal,
   });
 }
 

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Prompt } from "next/font/google";
 import { MeProvider } from "@/components/me-context";
 import { ToastProvider } from "@/components/toast";
+import { UploadQueueProvider } from "@/components/upload-queue-context";
 import "./globals.css";
 
 const prompt = Prompt({
@@ -20,7 +21,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="th" className={prompt.variable}>
       <body>
-        <ToastProvider><MeProvider>{children}</MeProvider></ToastProvider>
+        <ToastProvider><MeProvider><UploadQueueProvider>{children}</UploadQueueProvider></MeProvider></ToastProvider>
       </body>
     </html>
   );
