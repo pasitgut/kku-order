@@ -119,7 +119,7 @@ func directoryPersonAPI(person DirectoryPerson, profile DirectoryPersonProfile) 
 		IsActive: activeStatusCode(person.Status), Source: source, CreatedBy: profile.CreatedBy,
 		SourceUpdatedAt: profile.SourceUpdatedAt, LastSeenAt: person.SyncedAt,
 		SyncedAt: person.SyncedAt, CreatedAt: person.CreatedAt, UpdatedAt: person.UpdatedAt,
-		Fingerprint: profile.Fingerprint,
+		Fingerprint: profile.Fingerprint, RawPayload: profile.RawPayload,
 	}
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowsClockwise, CaretLeft, CaretRight, Check, MagnifyingGlass } from "@phosphor-icons/react";
 import { useMe } from "@/components/me-context";
@@ -57,7 +58,7 @@ export default function SettingsUsersPage() {
       <div className="px-5 py-4"><p className="text-xs text-[var(--muted)]">sync ล่าสุด</p><p className="mt-2 flex items-center gap-2 text-[15px] font-medium text-[var(--navy)]">{lastRun ? <><StatusDot tone={lastRun.status === "SUCCESS" ? "good" : lastRun.status === "RUNNING" ? "info" : "bad"} />{formatThaiDate(lastRun.startedAt)}</> : "ยังไม่มี"}</p></div>
     </div>
 
-    <SettingsCard title="ฐานข้อมูลบุคลากร" description="ใช้จับคู่ชื่อจาก OCR กับบุคลากรในวิทยาลัย">
+    <SettingsCard title="ฐานข้อมูลบุคลากร" description="ใช้จับคู่ชื่อจาก OCR กับบุคลากรในวิทยาลัย" action={<Link href="/settings/teachers" className="focus-ring inline-flex min-h-10 items-center rounded-md border border-[var(--line-strong)] px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]">{can(me?.role ?? "", "createPerson") ? "ดูรายชื่อ / เพิ่มข้อมูลอาจารย์" : "ดูรายชื่ออาจารย์ทั้งหมด"}</Link>}>
       <div className="flex flex-col gap-3 border-b border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 md:flex-row md:items-center lg:px-6">
         <form onSubmit={(event) => { event.preventDefault(); setPage(1); load(query); }} className="relative md:w-[340px]"><MagnifyingGlass size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)]" /><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="ค้นหาบุคลากร" placeholder="ค้นหาชื่อ อีเมล หน่วยงาน แล้วกด Enter" className="focus-ring h-10 w-full rounded-full border border-[var(--line-strong)] bg-white pl-10 pr-4 text-[13px] outline-none focus:border-[var(--accent)]" /></form>
         <div role="group" aria-label="กรองแหล่งที่มา" className="flex flex-wrap gap-1.5">{sourceFilters.map(([value, label, count]) => <button key={value} type="button" aria-pressed={source === value} onClick={() => { setSource(value); setPage(1); }} className={`focus-ring h-8 rounded-full border px-3 text-xs ${source === value ? "border-[var(--accent)] bg-[var(--accent)] font-medium text-white" : "border-[var(--line-strong)] bg-white hover:border-[var(--accent)] hover:text-[var(--accent)]"}`}>{label} <span className={source === value ? "" : "text-[var(--muted)]"}>{count}</span></button>)}</div>
