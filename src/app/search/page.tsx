@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { KeyboardEvent, Suspense, useEffect, useId, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, ClockCounterClockwise, FilePdf, MagnifyingGlass, SpinnerGap, User } from "@phosphor-icons/react";
 import { AppShell } from "@/components/app-shell";
+import { ExportReportButton } from "@/components/export-report-button";
 import { OrderSuggestion, PersonHistory, PersonSummary, formatThaiDate, getPersonHistory, getSearchSuggestions, getTopPeople, statusLabel } from "@/lib/api";
 import { initials } from "@/lib/person";
 import { AppointmentState, Period, RecentSearch, appointmentStateLabel, fiscalYearRange, moveSelection, periodRange, rememberSearch } from "@/lib/search";
@@ -151,7 +152,10 @@ function StartView({ recent }: { recent: RecentSearch[] }) {
 
   return <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
     <section className="card overflow-hidden">
-      <div className="border-b border-[var(--line)] px-5 py-4"><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด · {fiscal.label}</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้ว ตั้งแต่ {formatThaiDate(fiscal.from)}</p></div>
+      <div className="flex flex-col gap-3 border-b border-[var(--line)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด · {fiscal.label}</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้ว ตั้งแต่ {formatThaiDate(fiscal.from)}</p></div>
+        <ExportReportButton filters={{ from: fiscal.from, to: fiscal.to }} label={`ส่งออกรายงาน${fiscal.label}`} />
+      </div>
       {error && <p role="alert" className="px-5 py-3 text-sm text-[var(--danger)]">{error}</p>}
       {top === null ? <p role="status" className="flex items-center gap-2 px-5 py-8 text-sm text-[var(--muted)]"><SpinnerGap size={18} className="animate-spin" />กำลังโหลด...</p>
         : <div className="overflow-x-auto"><table className="data-grid w-full text-left text-sm"><caption className="sr-only">คนที่ได้รับแต่งตั้งมากที่สุดใน{fiscal.label}</caption>
@@ -207,6 +211,7 @@ function PersonView({ id }: { id: number }) {
         <p className="mt-0.5 text-sm text-[var(--muted)]">{person.position || "ไม่ระบุตำแหน่ง"}</p>
         <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm"><span><b className="font-semibold">{person.orders.toLocaleString("th-TH")}</b> คำสั่ง</span><span className="text-[var(--success)]">ยังมีผล {person.active.toLocaleString("th-TH")}</span><span className="text-[#9a4a0c]">ใกล้หมดวาระ {person.expiring.toLocaleString("th-TH")}</span></p>
       </div>
+      <ExportReportButton filters={{ person: id, ...periodRange(period, new Date(), custom), activeOnly }} label="ส่งออกรายงานของคนนี้" />
     </section>}
 
     <section className="card overflow-hidden">

@@ -62,6 +62,8 @@ type Document struct {
 	ConfirmedBy          string              `json:"confirmedBy" gorm:"size:255"`
 	ConfirmedAt          *time.Time          `json:"confirmedAt"`
 	CancellationReason   string              `json:"cancellationReason" gorm:"type:text"`
+	ReplacedByOrderNo    string              `json:"replacedByOrderNo" gorm:"size:100"`
+	IssuingUnit          string              `json:"issuingUnit" gorm:"size:255"`
 	CancelledBy          string              `json:"cancelledBy" gorm:"size:255"`
 	CancelledAt          *time.Time          `json:"cancelledAt"`
 	OCRProvider          string              `json:"ocrProvider" gorm:"size:100"`
@@ -349,6 +351,7 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.GET("/api/v1/search/top-people", topPeopleHandler(db))
 	router.GET("/api/v1/search/people/:id", personHistoryHandler(db))
 	router.GET("/api/v1/reports/workload", workloadReport(db))
+	router.GET("/api/v1/reports/appointments", appointmentReportHandler(db))
 	router.GET("/api/v1/directory-users", listDirectoryUsers(db))
 	router.POST("/api/v1/directory-users", requireRole("ADMIN", "STAFF"), createDirectoryUser(db))
 	router.GET("/api/v1/position-holders/vacant", listVacantPositions(db))
@@ -466,6 +469,9 @@ func main() {
 	}
 	if err := syncPositionHolders(db); err != nil {
 		logger.Printf("sync position holders: %v", err)
+	}
+	if err := backfillIssuingUnits(db); err != nil {
+		logger.Printf("backfill issuing units: %v", err)
 	}
 	if err := refreshPendingMatches(db); err != nil {
 		logger.Printf("refresh pending matches: %v", err)

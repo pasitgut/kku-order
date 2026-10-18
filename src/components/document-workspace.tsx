@@ -25,7 +25,7 @@ function dateReading(field: ExtractedField, saved?: ExtractedField): { ok: boole
   return null;
 }
 
-const metadataKeys = ["order_type", "order_no", "order_year_be", "committee_name", "issued_date", "effective_date", "expiry_date", "signer_name", "signer_position"];
+const metadataKeys = ["order_type", "issuing_unit", "order_no", "order_year_be", "committee_name", "issued_date", "effective_date", "expiry_date", "signer_name", "signer_position"];
 
 const panelTabs: { value: PanelView; label: string }[] = [
   { value: "original", label: "ต้นฉบับเอกสาร" },

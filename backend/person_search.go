@@ -119,13 +119,47 @@ func personName(user DirectoryUser) string {
 	return strings.TrimSpace(user.Prefix + " " + displayDirectoryName(user))
 }
 
-// issuedRange อ่านช่วงวันที่ออกคำสั่งจาก from / to (รวมวันสุดท้าย) ค่าที่อ่านไม่ได้ถือว่าไม่กรอง
-func issuedRange(c *gin.Context) (from, to *time.Time) {
+// officialName เขียนคำนำหน้าภาษาไทยติดชื่อแบบหนังสือราชการ ("นางสาวจิราภรณ์ หอมอ่อน" "ผศ.ดร.สมชาย ใจดี")
+// คำนำหน้าภาษาอังกฤษ ("Dr.") เว้นวรรคตามปกติ
+func officialName(user DirectoryUser) string {
+	prefix := strings.TrimSpace(user.Prefix)
+	if prefix == "" || !containsThai(prefix) {
+		return personName(user)
+	}
+	return prefix + displayDirectoryName(user)
+}
+
+func containsThai(text string) bool {
+	for _, r := range text {
+		if r >= 0x0E00 && r <= 0x0E7F {
+			return true
+		}
+	}
+	return false
+}
+
+// requestedDates อ่าน from / to ที่หน้าค้นหาส่งมา (to คือวันสุดท้ายที่รวมด้วย) ค่าที่อ่านไม่ได้ถือว่าไม่กรอง
+// ใช้ทั้งประวัติบนหน้าจอและรายงานที่ส่งออก ช่วงวันที่จึงตรงกันเสมอ
+func requestedDates(c *gin.Context) (from, to *time.Time) {
 	if parsed, ok := normalizeThaiDate(c.Query("from")); ok {
 		from = parsed
 	}
-	if parsed, ok := normalizeThaiDate(c.Query("to")); ok && parsed != nil {
-		end := dateOnly(*parsed).AddDate(0, 0, 1)
+	if parsed, ok := normalizeThaiDate(c.Query("to")); ok {
+		to = parsed
+	}
+	return from, to
+}
+
+// dayAfter คือขอบบน (ไม่รวม) ของช่วงที่รวมวัน last ทั้งวัน
+func dayAfter(last time.Time) time.Time {
+	return dateOnly(last).AddDate(0, 0, 1)
+}
+
+// issuedRange แปลงช่วงจากหน้าค้นหาเป็นขอบบนแบบไม่รวม สำหรับเทียบกับ issued_date
+func issuedRange(c *gin.Context) (from, to *time.Time) {
+	from, last := requestedDates(c)
+	if last != nil {
+		end := dayAfter(*last)
 		to = &end
 	}
 	return from, to

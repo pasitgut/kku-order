@@ -46,15 +46,21 @@ func cancelDocument(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		var payload struct {
-			Reason string `json:"reason"`
+			Reason            string `json:"reason"`
+			ReplacedByOrderNo string `json:"replacedByOrderNo"`
 		}
 		if err := c.ShouldBindJSON(&payload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุเหตุผลที่ยกเลิกเอกสาร"})
 			return
 		}
 		reason := strings.TrimSpace(payload.Reason)
-		if reason == "" || utf8.RuneCountInString(reason) > 2000 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุเหตุผลที่ยกเลิก 1–2,000 ตัวอักษร"})
+		replacedBy := strings.TrimSpace(payload.ReplacedByOrderNo)
+		// ถ้ามีคำสั่งใหม่มาแทน เลขที่คำสั่งนั้นก็คือเหตุผล รายงานจะเขียนว่า "ยกเลิก ใช้คำสั่ง … แทน"
+		if reason == "" && replacedBy != "" {
+			reason = "ใช้คำสั่งเลขที่ " + replacedBy + " แทน"
+		}
+		if reason == "" || utf8.RuneCountInString(reason) > 2000 || utf8.RuneCountInString(replacedBy) > 100 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุเหตุผลที่ยกเลิก 1–2,000 ตัวอักษร หรือเลขที่คำสั่งที่ใช้แทน"})
 			return
 		}
 		actor := currentUserID(c)
@@ -70,7 +76,7 @@ func cancelDocument(db *gorm.DB) gin.HandlerFunc {
 			now := time.Now()
 			previousStatus := document.Status
 			if err := tx.Model(&document).Updates(map[string]any{
-				"status": documentCancelled, "cancellation_reason": reason,
+				"status": documentCancelled, "cancellation_reason": reason, "replaced_by_order_no": replacedBy,
 				"cancelled_by": actor, "cancelled_at": now,
 			}).Error; err != nil {
 				return err

@@ -324,6 +324,8 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					}
 					parsed, _ := parseDateForField(input.FieldKey, input.Value)
 					updates[input.FieldKey] = parsed
+				case issuingUnitKey:
+					updates["issuing_unit"] = trimToColumn("issuing_unit", input.Value)
 				case "signer_name":
 					updates["signer_name"] = trimToColumn("signer_name", input.Value)
 				case "signer_position":
@@ -572,6 +574,7 @@ func parseOffset(c *gin.Context) int {
 }
 
 var documentColumnLimits = map[string]int{
+	"issuing_unit":    colLimitDocumentIssuingUnit,
 	"order_type":      colLimitDocumentOrderType,
 	"order_no":        colLimitDocumentOrderNo,
 	"title":           colLimitDocumentTitle,
@@ -754,7 +757,7 @@ func replacedFileUpdates(file replacementFile, importedBy string, now time.Time)
 		"confirmed_by": "", "confirmed_at": nil,
 		"ocr_text": "", "ocr_error": "", "ocr_provider": "",
 		// Everything below was read out of the file being replaced.
-		"order_type": "", "order_no": "", "order_year_be": 0, "committee": "",
+		"order_type": "", "order_no": "", "order_year_be": 0, "committee": "", "issuing_unit": "",
 		"signer_name": "", "signer_position": "", "responsibilities": "", "additional_refs": "",
 		"issued_date": nil, "effective_date": nil, "expiry_date": nil,
 		"page_count": 0, "person_count": 0, "confidence": 0,

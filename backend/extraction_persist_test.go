@@ -106,7 +106,7 @@ func TestBuildExtractionRecordsWritesEveryHeaderFieldEvenWhenEmpty(t *testing.T)
 	for _, f := range rec.Fields {
 		keys = append(keys, f.FieldKey)
 	}
-	want := "order_no,committee_name,issued_by,issued_date,effective_date,expiry_date,signer_name,signer_position,additional_references,order_type,order_year_be"
+	want := "order_no,committee_name,issued_by,issued_date,effective_date,expiry_date,signer_name,signer_position,additional_references,order_type,issuing_unit,order_year_be"
 	if got := strings.Join(keys, ","); got != want {
 		t.Fatalf("field keys = %s, want %s", got, want)
 	}

@@ -1,0 +1,2 @@
+ALTER TABLE document_workflows ADD COLUMN IF NOT EXISTS issuing_unit VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE document_workflows ADD COLUMN IF NOT EXISTS replaced_by_order_no VARCHAR(100) NOT NULL DEFAULT '';

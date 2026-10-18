@@ -1,3 +1,5 @@
+import { ReportFilters, ReportFormat, filenameFromDisposition, reportQuery } from "./report";
+
 // The default is a same-origin Next.js proxy. In Docker this keeps browser
 // requests on the web origin while Next forwards them to the `api` service.
 // Set NEXT_PUBLIC_API_URL only when the API is intentionally exposed directly.
@@ -189,7 +191,8 @@ export class ApiError extends Error {
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+// apiResponse ส่งคำขอไป backend และแปลง error เป็น ApiError ภาษาไทย ใช้ร่วมกันทั้ง JSON และไฟล์ดาวน์โหลด
+async function apiResponse(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_URL}${path}`, { ...init, credentials: "include", cache: "no-store" });
   if (!response.ok) {
     let message = "ไม่สามารถเชื่อมต่อระบบได้";
@@ -202,7 +205,11 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(message, response.status, details);
   }
-  return response.json() as Promise<T>;
+  return response;
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  return (await apiResponse(path, init)).json() as Promise<T>;
 }
 
 export function getApiUrl() {
@@ -364,11 +371,24 @@ export async function deleteDocument(id: number) {
   });
 }
 
-export async function cancelDocument(id: number, reason: string) {
+export async function cancelDocument(id: number, reason: string, replacedByOrderNo = "") {
   return apiFetch<{ data: ApiDocument }>(`/api/v1/documents/${id}/cancel`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({ reason, replacedByOrderNo }),
   });
+}
+
+// downloadReport สร้างไฟล์รายงานจาก backend แล้วบันทึกลงเครื่อง ถ้าสร้างไม่สำเร็จจะได้ข้อความ error ภาษาไทย ไม่ใช่ไฟล์เสีย
+export async function downloadReport(format: ReportFormat, filters: ReportFilters) {
+  const response = await apiResponse(`/api/v1/reports/appointments?${reportQuery(format, filters)}`);
+  const blob = await response.blob();
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = filenameFromDisposition(response.headers.get("Content-Disposition"), `รายงานคำสั่งแต่งตั้ง.${format}`);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 }
 
 // ส่งเอกสารกลับไป "รอตรวจสอบ" เพื่อแก้ไข เอกสารที่ยืนยันแล้วจะออกจากรายงานจนกว่าจะยืนยันใหม่

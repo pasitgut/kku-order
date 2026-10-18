@@ -155,8 +155,15 @@ func TestTopPeopleCountConfirmedOrdersInTheFiscalYear(t *testing.T) {
 	}
 	path := fmt.Sprintf("/api/v1/search/top-people?from=%d-10-01&to=%d-09-30", year-1, year)
 	getJSON(t, "/api/v1/search/top-people", path, topPeopleHandler(db), &result)
-	if len(result.Data) < 2 || result.Data[0].ID != busy.ID || result.Data[0].Orders != 2 || result.Data[1].ID != quiet.ID || result.Data[1].Orders != 1 {
-		t.Fatalf("top people = %+v", result.Data)
+	// ฐานทดสอบสะสมข้อมูลจากรอบก่อน ปีอาจซ้ำกันได้ จึงดูเฉพาะสองคนของรอบนี้
+	position := map[uint]int{}
+	for i, person := range result.Data {
+		if person.ID == busy.ID && person.Orders == 2 || person.ID == quiet.ID && person.Orders == 1 {
+			position[person.ID] = i + 1
+		}
+	}
+	if position[busy.ID] == 0 || position[quiet.ID] == 0 || position[busy.ID] > position[quiet.ID] {
+		t.Fatalf("top people = %+v, want %d (2 orders) before %d (1 order)", result.Data, busy.ID, quiet.ID)
 	}
 }
 

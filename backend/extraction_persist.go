@@ -16,6 +16,7 @@ const (
 	colLimitDocumentOrderNo        = 100
 	colLimitDocumentTitle          = 500
 	colLimitDocumentCommittee      = 500
+	colLimitDocumentIssuingUnit    = 255
 	colLimitDocumentSignerName     = 500
 	colLimitDocumentSignerPosition = 255
 	colLimitDocumentOrderType      = 50
@@ -164,6 +165,8 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 		orderType = inferOrderType(h.IssuedBy.Text)
 	}
 	rec.Fields = append(rec.Fields, fieldRow("order_type", "ประเภทเอกสาร", orderType, h.IssuedBy, sizes))
+	issuer := orderIssuer(h.IssuedBy.Text)
+	rec.Fields = append(rec.Fields, fieldRow(issuingUnitKey, issuingUnitLabel, issuer, h.IssuedBy, sizes))
 	orderYear := ""
 	if year := findOrderYear(h.OrderNo.Text); year != 0 {
 		orderYear = strconv.Itoa(year)
@@ -178,6 +181,7 @@ func buildExtractionRecords(result ExtractionResult, threshold float64) extracti
 	rec.Updates["signer_name"] = truncateRunes(h.Signer.Text, colLimitDocumentSignerName)
 	rec.Updates["additional_refs"] = strings.Join(refTexts, "\n")
 	rec.Updates["order_type"] = orderType
+	rec.Updates["issuing_unit"] = issuer
 	rec.Updates["order_year_be"] = findOrderYear(h.OrderNo.Text)
 	rec.Updates["issued_date"] = parseThaiDateOrNil(h.Date.Text)
 	rec.Updates["effective_date"] = parseThaiDateOrNil(h.EffectiveDate.Text)
