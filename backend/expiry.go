@@ -29,7 +29,7 @@ func refreshExpiryNotifications(db *gorm.DB, logger *log.Logger) {
 			logger.Printf("load appointments for expiry notification failed: %v", err)
 			continue
 		}
-		for _, months := range []int{3, 2, 1} {
+		for _, months := range expiryNoticeMonths {
 			dueAt := document.ExpiryDate.AddDate(0, -months, 0)
 			if dueAt.After(now) {
 				continue
@@ -170,6 +170,9 @@ func expiryEmailContent(db *gorm.DB, notification ExpiryNotification) (string, s
 	body := fmt.Sprintf("เรียน %s\n\nคำสั่ง %s (%s) จะหมดวาระวันที่ %s\nกรุณาตรวจสอบรายละเอียดในระบบ DocFlow\n", personName, document.OrderNo, document.Title, formatDate(document.ExpiryDate))
 	return recipient, subject, body, nil
 }
+
+// expiryNoticeMonths คือกี่เดือนก่อนครบวาระที่แจ้งเตือน ครั้งแรกคือเกณฑ์ "ใกล้หมดวาระ" ในหน้าค้นหาด้วย
+var expiryNoticeMonths = []int{3, 2, 1}
 
 func listExpiryNotifications(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {

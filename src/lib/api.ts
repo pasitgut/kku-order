@@ -179,7 +179,6 @@ export type DirectoryUser = {
 
 export type SyncRun = { id: number; startedAt: string; completedAt?: string; status: string; fetched: number; created: number; updated: number; unchanged: number; errorMessage?: string };
 export type ExpiryNotification = { id: number; documentId: number; appointmentId?: number; noticeType: string; dueAt: string; status: string };
-export type WorkloadReportRow = { fullName: string; position: string; documentCount: number; appointmentCount: number; verifiedCount: number };
 
 type ListResponse = { data: ApiDocument[]; pagination?: { total: number; page: number; limit: number } };
 
@@ -225,24 +224,6 @@ export async function getDocuments(params: { q?: string; status?: string; page?:
   if (params.page) query.set("page", String(params.page));
   if (params.limit) query.set("limit", String(params.limit));
   return apiFetch<ListResponse>(`/api/v1/documents${query.size ? `?${query.toString()}` : ""}`);
-}
-
-export async function searchDocuments(params: { query?: string; position?: string; orderType?: string; dateFrom?: string; dateTo?: string } = {}) {
-  const query = new URLSearchParams({ limit: "100" });
-  if (params.query) query.set("q", params.query);
-  if (params.position) query.set("position", params.position);
-  if (params.orderType) query.set("orderType", params.orderType);
-  if (params.dateFrom) query.set("dateFrom", params.dateFrom);
-  if (params.dateTo) query.set("dateTo", params.dateTo);
-  return apiFetch<ListResponse>(`/api/v1/search?${query.toString()}`);
-}
-
-export async function getWorkloadReport(params: { query?: string; dateFrom?: string; dateTo?: string } = {}) {
-  const query = new URLSearchParams();
-  if (params.query) query.set("q", params.query);
-  if (params.dateFrom) query.set("dateFrom", params.dateFrom);
-  if (params.dateTo) query.set("dateTo", params.dateTo);
-  return apiFetch<{ data: WorkloadReportRow[] }>(`/api/v1/reports/workload${query.size ? `?${query.toString()}` : ""}`);
 }
 
 export async function getDocument(id: string | number) {
@@ -292,6 +273,25 @@ export async function setPositionHolder(payload: { positionTitle: string; direct
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+}
+
+export type PersonSummary = { id: number; name: string; position: string; orders: number };
+export type OrderSuggestion = { id: number; orderNo: string; title: string; issuedDate?: string; status: string };
+export type PersonHistoryRow = { documentId: number; orderNo: string; title: string; role: string; issuedDate?: string; expiryDate?: string; state: "ACTIVE" | "EXPIRING" | "EXPIRED" | "CANCELLED" };
+export type PersonHistory = { person: PersonSummary & { active: number; expiring: number }; appointments: PersonHistoryRow[] };
+
+export async function getSearchSuggestions(query: string) {
+  return apiFetch<{ data: { people: PersonSummary[]; orders: OrderSuggestion[] } }>(`/api/v1/search/suggest?q=${encodeURIComponent(query)}`);
+}
+
+export async function getTopPeople(range: { from?: string; to?: string }) {
+  return apiFetch<{ data: PersonSummary[] }>(`/api/v1/search/top-people?${new URLSearchParams(range)}`);
+}
+
+export async function getPersonHistory(id: number, range: { from?: string; to?: string }, activeOnly: boolean) {
+  const params = new URLSearchParams(range);
+  if (activeOnly) params.set("activeOnly", "1");
+  return apiFetch<{ data: PersonHistory }>(`/api/v1/search/people/${id}?${params}`);
 }
 
 export async function syncDirectoryUsers() {
