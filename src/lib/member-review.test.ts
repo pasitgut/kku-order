@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Appointment } from "./api.ts";
-import { countByFilter, filterMembers, groupByDepartment, matchState, rosterRows, summarizeDepartments } from "./member-review.ts";
+import { countByFilter, filterMembers, groupByDepartment, matchState, pageEntries, rosterRows, summarizeDepartments } from "./member-review.ts";
 
 function appointment(overrides: Partial<Appointment>): Appointment {
   return {
@@ -71,4 +71,24 @@ test("rosterRows lists every name with department and position only", () => {
     { id: 1, no: 2, fullName: "ผศ.ดร.สมชาย ใจดี", department: "คณะกรรมการบริหารหลักสูตร", position: "ผู้ช่วยศาสตราจารย์" },
     { id: 5, no: 3, fullName: "นางสาวพิมพ์ชนก อินทร์แก้ว", department: "ไม่ระบุฝ่าย", position: "นักวิชาการศึกษา" },
   ]);
+});
+
+test("pageEntries keeps every page to the same number of lines, headers included", () => {
+  const many: Appointment[] = [
+    ...Array.from({ length: 5 }, (_, index) => appointment({ id: 100 + index, department: "ฝ่าย ก" })),
+    ...Array.from({ length: 6 }, (_, index) => appointment({ id: 200 + index, department: "ฝ่าย ข" })),
+  ];
+  const pages = [1, 2].map((page) => pageEntries(groupByDepartment(many), page, 6));
+  // หน้า 1: หัว ก + 5 คน · หน้า 2: หัว ข + 5 คน · หน้า 3: หัว ข (ต่อ) + 1 คน
+  assert.deepEqual(pages[0].entries.map((entry) => entry.kind === "header" ? `H:${entry.department}${entry.continued ? "+" : ""}` : entry.row.id), ["H:ฝ่าย ก", 100, 101, 102, 103, 104]);
+  assert.deepEqual(pages[1].entries.map((entry) => entry.kind === "header" ? `H:${entry.department}${entry.continued ? "+" : ""}` : entry.row.id), ["H:ฝ่าย ข", 200, 201, 202, 203, 204]);
+  const last = pageEntries(groupByDepartment(many), 3, 6);
+  assert.deepEqual(last.entries.map((entry) => entry.kind === "header" ? `H:${entry.department}${entry.continued ? "+" : ""}` : entry.row.id), ["H:ฝ่าย ข+", 205]);
+  assert.equal(last.pageCount, 3);
+  assert.deepEqual({ from: last.from, to: last.to, total: last.total }, { from: 11, to: 11, total: 11 });
+});
+
+test("pageEntries clamps out-of-range pages and handles no rows", () => {
+  assert.equal(pageEntries(groupByDepartment(rows), 99, 15).page, 1);
+  assert.deepEqual(pageEntries([], 1, 15), { entries: [], page: 1, pageCount: 1, from: 0, to: 0, total: 0 });
 });

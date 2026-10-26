@@ -1,0 +1,38 @@
+{
+	# no admin endpoint inside the container
+	admin off
+}
+
+# OCR_SITE_ADDRESS is ":8000" (plain HTTP) on the test VM. On a real GPU host set it to a domain
+# (for example ocr.example.com) and Caddy gets and renews the HTTPS certificate by itself.
+{$OCR_SITE_ADDRESS::8000} {
+	log
+
+	# All handling lives in one route block because Caddy reorders plain directives by its own
+	# built-in order. Inside route, the order below is the order that runs.
+	route {
+		request_body {
+			max_size 50MB
+		}
+
+		@unauthorized not header Authorization "Bearer {$OCR_API_KEY}"
+		header @unauthorized Content-Type application/json
+		respond @unauthorized `{"detail":"unauthorized"}` 401
+
+		@health {
+			method GET
+			path /health
+		}
+		reverse_proxy @health thaidoc:8000
+
+		@extract {
+			method POST
+			path /api/v1/extract-json
+		}
+		reverse_proxy @extract thaidoc:8000
+
+		# everything else (/docs, /api/v1/ground-truth, /api/v1/demo-pdf, ...) is hidden
+		header Content-Type application/json
+		respond `{"detail":"not found"}` 404
+	}
+}

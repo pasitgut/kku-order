@@ -17,7 +17,7 @@ export default function HomePage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    Promise.all([getDashboard(), getDocuments({ status: "REVIEW", limit: 5 }), getExpiryNotifications()]).then(([summary, documents, expiry]) => { setDashboard(summary.data); setReviewDocuments(documents.data); setNotifications(expiry.data); }).catch((reason: Error) => setError(reason.message));
+    Promise.all([getDashboard(), getDocuments({ status: "REVIEW,NEEDS_REVIEW", limit: 5 }), getExpiryNotifications()]).then(([summary, documents, expiry]) => { setDashboard(summary.data); setReviewDocuments(documents.data); setNotifications(expiry.data); }).catch((reason: Error) => setError(reason.message));
   }, []);
 
   const stats = [

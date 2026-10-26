@@ -475,10 +475,25 @@ func documentQuery(db *gorm.DB, rawQuery, rawStatus string) *gorm.DB {
 		like := "%" + q + "%"
 		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR ocr_text LIKE ? OR id IN (?)", like, like, like, like, like, like, like, like, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ?", like, like, like, like))
 	}
-	if status := strings.TrimSpace(rawStatus); status != "" && status != "ALL" {
-		query = query.Where("status = ?", status)
+	if statuses := parseStatusFilter(rawStatus); len(statuses) > 0 {
+		query = query.Where("status IN ?", statuses)
 	}
 	return query
+}
+
+// parseStatusFilter reads "REVIEW,NEEDS_REVIEW" style filters; empty or ALL means no filter.
+func parseStatusFilter(raw string) []string {
+	var statuses []string
+	for _, part := range strings.Split(raw, ",") {
+		status := strings.TrimSpace(part)
+		if status == "ALL" {
+			return nil
+		}
+		if status != "" {
+			statuses = append(statuses, status)
+		}
+	}
+	return statuses
 }
 
 func applyDocumentFilters(query *gorm.DB, c *gin.Context) *gorm.DB {

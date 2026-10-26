@@ -85,3 +85,30 @@ export function rosterRows(rows: Appointment[]): RosterRow[] {
     .flatMap(([, group]) => group)
     .map((row, index) => ({ id: row.id, no: index + 1, fullName: row.fullName, department: departmentOf(row), position: row.position }));
 }
+
+export type MemberEntry = { kind: "header"; department: string; continued: boolean } | { kind: "row"; row: Appointment };
+export type MemberPage = { entries: MemberEntry[]; page: number; pageCount: number; from: number; to: number; total: number };
+
+// หัวข้อฝ่ายนับเป็นหนึ่งบรรทัด ทุกหน้าจึงสูงเท่ากัน ฝ่ายที่ต่อข้ามหน้าจะมีหัวข้อ "(ต่อ)" ซ้ำ
+export function pageEntries(groups: [string, Appointment[]][], page: number, linesPerPage: number): MemberPage {
+  const pages: MemberEntry[][] = [];
+  let current: MemberEntry[] = [];
+  const flush = () => { if (current.length) pages.push(current); current = []; };
+  for (const [department, rows] of groups) {
+    rows.forEach((row, index) => {
+      // หัวข้อต้องมีแถวตามอย่างน้อยหนึ่งแถว จึงขึ้นหน้าใหม่ถ้าเหลือที่ไม่พอ
+      const needsHeader = index === 0 || current.length === 0;
+      if (current.length + (needsHeader ? 2 : 1) > linesPerPage) flush();
+      if (index === 0 || current.length === 0) current.push({ kind: "header", department, continued: index > 0 });
+      current.push({ kind: "row", row });
+    });
+  }
+  flush();
+  const total = groups.reduce((sum, [, rows]) => sum + rows.length, 0);
+  const pageCount = Math.max(1, pages.length);
+  const currentPage = Math.min(pageCount, Math.max(1, page));
+  const entries = pages[currentPage - 1] ?? [];
+  const before = pages.slice(0, currentPage - 1).reduce((sum, entriesOnPage) => sum + entriesOnPage.filter((entry) => entry.kind === "row").length, 0);
+  const shown = entries.filter((entry) => entry.kind === "row").length;
+  return { entries, page: currentPage, pageCount, from: shown ? before + 1 : 0, to: before + shown, total };
+}

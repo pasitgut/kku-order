@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -62,5 +63,28 @@ func TestCORSPreflightAllowsSettingsUpdate(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if !strings.Contains(response.Header().Get("Access-Control-Allow-Methods"), http.MethodPut) {
 		t.Fatalf("allow methods = %q, want PUT", response.Header().Get("Access-Control-Allow-Methods"))
+	}
+}
+
+func TestRemoveReplacedUploadKeepsTheNewFile(t *testing.T) {
+	directory := t.TempDir()
+	previous := directory + "/old.pdf"
+	current := directory + "/new.pdf"
+	for _, path := range []string{previous, current} {
+		if err := os.WriteFile(path, []byte("%PDF"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeReplacedUpload(previous, current)
+	if _, err := os.Stat(current); err != nil {
+		t.Fatalf("the new upload was removed: %v", err)
+	}
+	if _, err := os.Stat(previous); !os.IsNotExist(err) {
+		t.Fatalf("the replaced file should be gone, stat err = %v", err)
+	}
+	// Overwriting with an identical path must never delete the only copy.
+	removeReplacedUpload(current, current)
+	if _, err := os.Stat(current); err != nil {
+		t.Fatalf("same-path overwrite deleted the file: %v", err)
 	}
 }

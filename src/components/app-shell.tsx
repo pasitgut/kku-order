@@ -26,13 +26,15 @@ type AppShellProps = {
   backHref?: string;
   // แถบหัวข้อสูงขึ้นเพื่อให้การ์ดด้านล่างซ้อนขึ้นมาบนแถบได้
   heroBand?: boolean;
+  // แถบหัวข้อเตี้ยสำหรับหน้าที่ชื่อยาว (เช่นหน้าตรวจเอกสาร) ชื่อเกินสองบรรทัดจะตัดท้าย
+  compactBand?: boolean;
 };
 
 function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
-export function AppShell({ children, title, breadcrumb, description, actions, meta, backHref, heroBand = false }: AppShellProps) {
+export function AppShell({ children, title, breadcrumb, description, actions, meta, backHref, heroBand = false, compactBand = false }: AppShellProps) {
   const pathname = usePathname();
 
   return (
@@ -59,13 +61,13 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
         </div>
       </header>
 
-      {title && <section className={`shrink-0 bg-[var(--band)] px-5 text-white sm:px-8 lg:px-12 xl:px-16 ${heroBand ? "pb-24 pt-8 lg:pt-10" : "py-6 lg:py-7"}`}>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex min-w-0 items-start gap-4">
-            {backHref && <Link href={backHref} aria-label="ย้อนกลับ" className="focus-ring mt-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-white/45 hover:bg-white/10"><ArrowLeft size={18} weight="bold" /></Link>}
+      {title && <section className={`shrink-0 bg-[var(--band)] px-5 text-white sm:px-8 lg:px-12 xl:px-16 ${heroBand ? "pb-24 pt-8 lg:pt-10" : compactBand ? "py-4 lg:py-5" : "py-6 lg:py-7"}`}>
+        <div className={`flex flex-col sm:flex-row sm:justify-between ${compactBand ? "gap-3 sm:items-center" : "gap-4 sm:items-end"}`}>
+          <div className={`flex min-w-0 items-start ${compactBand ? "gap-3" : "gap-4"}`}>
+            {backHref && <Link href={backHref} aria-label="ย้อนกลับ" className={`focus-ring flex shrink-0 ${compactBand ? "mt-0.5 h-9 w-9" : "mt-1 h-11 w-11"} items-center justify-center rounded-md border border-white/45 hover:bg-white/10`}><ArrowLeft size={compactBand ? 16 : 18} weight="bold" /></Link>}
             <div className="min-w-0">
-              {breadcrumb && <p className="text-[13px] text-[var(--band-text)]">{breadcrumb}</p>}
-              <h1 className={`mt-1 font-semibold leading-snug ${heroBand ? "text-[28px] lg:text-[36px]" : "text-[22px] lg:text-[28px]"}`}>{title}</h1>
+              {breadcrumb && <p className={`text-[var(--band-text)] ${compactBand ? "text-xs" : "text-[13px]"}`}>{breadcrumb}</p>}
+              <h1 title={compactBand ? title : undefined} className={`font-semibold leading-snug ${heroBand ? "mt-1 text-[28px] lg:text-[36px]" : compactBand ? "mt-0.5 line-clamp-2 text-lg lg:text-xl" : "mt-1 text-[22px] lg:text-[28px]"}`}>{title}</h1>
               {description && <p className="mt-1.5 max-w-2xl text-sm font-light leading-6 text-[#e6f1fa] lg:text-[15px]">{description}</p>}
             </div>
           </div>

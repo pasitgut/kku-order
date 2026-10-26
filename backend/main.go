@@ -684,6 +684,8 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				"person_count": 0, "confidence": 0, "processing_started_at": nil, "processing_finished_at": nil,
 				"processing_duration_ms": 0,
 			}
+			// gorm writes the new storage_path back into duplicate, so keep the old one first.
+			previousPath := duplicate.StoragePath
 			if err := db.Transaction(func(tx *gorm.DB) error {
 				if err := lockEditableDocument(tx, duplicate.ID); err != nil {
 					return err
@@ -721,7 +723,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกทับเอกสารได้"})
 				return
 			}
-			_ = os.Remove(duplicate.StoragePath)
+			removeReplacedUpload(previousPath, storagePath)
 			processor.Enqueue(duplicate.ID)
 			if err := db.First(&duplicate, duplicate.ID).Error; err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารที่บันทึกทับได้"})
@@ -851,6 +853,14 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// removeReplacedUpload deletes the file an overwrite replaced, never the new one.
+func removeReplacedUpload(previousPath, newPath string) {
+	if previousPath == "" || filepath.Clean(previousPath) == filepath.Clean(newPath) {
+		return
+	}
+	_ = os.Remove(previousPath)
 }
 
 func getenv(key, fallback string) string {
