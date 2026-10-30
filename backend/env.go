@@ -76,7 +76,7 @@ func loadEnvironmentFile(path string) error {
 		if err != nil {
 			return fmt.Errorf("local environment file has invalid value at line %d: %w", lineNumber, err)
 		}
-		if _, exists := os.LookupEnv(key); exists {
+		if existing, exists := os.LookupEnv(key); exists && strings.TrimSpace(existing) != "" {
 			continue
 		}
 		if err := os.Setenv(key, value); err != nil {

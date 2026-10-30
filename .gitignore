@@ -44,6 +44,11 @@ next-env.d.ts
 # local Go build caches
 /backend/.gocache/
 /backend/.gomodcache/
+/backend/.venv/
+
+# local OCR runtime data and package bundle
+/backend/storage/
+/backend/one-ocr.zip
 
 # local verification artifacts
 /tmp/
