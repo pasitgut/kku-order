@@ -3,7 +3,13 @@ node_modules
 .git
 tmp
 backend/.venv
+backend/.gocache
+backend/.gomodcache
+backend/.env*
+backend/incoming
+backend/one-ocr
 backend/one-ocr/.venv
+backend/one-ocr.zip
 backend/storage
 secrets
 deploy/secrets

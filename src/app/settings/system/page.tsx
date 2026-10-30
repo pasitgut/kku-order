@@ -6,7 +6,7 @@ import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-fr
 import { SyncRun, SystemSettings, formatThaiDate, getSyncRuns, getSystemSettings } from "@/lib/api";
 import { cronLabel } from "@/lib/cron-label";
 
-function EnvValue({ label, value, envKey, tone }: { label: string; value: string; envKey: string; tone?: "good" | "idle" }) {
+function EnvValue({ label, value, envKey, tone }: { label: string; value: string; envKey: string; tone?: "good" | "warn" | "idle" }) {
   return <div className="flex items-start justify-between gap-4 border-b border-[var(--line-soft)] px-5 py-3.5 last:border-0 lg:px-6">
     <div><p className="text-sm">{label}</p><code className="text-[11px] text-[var(--subtle)]">{envKey}</code></div>
     <p className="flex items-center gap-2 text-right text-sm font-medium">{tone && <StatusDot tone={tone} />}{value}</p>
@@ -35,6 +35,17 @@ export default function SystemSettingsPage() {
       </div>
       <div className="overflow-x-auto border-t border-[var(--line)]"><table className="data-grid w-full min-w-[560px] text-left text-sm"><thead><tr><th className="px-6 py-2.5">รอบ sync</th><th className="px-3 py-2.5">สถานะ</th><th className="px-3 py-2.5 text-right">ดึงมา</th><th className="px-3 py-2.5 text-right">เพิ่ม</th><th className="px-3 py-2.5 text-right">แก้ไข</th><th className="px-6 py-2.5 text-right">ไม่เปลี่ยน</th></tr></thead>
         <tbody>{runs.map((run) => <tr key={run.id}><td className="px-6 py-3">{formatThaiDate(run.startedAt)}</td><td className="px-3 py-3"><span className="inline-flex items-center gap-1.5 text-[13px] text-[var(--muted)]" title={run.errorMessage}><StatusDot tone={run.status === "SUCCESS" ? "good" : run.status === "RUNNING" ? "info" : "bad"} />{run.status === "SUCCESS" ? "สำเร็จ" : run.status === "RUNNING" ? "กำลังทำงาน" : "ล้มเหลว"}</span></td><td className="px-3 py-3 text-right">{run.fetched}</td><td className="px-3 py-3 text-right">{run.created}</td><td className="px-3 py-3 text-right">{run.updated}</td><td className="px-6 py-3 text-right text-[var(--muted)]">{run.unchanged}</td></tr>)}{runs.length === 0 && <tr><td colSpan={6} className="px-6 py-8 text-center text-sm text-[var(--muted)]">ยังไม่มีประวัติการ sync</td></tr>}</tbody></table></div>
+    </SettingsCard>
+
+    <SettingsCard id="drive-config" title="Google Drive" description="ค่าที่ใช้สำหรับ service account ที่อ่านไฟล์จากโฟลเดอร์ที่แชร์ให้ระบบ">
+      <EnvValue label="อีเมลบัญชีระบบ" value={settings ? settings.googleDriveServiceAccountEmail || (settings.googleDriveCredentialsConfigured ? "อ่านอีเมลจากไฟล์ credential ไม่ได้" : "ยังไม่ได้ตั้งค่า") : "-"} envKey="GOOGLE_DRIVE_CREDENTIALS_FILE · client_email" tone={settings?.googleDriveServiceAccountEmail ? "good" : settings ? "idle" : undefined} />
+      <EnvValue label="ไฟล์ credential" value={settings ? settings.googleDriveCredentialsConfigured ? "ตั้งค่าแล้ว" : "ยังไม่ได้ตั้งค่า" : "-"} envKey="GOOGLE_DRIVE_CREDENTIALS_FILE" tone={settings ? settings.googleDriveCredentialsConfigured ? "good" : "idle" : undefined} />
+      <EnvValue label="รหัสโฟลเดอร์ใน .env" value={settings ? settings.googleDriveFolderConfigured ? "ตั้งค่าแล้ว" : "ยังไม่ได้ตั้งค่า" : "-"} envKey="GOOGLE_DRIVE_FOLDER_ID" tone={settings ? settings.googleDriveFolderConfigured ? "good" : "idle" : undefined} />
+    </SettingsCard>
+
+    <SettingsCard id="runtime-config" title="การตั้งค่าฝั่งเซิร์ฟเวอร์" description="ค่าที่อ่านจาก .env เพื่อกำหนดโฟลเดอร์นำเข้าและการตรวจสอบตัวตน">
+      <EnvValue label="โฟลเดอร์นำเข้าจากเซิร์ฟเวอร์" value={settings?.importDir || "-"} envKey="IMPORT_DIR" />
+      <EnvValue label="บังคับยืนยันตัวตน" value={settings ? settings.authRequired ? "เปิดใช้งาน" : "ปิดใช้งาน" : "-"} envKey="AUTH_REQUIRED" tone={settings ? settings.authRequired ? "good" : "warn" : undefined} />
     </SettingsCard>
 
     <SettingsCard id="expiry" title="การแจ้งเตือนหมดวาระ" description="ส่งอีเมลถึงผู้ถูกแต่งตั้งก่อนคำสั่งหมดวาระ">

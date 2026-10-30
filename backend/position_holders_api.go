@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,6 +95,18 @@ func readPositionHolderInput(title, startsOn string) (string, *time.Time, string
 
 // assignPositionHolder บันทึกผู้ดำรงตำแหน่ง ถ้าตำแหน่งเดียวกันเริ่มวันเดียวกันเคยบันทึกคนอื่นไว้ ถือว่าแก้ไขรายการเดิม
 func assignPositionHolder(tx *gorm.DB, title string, personID uint, startsOn *time.Time, source, createdBy string) error {
+	if source == positionSourceManual && startsOn != nil {
+		var previous []PositionHolder
+		if err := tx.Where("position_key = ? AND source = ? AND starts_on < ? AND ends_on IS NULL", positionKey(title), positionSourceManual, startsOn.Format("2006-01-02")).Find(&previous).Error; err != nil {
+			return err
+		}
+		lastDay := startsOn.AddDate(0, 0, -1)
+		for _, holder := range previous {
+			if err := tx.Model(&PositionHolder{}).Where("id = ?", holder.ID).Update("ends_on", lastDay).Error; err != nil {
+				return err
+			}
+		}
+	}
 	replaced := tx.Where("position_key = ? AND source <> ?", positionKey(title), positionSourceSync)
 	if startsOn == nil {
 		replaced = replaced.Where("starts_on IS NULL")
@@ -164,4 +177,166 @@ func setPositionHolder(db *gorm.DB) gin.HandlerFunc {
 		_ = db.Create(&AuditLog{UserID: createdBy, Action: "POSITION_HOLDER_SET", Details: title + ": " + strings.TrimSpace(person.Prefix+" "+person.FirstName+" "+person.LastName)}).Error
 		c.JSON(http.StatusCreated, gin.H{"data": gin.H{"positionTitle": title, "directoryUserId": person.ID, "startsOn": startsOn}, "linked": linked})
 	}
+}
+
+func listDirectoryPersonPositions(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		personID, ok := parseDirectoryPersonID(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสบุคคลไม่ถูกต้อง"})
+			return
+		}
+		var person DirectoryPerson
+		if err := db.Select("id").First(&person, personID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบบุคคลนี้ในระบบ"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบข้อมูลอาจารย์ได้"})
+			return
+		}
+		var positions []PositionHolder
+		if err := db.Where("directory_person_id = ?", personID).Order("starts_on DESC").Order("id DESC").Find(&positions).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดประวัติตำแหน่งได้"})
+			return
+		}
+		if positions == nil {
+			positions = []PositionHolder{}
+		}
+		c.JSON(http.StatusOK, gin.H{"data": positions})
+	}
+}
+
+var errPositionPeriodOverlap = errors.New("ช่วงเวลาดำรงตำแหน่งทับซ้อนกับรายการที่มีอยู่")
+
+func addDirectoryPersonPosition(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		personID, ok := parseDirectoryPersonID(c.Param("id"))
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสบุคคลไม่ถูกต้อง"})
+			return
+		}
+		var payload struct {
+			PositionTitle string `json:"positionTitle"`
+			StartsOn      string `json:"startsOn"`
+			EndsOn        string `json:"endsOn"`
+		}
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
+			return
+		}
+		title, startsOn, problem := readPositionHolderInput(payload.PositionTitle, payload.StartsOn)
+		if problem != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": problem})
+			return
+		}
+		var endsOn *time.Time
+		if strings.TrimSpace(payload.EndsOn) != "" {
+			parsed, valid := normalizeThaiDate(payload.EndsOn)
+			if !valid || parsed == nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "อ่านวันที่สิ้นสุดไม่ได้ ลองพิมพ์แบบ 30 ก.ย. 2568"})
+				return
+			}
+			if parsed.Before(*startsOn) {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มดำรงตำแหน่ง"})
+				return
+			}
+			endsOn = parsed
+		}
+
+		var person DirectoryPerson
+		if err := db.First(&person, personID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบบุคคลนี้ในระบบ"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถตรวจสอบบุคคลได้"})
+			return
+		}
+
+		changedBy := currentUserID(c)
+		changedAt := time.Now()
+		var created PositionHolder
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var existing []PositionHolder
+			if err := tx.Where("position_key = ? AND source = ?", positionKey(title), positionSourceManual).Find(&existing).Error; err != nil {
+				return err
+			}
+			changes := make([]DirectoryPersonChange, 0, 2)
+			for index := range existing {
+				previous := &existing[index]
+				if previous.StartsOn == nil {
+					continue
+				}
+				if previous.EndsOn == nil && previous.StartsOn.Before(*startsOn) {
+					oldValue := positionTimelineValue(*previous)
+					lastDay := startsOn.AddDate(0, 0, -1)
+					if err := tx.Model(&PositionHolder{}).Where("id = ?", previous.ID).Update("ends_on", lastDay).Error; err != nil {
+						return err
+					}
+					previous.EndsOn = &lastDay
+					changes = append(changes, DirectoryPersonChange{Field: "positionTimeline", OldValue: oldValue, NewValue: positionTimelineValue(*previous)})
+				}
+				if positionPeriodsOverlap(startsOn, endsOn, previous.StartsOn, previous.EndsOn) {
+					return errPositionPeriodOverlap
+				}
+			}
+			created = PositionHolder{
+				PositionKey: positionKey(title), PositionTitle: title, DirectoryPersonID: personID,
+				StartsOn: startsOn, EndsOn: endsOn, Source: positionSourceManual, CreatedBy: changedBy,
+			}
+			if err := tx.Create(&created).Error; err != nil {
+				return err
+			}
+			changes = append(changes, DirectoryPersonChange{Field: "positionTimeline", OldValue: "", NewValue: positionTimelineValue(created)})
+			period := startsOn.Format("2006-01-02") + "–"
+			if endsOn == nil {
+				period += "ปัจจุบัน"
+			} else {
+				period += endsOn.Format("2006-01-02")
+			}
+			if err := recordDirectoryPersonRevision(tx, personID, changes, changedBy, changedAt); err != nil {
+				return err
+			}
+			name := strings.TrimSpace(strings.Join([]string{person.Prefix, person.FirstName, person.LastName}, " "))
+			return tx.Create(&AuditLog{UserID: changedBy, Action: "DIRECTORY_POSITION_ADDED", Details: "personId=" + strconv.FormatUint(uint64(personID), 10) + " title=" + title + " period=" + period + " name=" + name}).Error
+		})
+		if errors.Is(err, errPositionPeriodOverlap) {
+			c.JSON(http.StatusConflict, gin.H{"error": "ช่วงเวลานี้ทับซ้อนกับตำแหน่งที่บันทึกไว้แล้ว กรุณาตรวจสอบวันที่เดิม"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกประวัติตำแหน่งได้"})
+			return
+		}
+		linked, _ := linkPendingByPosition(db, personID)
+		c.JSON(http.StatusCreated, gin.H{"data": created, "linked": linked})
+	}
+}
+
+func positionPeriodsOverlap(start, end, otherStart, otherEnd *time.Time) bool {
+	if start == nil || otherStart == nil {
+		return false
+	}
+	if end != nil && end.Before(*otherStart) {
+		return false
+	}
+	if otherEnd != nil && start.After(*otherEnd) {
+		return false
+	}
+	return true
+}
+
+func positionTimelineValue(position PositionHolder) string {
+	period := "ไม่ระบุวันเริ่ม"
+	if position.StartsOn != nil {
+		period = position.StartsOn.Format("2006-01-02")
+	}
+	period += "–"
+	if position.EndsOn == nil {
+		period += "ปัจจุบัน"
+	} else {
+		period += position.EndsOn.Format("2006-01-02")
+	}
+	return position.PositionTitle + " · " + period
 }

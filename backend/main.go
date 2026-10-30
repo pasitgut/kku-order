@@ -280,6 +280,8 @@ type DirectoryPersonProfile struct {
 	SourceUpdatedAt string `json:"sourceUpdatedAt" gorm:"size:50"`
 	RawPayload      string `json:"-" gorm:"type:json"`
 	Fingerprint     string `json:"-" gorm:"size:64"`
+	// LocalOverrides ระบุฟิลด์ที่เจ้าหน้าที่แก้เอง เพื่อให้ sync ไม่เขียนทับค่าเหล่านั้น
+	LocalOverrides *string `json:"-" gorm:"column:local_overrides;type:json"`
 }
 
 func (DirectoryPersonProfile) TableName() string { return "directory_person_profiles" }
@@ -357,6 +359,10 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.GET("/api/v1/reports/appointments", appointmentReportHandler(db))
 	router.GET("/api/v1/directory-users", listDirectoryUsers(db))
 	router.POST("/api/v1/directory-users", requireRole("ADMIN", "STAFF"), createDirectoryUser(db))
+	router.PUT("/api/v1/directory-users/:id", requireRole("ADMIN", "STAFF"), updateDirectoryUser(db))
+	router.GET("/api/v1/directory-users/:id/revisions", requireRole("ADMIN", "STAFF"), listDirectoryPersonRevisions(db))
+	router.GET("/api/v1/directory-users/:id/positions", requireRole("ADMIN", "STAFF"), listDirectoryPersonPositions(db))
+	router.POST("/api/v1/directory-users/:id/positions", requireRole("ADMIN", "STAFF"), addDirectoryPersonPosition(db))
 	router.GET("/api/v1/position-holders/vacant", listVacantPositions(db))
 	router.POST("/api/v1/position-holders", requireRole("ADMIN", "STAFF"), setPositionHolder(db))
 	router.GET("/api/v1/documents", listDocuments(db))

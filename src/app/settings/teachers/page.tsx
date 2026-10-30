@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { CaretLeft, CaretRight, CheckCircle, MagnifyingGlass, Plus, SpinnerGap } from "@phosphor-icons/react";
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
+import { TeacherProfileEditor } from "@/components/teacher-profile-editor";
 import { useToast } from "@/components/toast";
 import { ApiError, DirectoryUser, VacantPosition, createDirectoryUser, getDirectoryUsers, getDirectoryUsersPage, getVacantPositions, setPositionHolder } from "@/lib/api";
 import { can } from "@/lib/permissions";
@@ -34,6 +35,7 @@ export default function TeachersSettingsPage() {
   const [loadError, setLoadError] = useState("");
   const [vacancies, setVacancies] = useState<VacantPosition[] | null>(null);
   const [vacancyRevision, setVacancyRevision] = useState(0);
+  const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const canCreate = can(me?.role ?? "", "createPerson");
 
   useEffect(() => {
@@ -130,9 +132,9 @@ export default function TeachersSettingsPage() {
     <VacantPositionsCard vacancies={vacancies} canAssign={canCreate} onAssigned={() => { setVacancyRevision((current) => current + 1); refreshList(); }} />
     <datalist id="vacant-position-titles">{vacancies?.map((item) => <option key={item.positionTitle} value={item.positionTitle} />)}</datalist>
     </div>
-    {!canCreate && status === "ready" && <p className="rounded-md border border-[var(--line)] bg-[var(--surface-muted)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">ผู้ดูแลระบบและเจ้าหน้าที่สามารถเพิ่มข้อมูลอาจารย์ได้ คุณสามารถค้นหาและดูรายชื่อด้านล่าง</p>}
+    {!canCreate && status === "ready" && <p className="rounded-md border border-[var(--line)] bg-[var(--surface-muted)] px-4 py-3 text-sm leading-6 text-[var(--muted)]">ผู้ดูแลระบบและเจ้าหน้าที่สามารถเพิ่มหรือแก้ไขข้อมูลอาจารย์ได้ คุณสามารถค้นหาและดูรายชื่อด้านล่าง</p>}
 
-    <SettingsCard id="teacher-list" title="รายชื่อในระบบ" description="รายชื่อชุดเดียวกับที่ใช้เลือกบุคคลในเอกสาร เรียงตามรายการที่เพิ่มล่าสุด">
+    <SettingsCard id="teacher-list" title="รายชื่อในระบบ" description="รายชื่อชุดเดียวกับที่ใช้เลือกบุคคลในเอกสาร เรียงตามรายการที่เพิ่มล่าสุด กดแก้ไขเพื่อปรับข้อมูลและดูประวัติตำแหน่ง">
       <div className="flex flex-col gap-3 border-b border-[var(--line)] bg-[var(--surface-muted)] px-5 py-4 lg:px-6">
         <form onSubmit={(event) => { event.preventDefault(); setSearch(query.trim()); setPage(1); refreshList(); }} role="search" aria-label="ค้นหารายชื่ออาจารย์" className="flex flex-col gap-2 sm:flex-row">
           <div className="relative min-w-0 flex-1"><MagnifyingGlass size={18} aria-hidden="true" className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" /><input value={query} onChange={(event) => setQuery(event.target.value)} aria-label="ค้นหาชื่อ อีเมล หน่วยงาน หรือเบอร์โทร" placeholder="ค้นหาชื่อ อีเมล หน่วยงาน หรือเบอร์โทร" className={`${inputClass} pl-10`} /></div>
@@ -144,17 +146,21 @@ export default function TeachersSettingsPage() {
         {loading ? <p role="status" className="flex items-center justify-center gap-2 px-5 py-12 text-sm text-[var(--muted)]"><SpinnerGap size={18} className="animate-spin" />กำลังโหลดรายชื่อ...</p>
           : loadError ? <div role="alert" className="px-5 py-8 text-sm text-[var(--danger)]"><p>{loadError}</p><button type="button" onClick={refreshList} className={`${buttonClass} mt-3 border border-[var(--line-strong)] text-[var(--accent)]`}>ลองใหม่</button></div>
           : <>
-            <div className="overflow-x-auto"><table className="data-grid w-full min-w-[640px] text-left text-sm"><caption className="sr-only">รายชื่ออาจารย์และบุคลากรในระบบ</caption>
-              <thead><tr><th scope="col" className="px-5 py-3 lg:px-6">ชื่อ–นามสกุล</th><th scope="col" className="px-4 py-3">ตำแหน่ง / หน่วยงาน</th><th scope="col" className="px-4 py-3">ติดต่อ</th><th scope="col" className="px-5 py-3">แหล่งที่มา</th></tr></thead>
+            <div className="overflow-x-auto"><table className="data-grid w-full min-w-[760px] text-left text-sm"><caption className="sr-only">รายชื่ออาจารย์และบุคลากรในระบบ</caption>
+              <thead><tr><th scope="col" className="px-5 py-3 lg:px-6">ชื่อ–นามสกุล</th><th scope="col" className="px-4 py-3">ตำแหน่ง / หน่วยงาน</th><th scope="col" className="px-4 py-3">ติดต่อ</th><th scope="col" className="px-5 py-3">แหล่งที่มา</th>{canCreate && <th scope="col" className="px-4 py-3">จัดการ</th>}</tr></thead>
               <tbody>{list?.data.map((user) => {
                 const name = user.fullName || `${user.prefix} ${user.firstName} ${user.lastName}`.trim();
-                return <tr key={user.id} className="hover:bg-[var(--brand-blue-pale)]">
-                  <td className="px-5 py-4 lg:px-6"><div className="flex items-center gap-3"><span aria-hidden="true" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-medium text-[var(--navy)]">{initials(name)}</span><span className="break-words font-medium">{name}</span></div></td>
-                  <td className="px-4 py-4"><p className="break-words">{user.positionTitle || user.jobTitle || "ไม่ระบุตำแหน่ง"}</p><p className="mt-1 break-words text-xs font-light text-[var(--muted)]">{user.department || user.faculty || "ไม่ระบุหน่วยงาน"}</p></td>
-                  <td className="px-4 py-4"><p className="break-all text-xs">{user.email || "ไม่ระบุอีเมล"}</p><p className="mt-1 text-xs font-light text-[var(--muted)]">{user.phone || "ไม่ระบุเบอร์โทร"}</p></td>
-                  <td className="px-5 py-4"><span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-[var(--muted)]"><StatusDot tone={user.source === "MANUAL" ? "warn" : "info"} />{user.source === "MANUAL" ? "เพิ่มเอง" : "จาก sync"}</span></td>
-                </tr>;
-              })}{!list?.data.length && <tr><td colSpan={4} className="px-5 py-12 text-center leading-7 text-[var(--muted)]">{search || source !== "all" ? "ไม่พบรายชื่อที่ตรงกับการค้นหาหรือตัวกรอง" : "ยังไม่มีรายชื่อในระบบ"}<p className="text-xs font-light">{search || source !== "all" ? "ลองเปลี่ยนคำค้นหรือเลือกแหล่งที่มาเป็นทั้งหมด" : canCreate ? "กรอกแบบฟอร์มด้านบนเพื่อเพิ่มอาจารย์คนแรกได้เลย" : "ติดต่อผู้ดูแลระบบหรือเจ้าหน้าที่เพื่อเพิ่มรายชื่อ"}</p></td></tr>}</tbody>
+                return <Fragment key={user.id}>
+                  <tr className="hover:bg-[var(--brand-blue-pale)]">
+                    <td className="px-5 py-4 lg:px-6"><div className="flex items-center gap-3"><span aria-hidden="true" className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-soft)] text-xs font-medium text-[var(--navy)]">{initials(name)}</span><span className="break-words font-medium">{name}</span></div></td>
+                    <td className="px-4 py-4"><p className="break-words">{user.positionTitle || user.jobTitle || "ไม่ระบุตำแหน่ง"}</p><p className="mt-1 break-words text-xs font-light text-[var(--muted)]">{user.department || user.faculty || "ไม่ระบุหน่วยงาน"}</p></td>
+                    <td className="px-4 py-4"><p className="break-all text-xs">{user.email || "ไม่ระบุอีเมล"}</p><p className="mt-1 text-xs font-light text-[var(--muted)]">{user.phone || "ไม่ระบุเบอร์โทร"}</p></td>
+                    <td className="px-5 py-4"><span className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs text-[var(--muted)]"><StatusDot tone={user.source === "MANUAL" ? "warn" : "info"} />{user.source === "MANUAL" ? "เพิ่มเอง" : "จาก sync"}</span></td>
+                    {canCreate && <td className="px-4 py-4"><button type="button" aria-expanded={editingUserId === user.id} onClick={() => setEditingUserId(editingUserId === user.id ? null : user.id)} className="focus-ring min-h-10 rounded-md border border-[var(--line-strong)] bg-white px-3 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]">{editingUserId === user.id ? "ปิด" : "แก้ไข / ตำแหน่ง"}</button></td>}
+                  </tr>
+                  {canCreate && editingUserId === user.id && <tr><td colSpan={5} className="px-3 py-3 sm:px-5"><TeacherProfileEditor user={user} onCancel={() => setEditingUserId(null)} onSaved={() => { setEditingUserId(null); refreshList(); }} /></td></tr>}
+                </Fragment>;
+              })}{!list?.data.length && <tr><td colSpan={canCreate ? 5 : 4} className="px-5 py-12 text-center leading-7 text-[var(--muted)]">{search || source !== "all" ? "ไม่พบรายชื่อที่ตรงกับการค้นหาหรือตัวกรอง" : "ยังไม่มีรายชื่อในระบบ"}<p className="text-xs font-light">{search || source !== "all" ? "ลองเปลี่ยนคำค้นหรือเลือกแหล่งที่มาเป็นทั้งหมด" : canCreate ? "กรอกแบบฟอร์มด้านบนเพื่อเพิ่มอาจารย์คนแรกได้เลย" : "ติดต่อผู้ดูแลระบบหรือเจ้าหน้าที่เพื่อเพิ่มรายชื่อ"}</p></td></tr>}</tbody>
             </table></div>
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] px-5 py-3 text-xs text-[var(--muted)] lg:px-6">
               <p role="status">แสดง {total ? (currentPage - 1) * limit + 1 : 0}–{Math.min(currentPage * limit, total)} จาก {total.toLocaleString("th-TH")} รายการ</p>

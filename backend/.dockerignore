@@ -1,9 +1,14 @@
 .venv
+.gocache
+.gomodcache
+.env*
 __pycache__
 *.pyc
+incoming
 storage
 bin
 vocab_buffers
 raw_decrypted
 .git
 one-ocr
+one-ocr.zip

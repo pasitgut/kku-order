@@ -23,10 +23,12 @@ type PositionHolder struct {
 	PositionTitle     string     `json:"positionTitle" gorm:"size:255;not null"`
 	DirectoryPersonID uint       `json:"directoryUserId" gorm:"column:directory_person_id;not null"`
 	StartsOn          *time.Time `json:"startsOn" gorm:"type:date"`
-	Source            string     `json:"source" gorm:"size:20;not null"`
-	CreatedBy         string     `json:"createdBy" gorm:"size:255"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	// EndsOn เป็นวันสุดท้ายที่ดำรงตำแหน่ง (นับรวมวันนั้น)
+	EndsOn    *time.Time `json:"endsOn" gorm:"type:date"`
+	Source    string     `json:"source" gorm:"size:20;not null"`
+	CreatedBy string     `json:"createdBy" gorm:"size:255"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 }
 
 func (PositionHolder) TableName() string { return "position_holders" }
@@ -74,13 +76,18 @@ func splitExOfficioPosition(text string) (position, role string) {
 //
 // การเลือกในเอกสารเก่าฉบับเดียวจึงไม่ทับข้อมูล sync ของคำสั่งใหม่
 func pickHolder(holders []PositionHolder, on *time.Time) *PositionHolder {
-	if holder := latestStarted(holders, positionSourceManual, on); holder != nil {
+	referenceDate := on
+	if referenceDate == nil {
+		now := time.Now()
+		referenceDate = &now
+	}
+	if holder := latestStarted(holders, positionSourceManual, referenceDate); holder != nil {
 		return holder
 	}
 	var current *PositionHolder
 	for i := range holders {
 		holder := &holders[i]
-		if holder.StartsOn != nil || (holder.Source != positionSourceManual && holder.Source != positionSourceSync) {
+		if holder.StartsOn != nil || (holder.Source != positionSourceManual && holder.Source != positionSourceSync) || (holder.EndsOn != nil && holder.EndsOn.Before(*referenceDate)) {
 			continue
 		}
 		if current == nil || (holder.Source == positionSourceManual && (current.Source == positionSourceSync || holder.UpdatedAt.After(current.UpdatedAt))) {
@@ -90,11 +97,11 @@ func pickHolder(holders []PositionHolder, on *time.Time) *PositionHolder {
 	if current != nil {
 		return current
 	}
-	if holder := latestStarted(holders, positionSourceLearned, on); holder != nil {
+	if holder := latestStarted(holders, positionSourceLearned, referenceDate); holder != nil {
 		return holder
 	}
 	for i := range holders {
-		if holders[i].Source == positionSourceLearned && holders[i].StartsOn == nil {
+		if holders[i].Source == positionSourceLearned && holders[i].StartsOn == nil && (holders[i].EndsOn == nil || !holders[i].EndsOn.Before(*referenceDate)) {
 			return &holders[i]
 		}
 	}
@@ -106,7 +113,7 @@ func latestStarted(holders []PositionHolder, source string, on *time.Time) *Posi
 	var best *PositionHolder
 	for i := range holders {
 		holder := &holders[i]
-		if holder.Source != source || holder.StartsOn == nil || (on != nil && holder.StartsOn.After(*on)) {
+		if holder.Source != source || holder.StartsOn == nil || (on != nil && (holder.StartsOn.After(*on) || (holder.EndsOn != nil && holder.EndsOn.Before(*on)))) {
 			continue
 		}
 		if best == nil || holder.StartsOn.After(*best.StartsOn) || (holder.StartsOn.Equal(*best.StartsOn) && holder.UpdatedAt.After(best.UpdatedAt)) {

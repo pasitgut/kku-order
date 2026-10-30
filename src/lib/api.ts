@@ -181,6 +181,10 @@ export type DirectoryUser = {
   syncedAt?: string;
 };
 
+export type DirectoryPersonChange = { field: string; oldValue: string; newValue: string };
+export type DirectoryPersonRevision = { id: number; personId: number; changes: DirectoryPersonChange[]; changedBy: string; changedAt: string };
+export type PositionHolder = { id: number; positionTitle: string; directoryUserId: number; startsOn: string | null; endsOn: string | null; source: string; createdBy: string; createdAt: string; updatedAt: string };
+
 export type SyncRun = { id: number; startedAt: string; completedAt?: string; status: string; fetched: number; created: number; updated: number; unchanged: number; errorMessage?: string };
 export type ExpiryNotification = { id: number; documentId: number; appointmentId?: number; noticeType: string; dueAt: string; status: string };
 
@@ -264,6 +268,38 @@ export async function createDirectoryUser(payload: {
   managePositionSince?: string;
 }) {
   return apiFetch<{ data: DirectoryUser; linked: number }>("/api/v1/directory-users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateDirectoryUser(id: number, payload: {
+  prefix: string;
+  firstName: string;
+  lastName: string;
+  positionTitle: string;
+  department: string;
+  email: string;
+  phone: string;
+}) {
+  return apiFetch<{ data: DirectoryUser }>(`/api/v1/directory-users/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getDirectoryPersonRevisions(id: number) {
+  return apiFetch<{ data: DirectoryPersonRevision[] }>(`/api/v1/directory-users/${id}/revisions`);
+}
+
+export async function getDirectoryPersonPositions(id: number) {
+  return apiFetch<{ data: PositionHolder[] }>(`/api/v1/directory-users/${id}/positions`);
+}
+
+export async function addDirectoryPersonPosition(id: number, payload: { positionTitle: string; startsOn: string; endsOn?: string }) {
+  return apiFetch<{ data: PositionHolder; linked: number }>(`/api/v1/directory-users/${id}/positions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -496,6 +532,8 @@ export type SystemSettings = {
   importDir: string;
   authRequired: boolean;
   googleDriveCredentialsConfigured: boolean;
+  googleDriveServiceAccountEmail: string;
+  googleDriveFolderConfigured: boolean;
 };
 
 export type Me = {

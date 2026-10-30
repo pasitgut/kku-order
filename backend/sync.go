@@ -197,17 +197,37 @@ func (s *UserSyncService) upsertUser(item map[string]any) (created bool, updated
 	if profileErr != nil && !errors.Is(profileErr, gorm.ErrRecordNotFound) {
 		return false, false, fmt.Errorf("find directory person profile %s: %w", externalIDText, profileErr)
 	}
+	overrides := decodeDirectoryLocalOverrides(existingProfile.LocalOverrides)
 	person.ID = existing.ID
 	person.CreatedAt = existing.CreatedAt
-	unchanged := sameOptionalString(existing.Email, person.Email) && sameOptionalString(existing.Phone, person.Phone) &&
-		existing.Prefix == person.Prefix && existing.FirstName == person.FirstName && existing.LastName == person.LastName &&
-		existing.PositionTitle == person.PositionTitle && existing.Status == person.Status &&
-		existingProfile.Department == profile.Department && existingProfile.Faculty == profile.Faculty
+	unchanged := (overrides["email"] || sameOptionalString(existing.Email, person.Email)) &&
+		(overrides["phone"] || sameOptionalString(existing.Phone, person.Phone)) &&
+		(overrides["prefix"] || existing.Prefix == person.Prefix) &&
+		(overrides["firstName"] || existing.FirstName == person.FirstName) &&
+		(overrides["lastName"] || existing.LastName == person.LastName) &&
+		(overrides["positionTitle"] || existing.PositionTitle == person.PositionTitle) &&
+		existing.Status == person.Status &&
+		(overrides["department"] || existingProfile.Department == profile.Department) &&
+		existingProfile.Faculty == profile.Faculty
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		personUpdates := map[string]any{
-			"prefix": person.Prefix, "first_name": person.FirstName, "last_name": person.LastName,
-			"email": person.Email, "phone": person.Phone, "position_title": person.PositionTitle,
-			"status": person.Status, "synced_at": now,
+		personUpdates := map[string]any{"status": person.Status, "synced_at": now}
+		if !overrides["prefix"] {
+			personUpdates["prefix"] = person.Prefix
+		}
+		if !overrides["firstName"] {
+			personUpdates["first_name"] = person.FirstName
+		}
+		if !overrides["lastName"] {
+			personUpdates["last_name"] = person.LastName
+		}
+		if !overrides["email"] {
+			personUpdates["email"] = person.Email
+		}
+		if !overrides["phone"] {
+			personUpdates["phone"] = person.Phone
+		}
+		if !overrides["positionTitle"] {
+			personUpdates["position_title"] = person.PositionTitle
 		}
 		if !unchanged {
 			personUpdates["updated_at"] = now
@@ -217,12 +237,16 @@ func (s *UserSyncService) upsertUser(item map[string]any) (created bool, updated
 		}
 		profile.PersonID = person.ID
 		profileUpdates := map[string]any{
-			"department": profile.Department, "faculty": profile.Faculty, "source": sourceSynced,
+			"faculty": profile.Faculty, "source": sourceSynced,
 			"source_updated_at": profile.SourceUpdatedAt, "raw_payload": profile.RawPayload,
 			"fingerprint": profile.Fingerprint,
 		}
 		if errors.Is(profileErr, gorm.ErrRecordNotFound) {
+			profileUpdates["department"] = profile.Department
 			return tx.Create(&profile).Error
+		}
+		if !overrides["department"] {
+			profileUpdates["department"] = profile.Department
 		}
 		return tx.Model(&DirectoryPersonProfile{}).Where("person_id = ?", person.ID).Updates(profileUpdates).Error
 	}); err != nil {

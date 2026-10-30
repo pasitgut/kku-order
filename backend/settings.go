@@ -367,6 +367,8 @@ type SystemSettings struct {
 	ImportDir                        string `json:"importDir"`
 	AuthRequired                     bool   `json:"authRequired"`
 	GoogleDriveCredentialsConfigured bool   `json:"googleDriveCredentialsConfigured"`
+	GoogleDriveServiceAccountEmail   string `json:"googleDriveServiceAccountEmail"`
+	GoogleDriveFolderConfigured      bool   `json:"googleDriveFolderConfigured"`
 }
 
 func hostOnly(raw string) string {
@@ -393,6 +395,8 @@ func currentSystemSettings() SystemSettings {
 		ImportDir:                        getenv("IMPORT_DIR", "./incoming"),
 		AuthRequired:                     authRequired(),
 		GoogleDriveCredentialsConfigured: googleDriveCredentialsConfigured(),
+		GoogleDriveServiceAccountEmail:   googleDriveServiceAccountEmail(),
+		GoogleDriveFolderConfigured:      strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_FOLDER_ID")) != "",
 	}
 }
 

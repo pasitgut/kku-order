@@ -10,7 +10,7 @@ export const PERMISSIONS: { key: PermissionKey; label: string; roles: Role[] }[]
   { key: "edit", label: "แก้ไขผลสกัดและผูกรายชื่อ", roles: ["ADMIN", "STAFF"] },
   { key: "cancel", label: "ยกเลิกเอกสารพร้อมระบุเหตุผล", roles: ["ADMIN", "STAFF"] },
   { key: "confirm", label: "ยืนยันเอกสาร", roles: ["ADMIN", "STAFF"] },
-  { key: "createPerson", label: "เพิ่มบุคคลใหม่ในฐานข้อมูล", roles: ["ADMIN", "STAFF"] },
+  { key: "createPerson", label: "เพิ่มและแก้ไขข้อมูลบุคคล", roles: ["ADMIN", "STAFF"] },
   { key: "sync", label: "sync บุคลากรจาก External API", roles: ["ADMIN", "STAFF"] },
   { key: "delete", label: "ลบเอกสาร", roles: ["ADMIN", "DEVELOPER"] },
   { key: "settings", label: "แก้ไขการตั้งค่า OCR และการนำเข้า", roles: ["ADMIN"] },
