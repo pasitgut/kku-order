@@ -617,14 +617,15 @@ func parseDateInput(value string) (*time.Time, error) {
 }
 
 type createDirectoryUserRequest struct {
-	Prefix        string `json:"prefix"`
-	FirstName     string `json:"firstName"`
-	LastName      string `json:"lastName"`
-	PositionTitle string `json:"positionTitle"`
-	Department    string `json:"department"`
-	Email         string `json:"email"`
-	Phone         string `json:"phone"`
-	// ตำแหน่งบริหารที่คนนี้ดำรงอยู่ ใช้ผูกแถว "โดยตำแหน่ง" ในเอกสาร (ไม่บังคับ)
+	Prefix        string                         `json:"prefix"`
+	FirstName     string                         `json:"firstName"`
+	LastName      string                         `json:"lastName"`
+	PositionTitle string                         `json:"positionTitle"`
+	Department    string                         `json:"department"`
+	Email         string                         `json:"email"`
+	Phone         string                         `json:"phone"`
+	Positions     []directoryPersonPositionInput `json:"positions"`
+	// รองรับ client รุ่นเดิมที่ส่งตำแหน่งเดียว
 	ManagePosition      string `json:"managePosition"`
 	ManagePositionSince string `json:"managePositionSince"`
 }
@@ -646,14 +647,32 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		var managed string
-		var managedSince *time.Time
-		if strings.TrimSpace(payload.ManagePosition) != "" {
-			var problem string
-			if managed, managedSince, problem = readPositionHolderInput(payload.ManagePosition, payload.ManagePositionSince); problem != "" {
+		type normalizedPositionPeriod struct {
+			title    string
+			startsOn *time.Time
+			endsOn   *time.Time
+		}
+		positionPeriods := make([]normalizedPositionPeriod, 0, len(payload.Positions)+1)
+		if len(payload.Positions) > 20 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "เพิ่มช่วงตำแหน่งได้ไม่เกิน 20 รายการ"})
+			return
+		}
+		if len(payload.Positions) > 0 {
+			for _, input := range payload.Positions {
+				title, startsOn, endsOn, problem := readPositionPeriodInput(input)
+				if problem != "" {
+					c.JSON(http.StatusBadRequest, gin.H{"error": problem})
+					return
+				}
+				positionPeriods = append(positionPeriods, normalizedPositionPeriod{title: title, startsOn: startsOn, endsOn: endsOn})
+			}
+		} else if strings.TrimSpace(payload.ManagePosition) != "" {
+			title, startsOn, endsOn, problem := readPositionPeriodInput(directoryPersonPositionInput{PositionTitle: payload.ManagePosition, StartsOn: payload.ManagePositionSince})
+			if problem != "" {
 				c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 				return
 			}
+			positionPeriods = append(positionPeriods, normalizedPositionPeriod{title: title, startsOn: startsOn, endsOn: endsOn})
 		}
 
 		users, _, err := loadDirectory(db)
@@ -679,18 +698,23 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 			if err := createDirectoryPersonWithProfile(tx, &person, &profile); err != nil {
 				return err
 			}
-			if managed == "" {
-				return nil
+			for _, period := range positionPeriods {
+				if _, err := persistManualPositionPeriod(tx, person.ID, period.title, period.startsOn, period.endsOn, createdBy, time.Now()); err != nil {
+					return err
+				}
 			}
-			return assignPositionHolder(tx, managed, person.ID, managedSince, positionSourceManual, createdBy)
-		}); err != nil {
+			return nil
+		}); errors.Is(err, errPositionPeriodOverlap) {
+			c.JSON(http.StatusConflict, gin.H{"error": "ช่วงเวลาของตำแหน่งเดียวกันทับซ้อนกัน กรุณาตรวจสอบวันที่"})
+			return
+		} else if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกบุคคลใหม่ได้"})
 			return
 		}
 		user := directoryPersonAPI(person, profile)
 		_ = db.Create(&AuditLog{UserID: createdBy, Action: "DIRECTORY_USER_CREATED", Details: user.FullName}).Error
 		linked := 0
-		if managed != "" {
+		if len(positionPeriods) > 0 {
 			// เอกสารที่รอยืนยันและอ้างถึงตำแหน่งนี้ได้คนทันที
 			linked, _ = linkPendingByPosition(db, person.ID)
 		}

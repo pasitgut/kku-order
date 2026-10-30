@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { CaretLeft, CaretRight, CheckCircle, MagnifyingGlass, Plus, SpinnerGap } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, CheckCircle, MagnifyingGlass, Plus, SpinnerGap, X } from "@phosphor-icons/react";
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { TeacherProfileEditor } from "@/components/teacher-profile-editor";
@@ -12,6 +12,7 @@ import { initials } from "@/lib/person";
 import { TeacherDraft, linkedRowsNote, teacherPayload } from "@/lib/position-holder";
 
 const emptyDraft: TeacherDraft = { prefix: "", firstName: "", lastName: "", positionTitle: "", department: "", email: "", phone: "", managePosition: "", managePositionSince: "" };
+type ManagerPositionDraft = { positionTitle: string; startsOn: string; endsOn: string };
 const inputClass = "focus-ring h-11 w-full rounded-md border border-[var(--line-strong)] bg-white px-3 text-sm outline-none focus:border-[var(--accent)]";
 const buttonClass = "focus-ring inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-4 text-sm font-medium disabled:opacity-50";
 
@@ -19,6 +20,7 @@ export default function TeachersSettingsPage() {
   const { me, status } = useMe();
   const toast = useToast();
   const [draft, setDraft] = useState(emptyDraft);
+  const [managerPositions, setManagerPositions] = useState<ManagerPositionDraft[]>([]);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const firstNameRef = useRef<HTMLInputElement>(null);
@@ -63,13 +65,27 @@ export default function TeachersSettingsPage() {
     setQuery(value); setSearch(value.trim()); setSource("all"); setPage(1); refreshList();
   };
 
+  const updateManagerPosition = (index: number, key: keyof ManagerPositionDraft, value: string) => {
+    setManagerPositions((current) => current.map((position, row) => row === index ? { ...position, [key]: value } : position));
+  };
+
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canCreate || savingRef.current) return;
-    const payload = teacherPayload(draft);
+    const profilePayload = teacherPayload(draft);
+    const positionPayload = managerPositions.map((position) => ({
+      positionTitle: position.positionTitle.trim(),
+      startsOn: position.startsOn,
+      ...(position.endsOn ? { endsOn: position.endsOn } : {}),
+    }));
+    const payload = { ...profilePayload, ...(positionPayload.length ? { positions: positionPayload } : {}) };
     setFormError(""); setConflictName(""); setSuccess("");
     if (!payload.firstName || !payload.lastName) {
       setFormError("กรุณาระบุชื่อและนามสกุล โดยไม่ใช้ช่องว่างเพียงอย่างเดียว");
+      return;
+    }
+    if (managerPositions.some((position) => !position.positionTitle.trim() || !position.startsOn || (position.endsOn && position.endsOn < position.startsOn))) {
+      setFormError("กรุณาระบุตำแหน่งและวันที่เริ่มให้ครบ และตรวจวันที่สิ้นสุด");
       return;
     }
     savingRef.current = true; setSaving(true);
@@ -78,11 +94,11 @@ export default function TeachersSettingsPage() {
       const name = data.fullName || `${data.firstName} ${data.lastName}`;
       setSuccess(`เพิ่ม ${name} แล้ว สามารถค้นหาและเลือกใช้ในเอกสารได้ทันที${linkedRowsNote(linked)}`);
       toast(`เพิ่มข้อมูล ${name} แล้ว`);
-      setDraft(emptyDraft); setQuery(""); setSearch(""); setSource("MANUAL"); setPage(1); refreshList();
-      if (payload.managePosition) setVacancyRevision((current) => current + 1);
+      setDraft(emptyDraft); setManagerPositions([]); setQuery(""); setSearch(""); setSource("MANUAL"); setPage(1); refreshList();
+      if (payload.positions?.length || payload.managePosition) setVacancyRevision((current) => current + 1);
     } catch (reason) {
       setFormError(reason instanceof Error ? reason.message : "ไม่สามารถเพิ่มข้อมูลอาจารย์ได้ กรุณาลองอีกครั้ง");
-      if (reason instanceof ApiError && reason.status === 409) {
+      if (reason instanceof ApiError && reason.status === 409 && typeof reason.details.directoryUserId === "number") {
         setConflictName(`${payload.firstName} ${payload.lastName}`);
       }
     } finally {
@@ -117,10 +133,18 @@ export default function TeachersSettingsPage() {
           <label className="space-y-1.5 text-sm"><span className="block">หน่วยงาน / สังกัด</span><input name="department" value={draft.department} onChange={(event) => setDraft({ ...draft, department: event.target.value })} maxLength={255} placeholder="เช่น วิทยาลัยการคอมพิวเตอร์" autoComplete="organization" className={inputClass} /></label>
           <label className="space-y-1.5 text-sm"><span className="block">อีเมล</span><input name="email" type="email" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} maxLength={255} placeholder="name@example.com" autoComplete="email" className={inputClass} /></label>
           <label className="space-y-1.5 text-sm"><span className="block">เบอร์โทรศัพท์</span><input name="phone" type="tel" value={draft.phone} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} maxLength={20} autoComplete="tel" className={inputClass} /></label>
-          <div className="grid gap-4 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] p-4 sm:col-span-2 sm:grid-cols-2">
-            <label className="space-y-1.5 text-sm"><span className="block">ตำแหน่งบริหาร (ถ้ามี)</span><input name="managePosition" list="vacant-position-titles" value={draft.managePosition} onChange={(event) => setDraft({ ...draft, managePosition: event.target.value })} maxLength={255} placeholder="เช่น ผู้ช่วยคณบดีฝ่ายวิชาการ" className={inputClass} /></label>
-            <label className="space-y-1.5 text-sm"><span className="block">ดำรงตำแหน่งตั้งแต่</span><input name="managePositionSince" value={draft.managePositionSince} onChange={(event) => setDraft({ ...draft, managePositionSince: event.target.value })} disabled={!draft.managePosition.trim()} maxLength={40} placeholder="เช่น 1 ต.ค. 2568" className={inputClass} /></label>
-            <p className="text-xs font-light leading-5 text-[var(--muted)] sm:col-span-2">กรอกเมื่อเป็นตำแหน่งที่มีผู้ดำรงคนเดียว เช่น คณบดี ผู้ช่วยคณบดี ประธานหลักสูตร ระบบจะผูกแถว &quot;โดยตำแหน่ง&quot; ในเอกสารที่รอยืนยันให้ทันที ถ้ากรอกวันเริ่ม ระบบใช้คนนี้กับคำสั่งตั้งแต่วันนั้นจนกว่าจะกรอกผู้ดำรงคนถัดไป</p>
+          <div className="space-y-3 rounded-lg border border-[var(--accent)] bg-[var(--accent-soft)] p-4 sm:col-span-2">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><p className="text-sm font-medium">ตำแหน่งบริหารตามช่วงเวลา (ไม่บังคับ)</p><p className="mt-1 text-xs font-light leading-5 text-[var(--muted)]">เพิ่มได้หลายตำแหน่ง เช่น คณบดีหรือประธานหลักสูตร ระบบใช้วันที่ออกคำสั่งเลือกผู้ดำรงตำแหน่ง</p></div>
+              <button type="button" disabled={managerPositions.length >= 20} onClick={() => setManagerPositions((current) => [...current, { positionTitle: "", startsOn: "", endsOn: "" }])} className="focus-ring inline-flex min-h-10 items-center gap-1.5 rounded-md border border-[var(--line-strong)] bg-white px-3 text-xs font-medium text-[var(--accent)] hover:bg-[var(--canvas)] disabled:cursor-not-allowed disabled:opacity-50"><Plus size={15} weight="bold" />เพิ่มตำแหน่ง</button>
+            </div>
+            {managerPositions.map((position, index) => <div key={index} className="grid gap-3 rounded-md border border-[var(--line)] bg-white p-3 sm:grid-cols-2 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_minmax(0,1fr)_auto] lg:items-end">
+              <label className="space-y-1.5 text-xs"><span className="block">ตำแหน่งที่ {index + 1}</span><input required name={`positions.${index}.positionTitle`} list="vacant-position-titles" value={position.positionTitle} onChange={(event) => updateManagerPosition(index, "positionTitle", event.target.value)} maxLength={255} placeholder="เช่น ผู้ช่วยคณบดีฝ่ายวิชาการ" className={inputClass} /></label>
+              <label className="space-y-1.5 text-xs"><span className="block">เริ่มดำรงตำแหน่ง</span><input required type="date" name={`positions.${index}.startsOn`} value={position.startsOn} onChange={(event) => updateManagerPosition(index, "startsOn", event.target.value)} className={inputClass} /></label>
+              <label className="space-y-1.5 text-xs"><span className="block">สิ้นสุด (เว้นว่างถ้ายังดำรงอยู่)</span><input type="date" name={`positions.${index}.endsOn`} min={position.startsOn || undefined} value={position.endsOn} onChange={(event) => updateManagerPosition(index, "endsOn", event.target.value)} className={inputClass} /></label>
+              <button type="button" aria-label={`ลบตำแหน่งที่ ${index + 1}`} onClick={() => setManagerPositions((current) => current.filter((_, row) => row !== index))} className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--line)] text-[var(--muted)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"><X size={17} /></button>
+            </div>)}
+            <p className="text-xs font-light leading-5 text-[var(--muted)]">เพิ่มได้สูงสุด 20 ช่วง ถ้าเพิ่มช่วงใหม่ของตำแหน่งเดิม ระบบจะปิดช่วงก่อนหน้าก่อนวันเริ่มใหม่หนึ่งวัน และใช้ช่วงเวลานี้ผูกแถว &quot;โดยตำแหน่ง&quot; ในเอกสารที่รอยืนยัน</p>
           </div>
         </fieldset>
         <div className="flex flex-col gap-3 border-t border-[var(--line-soft)] pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -233,7 +257,7 @@ function AssignHolderForm({ positionTitle, onCancel, onAssigned }: { positionTit
       return <label key={user.id} className={`flex min-h-10 cursor-pointer items-center gap-2 rounded-md border px-3 text-xs ${personId === user.id ? "border-[var(--accent)] bg-white" : "border-transparent hover:bg-white"}`}><input type="radio" name="holder" checked={personId === user.id} onChange={() => setPersonId(user.id)} /><span className="min-w-0 break-words">{name}<span className="block font-light text-[var(--muted)]">{user.positionTitle || user.jobTitle || ""}</span></span></label>;
     })}</fieldset>}
     {query.trim() && !shown.length && <p className="text-xs text-[var(--muted)]">ไม่พบรายชื่อ เพิ่มคนใหม่ได้จากแบบฟอร์ม &quot;เพิ่มข้อมูลอาจารย์&quot;</p>}
-    <label className="block space-y-1.5 text-xs"><span className="block">ดำรงตำแหน่งตั้งแต่</span><input value={startsOn} onChange={(event) => setStartsOn(event.target.value)} maxLength={40} placeholder="เช่น 1 ต.ค. 2568 (ว่างได้)" className={`${inputClass} h-10`} /></label>
+    <label className="block space-y-1.5 text-xs"><span className="block">เริ่มดำรงตำแหน่ง</span><input required type="date" value={startsOn} onChange={(event) => setStartsOn(event.target.value)} className={`${inputClass} h-10`} /></label>
     <div className="flex justify-end gap-2">
       <button type="button" onClick={onCancel} className={`${buttonClass} min-h-10 border border-[var(--line-strong)] bg-white px-3`}>ยกเลิก</button>
       <button type="submit" disabled={saving} className={`${buttonClass} min-h-10 bg-[var(--accent)] px-3 text-white hover:bg-[var(--accent-strong)]`}>{saving && <SpinnerGap size={16} className="animate-spin" />}บันทึก</button>

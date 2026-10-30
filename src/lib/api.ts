@@ -264,6 +264,7 @@ export async function createDirectoryUser(payload: {
   department?: string;
   email?: string;
   phone?: string;
+  positions?: { positionTitle: string; startsOn: string; endsOn?: string }[];
   managePosition?: string;
   managePositionSince?: string;
 }) {

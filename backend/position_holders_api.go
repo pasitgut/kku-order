@@ -93,6 +93,71 @@ func readPositionHolderInput(title, startsOn string) (string, *time.Time, string
 	return truncateRunes(title, 255), since, ""
 }
 
+type directoryPersonPositionInput struct {
+	PositionTitle string `json:"positionTitle"`
+	StartsOn      string `json:"startsOn"`
+	EndsOn        string `json:"endsOn"`
+}
+
+func readPositionPeriodInput(input directoryPersonPositionInput) (string, *time.Time, *time.Time, string) {
+	title, startsOn, problem := readPositionHolderInput(input.PositionTitle, input.StartsOn)
+	if problem != "" {
+		return "", nil, nil, problem
+	}
+	if strings.TrimSpace(input.EndsOn) == "" {
+		return title, startsOn, nil, ""
+	}
+	endsOn, valid := normalizeThaiDate(input.EndsOn)
+	if !valid || endsOn == nil {
+		return "", nil, nil, "อ่านวันที่สิ้นสุดไม่ได้ ลองเลือกวันที่จากปฏิทิน"
+	}
+	if endsOn.Before(*startsOn) {
+		return "", nil, nil, "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มดำรงตำแหน่ง"
+	}
+	return title, startsOn, endsOn, ""
+}
+
+func persistManualPositionPeriod(tx *gorm.DB, personID uint, title string, startsOn, endsOn *time.Time, changedBy string, changedAt time.Time) (PositionHolder, error) {
+	var existing []PositionHolder
+	if err := tx.Where("position_key = ? AND source = ?", positionKey(title), positionSourceManual).Find(&existing).Error; err != nil {
+		return PositionHolder{}, err
+	}
+	changesByPerson := map[uint][]DirectoryPersonChange{}
+	for index := range existing {
+		previous := &existing[index]
+		if previous.StartsOn == nil {
+			continue
+		}
+		if previous.EndsOn == nil && previous.StartsOn.Before(*startsOn) {
+			oldValue := positionTimelineValue(*previous)
+			lastDay := startsOn.AddDate(0, 0, -1)
+			if err := tx.Model(&PositionHolder{}).Where("id = ?", previous.ID).Update("ends_on", lastDay).Error; err != nil {
+				return PositionHolder{}, err
+			}
+			previous.EndsOn = &lastDay
+			changesByPerson[previous.DirectoryPersonID] = append(changesByPerson[previous.DirectoryPersonID], DirectoryPersonChange{Field: "positionTimeline", OldValue: oldValue, NewValue: positionTimelineValue(*previous)})
+		}
+		if positionPeriodsOverlap(startsOn, endsOn, previous.StartsOn, previous.EndsOn) {
+			return PositionHolder{}, errPositionPeriodOverlap
+		}
+	}
+
+	created := PositionHolder{
+		PositionKey: positionKey(title), PositionTitle: title, DirectoryPersonID: personID,
+		StartsOn: startsOn, EndsOn: endsOn, Source: positionSourceManual, CreatedBy: changedBy,
+	}
+	if err := tx.Create(&created).Error; err != nil {
+		return PositionHolder{}, err
+	}
+	changesByPerson[personID] = append(changesByPerson[personID], DirectoryPersonChange{Field: "positionTimeline", OldValue: "", NewValue: positionTimelineValue(created)})
+	for changedPersonID, changes := range changesByPerson {
+		if err := recordDirectoryPersonRevision(tx, changedPersonID, changes, changedBy, changedAt); err != nil {
+			return PositionHolder{}, err
+		}
+	}
+	return created, nil
+}
+
 // assignPositionHolder บันทึกผู้ดำรงตำแหน่ง ถ้าตำแหน่งเดียวกันเริ่มวันเดียวกันเคยบันทึกคนอื่นไว้ ถือว่าแก้ไขรายการเดิม
 func assignPositionHolder(tx *gorm.DB, title string, personID uint, startsOn *time.Time, source, createdBy string) error {
 	if source == positionSourceManual && startsOn != nil {
@@ -216,32 +281,15 @@ func addDirectoryPersonPosition(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสบุคคลไม่ถูกต้อง"})
 			return
 		}
-		var payload struct {
-			PositionTitle string `json:"positionTitle"`
-			StartsOn      string `json:"startsOn"`
-			EndsOn        string `json:"endsOn"`
-		}
+		var payload directoryPersonPositionInput
 		if err := c.ShouldBindJSON(&payload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
 			return
 		}
-		title, startsOn, problem := readPositionHolderInput(payload.PositionTitle, payload.StartsOn)
+		title, startsOn, endsOn, problem := readPositionPeriodInput(payload)
 		if problem != "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 			return
-		}
-		var endsOn *time.Time
-		if strings.TrimSpace(payload.EndsOn) != "" {
-			parsed, valid := normalizeThaiDate(payload.EndsOn)
-			if !valid || parsed == nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "อ่านวันที่สิ้นสุดไม่ได้ ลองพิมพ์แบบ 30 ก.ย. 2568"})
-				return
-			}
-			if parsed.Before(*startsOn) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "วันที่สิ้นสุดต้องไม่อยู่ก่อนวันที่เริ่มดำรงตำแหน่ง"})
-				return
-			}
-			endsOn = parsed
 		}
 
 		var person DirectoryPerson
@@ -258,45 +306,16 @@ func addDirectoryPersonPosition(db *gorm.DB) gin.HandlerFunc {
 		changedAt := time.Now()
 		var created PositionHolder
 		err := db.Transaction(func(tx *gorm.DB) error {
-			var existing []PositionHolder
-			if err := tx.Where("position_key = ? AND source = ?", positionKey(title), positionSourceManual).Find(&existing).Error; err != nil {
+			var err error
+			created, err = persistManualPositionPeriod(tx, personID, title, startsOn, endsOn, changedBy, changedAt)
+			if err != nil {
 				return err
 			}
-			changes := make([]DirectoryPersonChange, 0, 2)
-			for index := range existing {
-				previous := &existing[index]
-				if previous.StartsOn == nil {
-					continue
-				}
-				if previous.EndsOn == nil && previous.StartsOn.Before(*startsOn) {
-					oldValue := positionTimelineValue(*previous)
-					lastDay := startsOn.AddDate(0, 0, -1)
-					if err := tx.Model(&PositionHolder{}).Where("id = ?", previous.ID).Update("ends_on", lastDay).Error; err != nil {
-						return err
-					}
-					previous.EndsOn = &lastDay
-					changes = append(changes, DirectoryPersonChange{Field: "positionTimeline", OldValue: oldValue, NewValue: positionTimelineValue(*previous)})
-				}
-				if positionPeriodsOverlap(startsOn, endsOn, previous.StartsOn, previous.EndsOn) {
-					return errPositionPeriodOverlap
-				}
-			}
-			created = PositionHolder{
-				PositionKey: positionKey(title), PositionTitle: title, DirectoryPersonID: personID,
-				StartsOn: startsOn, EndsOn: endsOn, Source: positionSourceManual, CreatedBy: changedBy,
-			}
-			if err := tx.Create(&created).Error; err != nil {
-				return err
-			}
-			changes = append(changes, DirectoryPersonChange{Field: "positionTimeline", OldValue: "", NewValue: positionTimelineValue(created)})
 			period := startsOn.Format("2006-01-02") + "–"
 			if endsOn == nil {
 				period += "ปัจจุบัน"
 			} else {
 				period += endsOn.Format("2006-01-02")
-			}
-			if err := recordDirectoryPersonRevision(tx, personID, changes, changedBy, changedAt); err != nil {
-				return err
 			}
 			name := strings.TrimSpace(strings.Join([]string{person.Prefix, person.FirstName, person.LastName}, " "))
 			return tx.Create(&AuditLog{UserID: changedBy, Action: "DIRECTORY_POSITION_ADDED", Details: "personId=" + strconv.FormatUint(uint64(personID), 10) + " title=" + title + " period=" + period + " name=" + name}).Error
