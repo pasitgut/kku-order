@@ -76,6 +76,7 @@ export type ApiDocument = {
   id: number;
   title: string;
   originalFilename: string;
+  driveWebViewLink?: string;
   sourceType: string;
   mimeType: string;
   orderType: string;
@@ -533,7 +534,7 @@ export type SystemSettings = {
   importDir: string;
   authRequired: boolean;
   googleDriveCredentialsConfigured: boolean;
-  googleDriveServiceAccountEmail: string;
+  googleDriveAccountEmail: string;
   googleDriveFolderConfigured: boolean;
 };
 
@@ -626,7 +627,7 @@ export type DriveSyncRun = {
 };
 
 export type DriveAutomationStatus = {
-  serviceAccountEmail: string;
+  accountEmail: string;
   credentialsConfigured: boolean;
   nextSyncAt: string | null;
   run: DriveSyncRun | null;

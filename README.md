@@ -193,35 +193,43 @@ EXPIRY_CRON=10 5 * * *
 
 ตั้งค่าที่ **ตั้งค่า → Google Drive** ค่าเริ่มต้นดึงทุกวันเวลา **05:00 เขตเวลา Asia/Bangkok** เปลี่ยนลิงก์โฟลเดอร์ เวลา และเขตเวลาได้จากหน้าเว็บโดยไม่ต้องรีสตาร์ต ปิดนำเข้าอัตโนมัติได้ และใช้ปุ่ม **ดึงไฟล์ตอนนี้** เพื่อเริ่มรอบแรกหรือทำงานด้วยตนเอง
 
-#### สร้างอีเมลระบบสำหรับแชร์โฟลเดอร์
+#### เชื่อม Gmail ระบบผ่าน Google Cloud CLI
 
-1. สร้างหรือเลือก Google Cloud project ขององค์กร ติดตั้ง [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) และลงชื่อเข้าใช้ด้วย `gcloud auth login` บัญชีผู้ตั้งค่าต้องมีสิทธิ์เปิด API สร้าง service account และสร้าง key
-2. รันจาก root ของโปรเจกต์ (แทน `YOUR_PROJECT_ID` ด้วย Project ID จริง):
+1. ติดตั้ง [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) บนเครื่อง Windows ที่ใช้ตั้งระบบ
+2. รันจาก root ของโปรเจกต์:
 
    ```powershell
-   ./scripts/setup-google-drive.ps1 -ProjectId YOUR_PROJECT_ID
+   .\scripts\setup-google-drive.ps1 -AccountEmail docflow-system@gmail.com
    ```
 
-   สคริปต์เปิด Drive API และ IAM API สร้างบัญชี `docflow-drive-reader` และไฟล์ `secrets/google-drive-service-account.json` พร้อมแสดงอีเมลจริงที่ Google สร้างให้ ไม่เขียนทับ key เดิม บัญชีนี้ไม่ต้องมี IAM role ใน project เพื่ออ่านโฟลเดอร์ที่แชร์โดยตรง หากองค์กรปิดการสร้าง service account key ผู้ดูแล Google Cloud ต้องจัดการนโยบายก่อน
-3. แชร์โฟลเดอร์เป้าหมายให้ **อีเมลที่สคริปต์แสดง** เป็น Viewer และตรวจสิทธิ์โฟลเดอร์ย่อยที่จำกัดการเข้าถึง สำหรับ Shared Drive ต้องให้บัญชีเข้าถึงรายการที่ต้องการด้วย อีเมลจะปรากฏพร้อมปุ่มคัดลอกในหน้าตั้งค่าหลัง backend อ่าน credential ได้
-4. กำหนด `GOOGLE_DRIVE_CREDENTIALS_FILE` ใน `.env.local` หรือ environment ของ backend โดยใช้ path จริงสำหรับการรันในเครื่อง หรือ path ต่อไปนี้สำหรับ container:
+   เบราว์เซอร์จะเปิดให้ลงชื่อเข้าใช้ด้วย Gmail ระบบและอนุญาต Google Cloud CLI ให้เข้าถึง Drive สคริปต์ใช้ `gcloud auth login --enable-gdrive-access --update-adc` แล้วบันทึก credential ที่ `secrets/google-drive-oauth.json` วิธีนี้ไม่ต้องสร้าง Cloud project, OAuth client หรือ billing account เอง
+3. แชร์โฟลเดอร์เป้าหมายให้ **Gmail ระบบ** เป็น Editor เพื่อให้เปลี่ยนชื่อไฟล์ได้ และตรวจสิทธิ์ของโฟลเดอร์ย่อยหรือ Shared Drive ที่ต้องการนำเข้าด้วย ใช้ Gmail นี้สำหรับระบบโดยเฉพาะและอย่าเก็บไฟล์ส่วนตัวไว้ในบัญชี
+4. ตั้งค่า environment ของ backend:
 
    ```env
-   GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-service-account.json
+   GOOGLE_DRIVE_ACCOUNT_EMAIL=docflow-system@gmail.com
+   GOOGLE_DRIVE_CREDENTIALS_FILE=/run/secrets/google-drive-oauth.json
    ```
 
+   ใช้ path จริงของไฟล์เมื่อรัน backend โดยตรง ส่วน container ใช้ path `/run/secrets/google-drive-oauth.json` และ mount ไฟล์แบบ read-only ด้วย compose override ที่มีให้
 5. เริ่ม backend พร้อม secret mount:
 
    ```powershell
    docker compose -f docker-compose.yml -f docker-compose.drive.yml up -d --build
    ```
 
-   สำหรับ Podman production วาง key ใน `deploy/secrets/google-drive-service-account.json` และเพิ่ม override `deploy/podman-compose.drive.yml` ตาม [คู่มือติดตั้ง](DEPLOY_PODMAN.md)
+   สำหรับ Podman production วาง OAuth credentials ใน `deploy/secrets/google-drive-oauth.json` และเพิ่ม override `deploy/podman-compose.drive.yml` ตาม [คู่มือติดตั้ง](DEPLOY_PODMAN.md)
 6. ไปที่ **ตั้งค่า → Google Drive** วางลิงก์โฟลเดอร์ ทดสอบการเข้าถึง เลือก Google Drive เป็นแหล่งนำเข้า เปิดอัตโนมัติ และบันทึก จากนั้นกด **ดึงไฟล์ตอนนี้** เพื่อเริ่มนำเข้าไฟล์เดิมทั้งหมดได้ทันที
+
+ระหว่างนำเข้า ระบบใช้วันที่สร้างไฟล์ใน Drive ตามเวลา Asia/Bangkok เปลี่ยนชื่อเป็น `YYYY_MM_DD_<ชื่อเดิม>.<นามสกุล>` (Google Docs/Slides เป็น PDF และ Sheets เป็น XLSX) และเก็บลิงก์ Drive ไว้ในหน้าเอกสาร การกด **ดึงไฟล์ตอนนี้** จะปรับชื่อให้ไฟล์ที่เคยนำเข้าแล้วด้วย ผู้เปิดลิงก์ต้นฉบับต้องมีสิทธิ์เข้าถึง Drive แยกต่างหาก
+
+วิธีนี้ไม่ใช้ OAuth consent screen ของโปรเจกต์เรา จึงไม่ติดข้อจำกัด token 7 วันจากสถานะ Testing ตามกฎของ Google; token ยังอาจถูกเพิกถอนหรือหมดอายุเมื่อไม่มีการใช้งานนาน 6 เดือน [เงื่อนไขอายุ refresh token](https://developers.google.com/identity/protocols/oauth2#expiration)
+
+**ข้อควรทราบ:** Google ระบุว่า `gcloud auth login` เหมาะกับการใช้งานของคนบนเครื่องพัฒนา และไม่แนะนำให้นำ credential ผู้ใช้ไปใช้กับ workload อัตโนมัติบน server ถ้าใช้แนวทางนี้ ให้เก็บ JSON ใน secret ของ backend เท่านั้นและใช้ Gmail เฉพาะระบบ [แนวทาง Google Cloud CLI](https://docs.cloud.google.com/sdk/docs/authenticate)
 
 #### การทำงานและการกู้คืน
 
-- ระบบสำรวจรายการไฟล์ทุกโฟลเดอร์ย่อยแบบแบ่งหน้า รวมโฟลเดอร์ว่าง โฟลเดอร์ที่ถูกย้ายเข้ามา และทางลัดไปยังไฟล์หรือโฟลเดอร์ที่ service account เข้าถึงได้ ทางลัดสามารถชี้ออกนอกต้นทางได้ ระบบป้องกันทางลัดวนกลับและรายการซ้ำด้วย ID รองรับ My Drive, Shared Drives และ resource key ในลิงก์
+- ระบบสำรวจรายการไฟล์ทุกโฟลเดอร์ย่อยแบบแบ่งหน้า รวมโฟลเดอร์ว่าง โฟลเดอร์ที่ถูกย้ายเข้ามา และทางลัดไปยังไฟล์หรือโฟลเดอร์ที่ Gmail ระบบเข้าถึงได้ ทางลัดสามารถชี้ออกนอกต้นทางได้ ระบบป้องกันทางลัดวนกลับและรายการซ้ำด้วย ID รองรับ My Drive, Shared Drives และ resource key ในลิงก์
 - แต่ละรอบอ่าน metadata ทั้งต้นทางเพื่อค้นหาไฟล์ใหม่หรือไฟล์เดิมที่ถูกย้ายเข้ามา โดย **ไม่ดาวน์โหลดไฟล์ที่มี Drive file ID นำเข้าสำเร็จแล้ว** แม้เปลี่ยนชื่อ ย้าย หรือแก้ไขเนื้อหา ถ้าต้องการแทนที่เอกสารที่นำเข้าแล้ว ให้ใช้การอัปโหลดแทนที่ในระบบ ไฟล์คนละ ID ที่เนื้อหาเหมือนกันต้องดาวน์โหลดครั้งแรกเพื่อตรวจ SHA-256 และจะไม่สร้างเอกสารซ้ำ
 - MySQL เก็บประวัติรอบงาน คิวโฟลเดอร์ pagination คิวไฟล์ และบัญชีไฟล์ที่นำเข้าสำเร็จ (`drive_sync_runs`, `drive_sync_folders`, `drive_sync_items`, `drive_imported_files`) เก็บคิวรายละเอียด 10 รอบล่าสุดต่อต้นทางเพื่อลดการเติบโตของฐานข้อมูล ส่วนสรุปรอบงานและบัญชีไฟล์ที่นำเข้าสำเร็จเก็บไว้ต่อเนื่อง บันทึก checkpoint ทุกหน้าและทุกไฟล์ การบันทึกเอกสารและบัญชี Drive ID อยู่ใน transaction เดียวกัน ไฟล์ต้นฉบับไม่ถูกย้ายหรือลบ
 - งานเบื้องหลังทำเป็นช่วงละ 10 นาทีและทำต่อใน tick ถัดไปทุกนาที ไม่ผูกกับ HTTP request หาก backend รีสตาร์ตจะทำต่อจากคิวเดิม รอบรายวันที่พลาดขณะปิดระบบจะถูกชดเชยเมื่อเปิดกลับมา งานหลาย backend ใช้ MySQL advisory lock เพื่อป้องกันการดึงพร้อมกัน
@@ -235,7 +243,7 @@ EXPIRY_CRON=10 5 * * *
 
 API เพิ่มเติม: `GET /api/v1/settings/drive/status` อ่านสถานะ, `POST /api/v1/settings/drive/test` ทดสอบสิทธิ์, `POST /api/v1/settings/drive/sync` ตอบ `202` พร้อม run ID หลังบันทึกคิวสำเร็จ การเปลี่ยนค่าหรือสั่งงานต้องเป็น ADMIN
 
-เก็บ service-account JSON ใน secrets ของ backend ไม่เพิ่มใน Git หรือ image ใช้ scope `drive.readonly` และสำรอง MySQL ควบคู่กับ storage volume เพื่อรักษาทั้งไฟล์และประวัติการนำเข้า
+เก็บ OAuth JSON ของบัญชีผู้ใช้ใน secrets ของ backend ไม่เพิ่มใน Git หรือ image ใช้ Gmail แยกสำหรับระบบและอย่าเก็บไฟล์ส่วนตัวในบัญชี ตัวนำเข้าดาวน์โหลดเอกสารและอัปเดตชื่อไฟล์ใน Drive แต่ไม่แก้หรือลบเนื้อหา สำรอง MySQL ควบคู่กับ storage volume เพื่อรักษาทั้งไฟล์และประวัติการนำเข้า
 
 การทดสอบ OCR ในเครื่องต้องมี dependencies ใน `backend/one-ocr/.venv` และ binary `pdftoppm`/`pdfinfo`; Dockerfile ติดตั้ง Poppler และ Python dependencies ให้อัตโนมัติ
 

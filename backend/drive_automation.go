@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const driveFileFields = "id,name,mimeType,modifiedTime,size,resourceKey,driveId,trashed,capabilities(canDownload),shortcutDetails(targetId,targetMimeType,targetResourceKey)"
+const driveFileFields = "id,name,mimeType,createdTime,modifiedTime,size,webViewLink,resourceKey,driveId,trashed,capabilities(canDownload,canEdit),shortcutDetails(targetId,targetMimeType,targetResourceKey)"
 const driveFolderMime = "application/vnd.google-apps.folder"
 const driveShortcutMime = "application/vnd.google-apps.shortcut"
 
@@ -63,10 +63,11 @@ type DriveSyncItem struct {
 }
 
 type DriveImportedFile struct {
-	FileID     string `gorm:"primaryKey"`
-	DocumentID uint64
-	FileHash   string
-	ImportedAt time.Time
+	FileID      string `gorm:"primaryKey"`
+	DocumentID  uint64
+	FileHash    string
+	WebViewLink string `gorm:"size:2048"`
+	ImportedAt  time.Time
 }
 
 func validDriveID(id string) bool {
@@ -594,14 +595,6 @@ func (i *GoogleDriveImporter) processItem(ctx context.Context, item *DriveSyncIt
 	if file.Trashed {
 		return false, i.finishItem(item, "SKIPPED", "ไฟล์อยู่ในถังขยะ")
 	}
-	var existing DriveImportedFile
-	known := i.db.WithContext(ctx).Where("file_id = ?", file.Id).Limit(1).Find(&existing)
-	if known.Error != nil {
-		return false, known.Error
-	}
-	if known.RowsAffected > 0 {
-		return false, i.finishItem(item, "EXISTING", "")
-	}
 	// Refresh metadata for queued files: the file may have been renamed, moved,
 	// replaced or deleted while a large initial import was in progress.
 	fresh, err := i.getDriveFile(ctx, file.Id, file.ResourceKey)
@@ -615,17 +608,37 @@ func (i *GoogleDriveImporter) processItem(ctx context.Context, item *DriveSyncIt
 	if file.Trashed {
 		return false, i.finishItem(item, "SKIPPED", "ไฟล์อยู่ในถังขยะ")
 	}
+	var existing DriveImportedFile
+	known := i.db.WithContext(ctx).Where("file_id = ?", file.Id).Limit(1).Find(&existing)
+	if known.Error != nil {
+		return false, known.Error
+	}
 	name, exportMime, supported := driveOutputFile(&file)
 	if !supported {
 		return false, i.finishItem(item, "SKIPPED", "ชนิดไฟล์ยังไม่รองรับ: "+file.MimeType)
 	}
-	if file.Size > maxImportedFileSize {
+	isExisting := known.RowsAffected > 0
+	if !isExisting && file.Size > maxImportedFileSize {
 		return false, i.finishItem(item, "SKIPPED", "ไฟล์เกินขนาด 50 MB")
 	}
-	if file.Capabilities != nil && !file.Capabilities.CanDownload {
+	if !isExisting && file.Capabilities != nil && !file.Capabilities.CanDownload {
 		return false, fmt.Errorf("บัญชีระบบไม่มีสิทธิ์ดาวน์โหลดไฟล์นี้")
 	}
-	created, err := i.importFile(ctx, &file, name, exportMime, item)
+	file, name, webViewLink, err := i.renameDriveFile(ctx, &file, name)
+	if err != nil {
+		return false, err
+	}
+	item.FileName = truncateDriveName(name)
+	if err := i.db.WithContext(ctx).Model(item).Update("file_name", item.FileName).Error; err != nil {
+		return false, err
+	}
+	if isExisting {
+		if err := i.updateImportedDriveSource(ctx, &existing, name, webViewLink); err != nil {
+			return false, err
+		}
+		return false, i.finishItem(item, "EXISTING", "")
+	}
+	created, err := i.importFile(ctx, &file, name, exportMime, webViewLink, item)
 	if err != nil {
 		return false, err
 	}
@@ -637,7 +650,7 @@ func (i *GoogleDriveImporter) finishItem(item *DriveSyncItem, status, message st
 }
 
 type DriveAutomationStatus struct {
-	ServiceAccountEmail   string           `json:"serviceAccountEmail"`
+	AccountEmail          string           `json:"accountEmail"`
 	CredentialsConfigured bool             `json:"credentialsConfigured"`
 	NextSyncAt            *time.Time       `json:"nextSyncAt"`
 	Run                   *DriveSyncRun    `json:"run"`
@@ -647,16 +660,8 @@ type DriveAutomationStatus struct {
 	History               []DriveSyncRun   `json:"history"`
 }
 
-func googleDriveServiceAccountEmail() string {
-	contents, err := osReadDriveCredentials()
-	if err != nil {
-		return ""
-	}
-	email, err := driveCredentialMetadata(contents)
-	if err != nil {
-		return ""
-	}
-	return email
+func googleDriveAccountEmail() string {
+	return strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_ACCOUNT_EMAIL"))
 }
 
 func getDriveAutomationStatus(db *gorm.DB, store SettingsStore) gin.HandlerFunc {
@@ -666,7 +671,7 @@ func getDriveAutomationStatus(db *gorm.DB, store SettingsStore) gin.HandlerFunc 
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "อ่านการตั้งค่า Drive ไม่สำเร็จ"})
 			return
 		}
-		status := DriveAutomationStatus{ServiceAccountEmail: googleDriveServiceAccountEmail(), CredentialsConfigured: googleDriveCredentialsConfigured(), Counts: map[string]int64{}, FolderCounts: map[string]int64{}, Issues: []DriveSyncItem{}, History: []DriveSyncRun{}}
+		status := DriveAutomationStatus{AccountEmail: googleDriveAccountEmail(), CredentialsConfigured: googleDriveCredentialsConfigured(), Counts: map[string]int64{}, FolderCounts: map[string]int64{}, Issues: []DriveSyncItem{}, History: []DriveSyncRun{}}
 		if settings.ImportEnabled && settings.ImportSource == "drive" {
 			next := driveScheduledOccurrence(time.Now(), settings).AddDate(0, 0, 1)
 			status.NextSyncAt = &next
@@ -731,17 +736,18 @@ func getDriveAutomationStatus(db *gorm.DB, store SettingsStore) gin.HandlerFunc 
 	}
 }
 
-func driveCredentialMetadata(contents []byte) (string, error) {
+func validateDriveCredentials(contents []byte) error {
 	var credentials struct {
-		Type        string `json:"type"`
-		ClientEmail string `json:"client_email"`
-		PrivateKey  string `json:"private_key"`
+		Type         string `json:"type"`
+		ClientID     string `json:"client_id"`
+		ClientSecret string `json:"client_secret"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.Unmarshal(contents, &credentials); err != nil {
-		return "", fmt.Errorf("อ่าน service account JSON ไม่สำเร็จ")
+		return fmt.Errorf("อ่าน Google OAuth credential JSON ไม่สำเร็จ")
 	}
-	if credentials.Type != "service_account" || !strings.HasSuffix(credentials.ClientEmail, ".iam.gserviceaccount.com") || credentials.PrivateKey == "" {
-		return "", fmt.Errorf("ข้อมูลรับรองต้องเป็น JSON ของ service account")
+	if credentials.Type != "authorized_user" || credentials.ClientID == "" || credentials.ClientSecret == "" || credentials.RefreshToken == "" {
+		return fmt.Errorf("Google Drive ต้องใช้ OAuth credential ของบัญชี Google (authorized_user) พร้อม refresh token")
 	}
-	return credentials.ClientEmail, nil
+	return nil
 }

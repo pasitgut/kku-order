@@ -139,35 +139,35 @@ export default function GoogleDriveSettingsPage() {
     }
   };
 
-  if (loading) return <SettingsFrame note="ใช้ service account ของระบบในการอ่านไฟล์จากโฟลเดอร์ที่กำหนด"><div className="card space-y-3 p-6"><div className="skeleton h-5 w-48" /><div className="skeleton h-4 w-72" /><div className="skeleton mt-5 h-12 w-full" /></div></SettingsFrame>;
+  if (loading) return <SettingsFrame note="ใช้ OAuth ของบัญชี Google ระบบในการอ่านไฟล์จากโฟลเดอร์ที่กำหนด"><div className="card space-y-3 p-6"><div className="skeleton h-5 w-48" /><div className="skeleton h-4 w-72" /><div className="skeleton mt-5 h-12 w-full" /></div></SettingsFrame>;
 
-  if (!form || !saved) return <SettingsFrame note="ใช้ service account ของระบบในการอ่านไฟล์จากโฟลเดอร์ที่กำหนด"><div role="alert" className="rounded-lg bg-[var(--danger-soft)] p-4 text-sm font-medium text-[var(--danger)]">{error || "โหลดการตั้งค่า Google Drive ไม่สำเร็จ"}</div></SettingsFrame>;
+  if (!form || !saved) return <SettingsFrame note="ใช้ OAuth ของบัญชี Google ระบบในการอ่านไฟล์จากโฟลเดอร์ที่กำหนด"><div role="alert" className="rounded-lg bg-[var(--danger-soft)] p-4 text-sm font-medium text-[var(--danger)]">{error || "โหลดการตั้งค่า Google Drive ไม่สำเร็จ"}</div></SettingsFrame>;
 
   const driveSelected = form.importSource === "drive";
 
-  return <SettingsFrame note="credential จะอยู่บน backend และไฟล์ต้นฉบับใน Google Drive จะไม่ถูกย้ายหรือลบ">
+  return <SettingsFrame note="OAuth credential จะอยู่บน backend และไฟล์ต้นฉบับใน Google Drive จะไม่ถูกย้ายหรือลบ">
     <div className="flex flex-col gap-4 border-b border-[var(--line)] pb-5 sm:flex-row sm:items-end sm:justify-between">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--accent)]">แหล่งนำเข้าเอกสาร</p>
         <h2 className="mt-1 text-2xl font-semibold tracking-tight text-[var(--navy)]">Google Drive</h2>
-        <p className="mt-1 max-w-[60ch] text-sm leading-6 text-[var(--muted)]">ดึงเอกสารทุกวันจากโฟลเดอร์และโฟลเดอร์ย่อย พร้อมนำเข้าเฉพาะไฟล์ใหม่</p>
+        <p className="mt-1 max-w-[60ch] text-sm leading-6 text-[var(--muted)]">ตั้งชื่อใน Drive เป็น YYYY_MM_DD_ชื่อเดิม.ext ตามวันที่สร้างไฟล์ และเก็บลิงก์ต้นฉบับไว้กับเอกสาร</p>
       </div>
       <span className={`inline-flex w-fit items-center gap-2 rounded-full px-3 py-2 text-xs font-medium ${testedFolder ? "bg-[var(--success-soft)] text-[var(--success)]" : credentialsConfigured ? "bg-[var(--accent-soft)] text-[var(--navy-soft)]" : "bg-[var(--warning-soft)] text-[var(--warning)]"}`}>
         <StatusDot tone={testedFolder ? "good" : credentialsConfigured ? "info" : "warn"} />
-        {testedFolder ? `เข้าถึงได้ · ${testedFolder}` : credentialsConfigured ? "มี credential บน backend" : "ต้องตั้งค่า service account"}
+        {testedFolder ? `เข้าถึงได้ · ${testedFolder}` : credentialsConfigured ? "เชื่อม OAuth บน backend แล้ว" : "ต้องเชื่อมบัญชี Gmail"}
       </span>
     </div>
 
     {!editable && <div className="flex items-center gap-3 rounded-lg border border-[var(--line)] bg-white px-4 py-3 text-[13px] text-[var(--muted)]"><Info size={18} className="shrink-0 text-[var(--accent)]" />ดูค่าได้อย่างเดียว เฉพาะผู้ดูแลระบบ (ADMIN) ที่แก้ไข ทดสอบ และสั่งนำเข้าได้</div>}
 
-    <SettingsCard title="การเข้าถึง Google Drive" description="ระบบใช้ service account ที่ตั้งค่าไว้บน backend ไม่เชื่อมบัญชี Google ส่วนตัวของผู้ใช้">
+    <SettingsCard title="การเข้าถึง Google Drive" description="ระบบเปลี่ยนชื่อไฟล์ใน Drive จึงต้องแชร์โฟลเดอร์ให้ Gmail ระบบเป็น Editor">
       <div className="grid gap-5 p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center lg:px-6">
         <div className="flex min-w-0 items-start gap-3">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--brand-blue-pale)] text-[var(--accent)]"><ShieldCheck size={21} weight="regular" /></span>
           <div className="min-w-0">
-            <p className="text-sm font-medium text-[var(--navy)]">ข้อมูลรับรองของ service account</p>
-            <p className="mt-1 text-[13px] leading-5 text-[var(--muted)]">{credentialsConfigured === null ? "ตรวจสถานะ backend ไม่ได้" : credentialsConfigured ? "พบไฟล์ credential บน backend แล้ว แชร์โฟลเดอร์ให้ service account มีสิทธิ์ Viewer แล้วทดสอบการเข้าถึง" : "ยังไม่พบไฟล์ credential ให้ผู้ดูแล deployment ตั้ง GOOGLE_DRIVE_CREDENTIALS_FILE และรีสตาร์ต backend"}</p>
-            {automation?.serviceAccountEmail && <div className="mt-3 flex flex-wrap items-center gap-2"><span className="break-all rounded-md bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--navy)]">{automation.serviceAccountEmail}</span><button type="button" className="focus-ring rounded-md px-3 py-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]" onClick={async () => { try { await navigator.clipboard.writeText(automation.serviceAccountEmail); toast("คัดลอกอีเมลแล้ว"); } catch { toast("คัดลอกไม่ได้ กรุณาเลือกและคัดลอกอีเมล", { kind: "error" }); } }}>คัดลอกอีเมล</button></div>}
+            <p className="text-sm font-medium text-[var(--navy)]">OAuth ของบัญชี Gmail ระบบ</p>
+            <p className="mt-1 text-[13px] leading-5 text-[var(--muted)]">{credentialsConfigured === null ? "ตรวจสถานะ backend ไม่ได้" : credentialsConfigured ? "พบ OAuth credential บน backend แล้ว แชร์โฟลเดอร์ให้บัญชี Gmail ระบบเป็น Editor แล้วทดสอบการเข้าถึง" : "ยังไม่พบ OAuth credential ให้ผู้ดูแลตั้งค่าด้วย scripts/setup-google-drive.ps1 กำหนด GOOGLE_DRIVE_CREDENTIALS_FILE แล้วรีสตาร์ต backend"}</p>
+            {automation?.accountEmail && <div className="mt-3 flex flex-wrap items-center gap-2"><span className="break-all rounded-md bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--navy)]">{automation.accountEmail}</span><button type="button" className="focus-ring rounded-md px-3 py-2 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)]" onClick={async () => { try { await navigator.clipboard.writeText(automation.accountEmail); toast("คัดลอกอีเมลแล้ว"); } catch { toast("คัดลอกไม่ได้ กรุณาเลือกและคัดลอกอีเมล", { kind: "error" }); } }}>คัดลอกอีเมล</button></div>}
           </div>
         </div>
         <div className="flex flex-wrap gap-2 lg:justify-end">
@@ -179,7 +179,7 @@ export default function GoogleDriveSettingsPage() {
           </button>
         </div>
       </div>
-      {credentialsConfigured === false && <div role="note" className="flex gap-2 border-t border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 text-xs leading-5 text-[var(--muted)] lg:px-6"><Info size={16} className="mt-0.5 shrink-0 text-[var(--accent)]" /><p>อย่าอัปโหลดไฟล์ JSON นี้ผ่านหน้าเว็บ ให้เก็บไว้ใน secrets ของ backend เท่านั้น แล้วแชร์โฟลเดอร์เป้าหมายให้ service account</p></div>}
+      {credentialsConfigured === false && <div role="note" className="flex gap-2 border-t border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 text-xs leading-5 text-[var(--muted)] lg:px-6"><Info size={16} className="mt-0.5 shrink-0 text-[var(--accent)]" /><p>อย่าอัปโหลดไฟล์ OAuth JSON ผ่านหน้าเว็บ ให้เก็บไว้ใน secrets ของ backend แล้วแชร์โฟลเดอร์เป้าหมายให้บัญชี Gmail ระบบ</p></div>}
     </SettingsCard>
 
     <SettingsCard title="โฟลเดอร์และการนำเข้า" description="สำรวจทุกโฟลเดอร์ย่อยและทางลัดที่บัญชีระบบเข้าถึงได้ ตรวจซ้ำด้วยรหัสไฟล์และเนื้อหา">
@@ -192,7 +192,7 @@ export default function GoogleDriveSettingsPage() {
         <Switch checked={form.importEnabled} disabled={!editable} labelledBy="drive-import-enabled-label" onChange={(importEnabled) => patch({ importEnabled })} />
       </SettingRow>
       <div className={driveSelected ? "" : "opacity-55"}>
-        <SettingRow title="ลิงก์โฟลเดอร์ Google Drive" hint="วางลิงก์โฟลเดอร์ที่แชร์ให้ service account แล้ว" htmlFor="drive-folder-url">
+        <SettingRow title="ลิงก์โฟลเดอร์ Google Drive" hint="วางลิงก์โฟลเดอร์ที่แชร์ให้บัญชี Gmail ระบบแล้ว" htmlFor="drive-folder-url">
           <input id="drive-folder-url" type="url" inputMode="url" autoComplete="url" value={form.driveFolderUrl} disabled={!editable} onChange={(event) => patch({ driveFolderUrl: event.target.value })} placeholder="https://drive.google.com/drive/folders/..." className="focus-ring h-11 w-full rounded-md border border-[var(--line-strong)] bg-white px-3 text-sm disabled:opacity-60 sm:w-[min(100%,420px)]" />
         </SettingRow>
         {driveSelected && <>

@@ -1,0 +1,2 @@
+ALTER TABLE document_workflows ADD COLUMN IF NOT EXISTS drive_web_view_link VARCHAR(2048) NOT NULL DEFAULT '';
+ALTER TABLE drive_imported_files ADD COLUMN IF NOT EXISTS web_view_link VARCHAR(2048) NOT NULL DEFAULT '';

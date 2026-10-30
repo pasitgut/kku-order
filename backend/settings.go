@@ -367,7 +367,7 @@ type SystemSettings struct {
 	ImportDir                        string `json:"importDir"`
 	AuthRequired                     bool   `json:"authRequired"`
 	GoogleDriveCredentialsConfigured bool   `json:"googleDriveCredentialsConfigured"`
-	GoogleDriveServiceAccountEmail   string `json:"googleDriveServiceAccountEmail"`
+	GoogleDriveAccountEmail          string `json:"googleDriveAccountEmail"`
 	GoogleDriveFolderConfigured      bool   `json:"googleDriveFolderConfigured"`
 }
 
@@ -395,7 +395,7 @@ func currentSystemSettings() SystemSettings {
 		ImportDir:                        getenv("IMPORT_DIR", "./incoming"),
 		AuthRequired:                     authRequired(),
 		GoogleDriveCredentialsConfigured: googleDriveCredentialsConfigured(),
-		GoogleDriveServiceAccountEmail:   googleDriveServiceAccountEmail(),
+		GoogleDriveAccountEmail:          googleDriveAccountEmail(),
 		GoogleDriveFolderConfigured:      strings.TrimSpace(os.Getenv("GOOGLE_DRIVE_FOLDER_ID")) != "",
 	}
 }

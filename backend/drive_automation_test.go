@@ -76,15 +76,15 @@ func TestDriveSettingsRejectInvalidSchedule(t *testing.T) {
 	}
 }
 
-func TestDriveCredentialsRequireRealServiceAccount(t *testing.T) {
-	for _, value := range []string{`{}`, `{invalid`, `{"type":"authorized_user"}`, `{"type":"service_account","client_email":"fake@example.test","private_key":"key"}`} {
-		if _, err := driveCredentialMetadata([]byte(value)); err == nil {
+func TestDriveCredentialsRequireUserOAuth(t *testing.T) {
+	for _, value := range []string{`{}`, `{invalid`, `{"type":"authorized_user"}`, `{"type":"service_account","client_email":"reader@project.iam.gserviceaccount.com","private_key":"key"}`, `{"type":"authorized_user","client_id":"client"}`} {
+		if err := validateDriveCredentials([]byte(value)); err == nil {
 			t.Fatalf("accepted invalid credentials %s", value)
 		}
 	}
-	email, err := driveCredentialMetadata([]byte(`{"type":"service_account","client_email":"reader@project.iam.gserviceaccount.com","private_key":"key"}`))
-	if err != nil || email != "reader@project.iam.gserviceaccount.com" {
-		t.Fatalf("email=%q err=%v", email, err)
+	value := []byte(`{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"refresh-token"}`)
+	if err := validateDriveCredentials(value); err != nil {
+		t.Fatalf("valid user OAuth credentials rejected: %v", err)
 	}
 }
 

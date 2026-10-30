@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	"gorm.io/gorm"
 )
@@ -31,17 +33,17 @@ type GoogleDriveImporter struct {
 func NewGoogleDriveImporter(db *gorm.DB, logger *log.Logger) (*GoogleDriveImporter, error) {
 	credentialsFile := googleDriveCredentialsFile()
 	if credentialsFile == "" {
-		logger.Print("Google Drive automation awaits service account setup")
+		logger.Print("Google Drive automation awaits user OAuth credentials")
 		return nil, nil
 	}
 	contents, err := osReadDriveCredentials()
 	if err != nil {
 		return nil, fmt.Errorf("read Google Drive credentials: %w", err)
 	}
-	if _, err := driveCredentialMetadata(contents); err != nil {
+	if err := validateDriveCredentials(contents); err != nil {
 		return nil, err
 	}
-	service, err := drive.NewService(context.Background(), option.WithCredentialsJSON(contents), option.WithScopes(drive.DriveReadonlyScope))
+	service, err := drive.NewService(context.Background(), option.WithAuthCredentialsJSON(option.AuthorizedUser, contents), option.WithScopes(drive.DriveScope))
 	if err != nil {
 		return nil, fmt.Errorf("initialize Google Drive client: %w", err)
 	}
@@ -70,8 +72,7 @@ func googleDriveCredentialsConfigured() bool {
 	if err != nil {
 		return false
 	}
-	_, err = driveCredentialMetadata(contents)
-	return err == nil
+	return validateDriveCredentials(contents) == nil
 }
 
 func (i *GoogleDriveImporter) configuredFolderID(folderURL string) (string, error) {
@@ -103,6 +104,9 @@ func (i *GoogleDriveImporter) TestConnection(ctx context.Context, folderURL stri
 	}
 	if folder.MimeType != driveFolderMime || folder.Trashed {
 		return "", fmt.Errorf("ลิงก์นี้ไม่ใช่โฟลเดอร์ Google Drive ที่ใช้งานได้")
+	}
+	if folder.Capabilities != nil && !folder.Capabilities.CanEdit {
+		return "", fmt.Errorf("บัญชี Gmail ระบบต้องมีสิทธิ์ Editor ที่โฟลเดอร์ Google Drive เพื่อเปลี่ยนชื่อไฟล์")
 	}
 	// Verify listing permission as well as folder metadata access.
 	call := i.service.Files.List().Q(fmt.Sprintf("'%s' in parents and trashed = false", escapeDriveQueryValue(folderID))).PageSize(1).Fields("files(id)").SupportsAllDrives(true).IncludeItemsFromAllDrives(true).Context(ctx)
@@ -138,7 +142,129 @@ func runGoogleDriveSync(importer *GoogleDriveImporter, logger *log.Logger, phase
 	}
 }
 
-func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, fileName, exportMime string, item *DriveSyncItem) (bool, error) {
+func driveCreatedDatePrefix(file *drive.File) (string, error) {
+	if strings.TrimSpace(file.CreatedTime) == "" {
+		return "", fmt.Errorf("Google Drive ไม่ส่งวันที่สร้างไฟล์")
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, file.CreatedTime)
+	if err != nil {
+		return "", fmt.Errorf("อ่านวันที่สร้างไฟล์จาก Google Drive ไม่สำเร็จ: %w", err)
+	}
+	bangkok := time.FixedZone("Asia/Bangkok", 7*60*60)
+	return createdAt.In(bangkok).Format("2006_01_02"), nil
+}
+
+func datedDriveFilename(file *drive.File, outputName string) (string, error) {
+	datePrefix, err := driveCreatedDatePrefix(file)
+	if err != nil {
+		return "", err
+	}
+	datePrefix += "_"
+	if !strings.HasPrefix(outputName, datePrefix) {
+		outputName = datePrefix + outputName
+	}
+	if len([]rune(outputName)) > 500 {
+		return "", fmt.Errorf("ชื่อไฟล์หลังเติมวันที่ยาวเกิน 500 ตัวอักษร")
+	}
+	return outputName, nil
+}
+
+func driveWebViewLink(file *drive.File) string {
+	link := strings.TrimSpace(file.WebViewLink)
+	if link == "" {
+		link = "https://drive.google.com/open?id=" + url.QueryEscape(file.Id)
+	}
+	if file.ResourceKey != "" {
+		if parsed, err := url.Parse(link); err == nil {
+			query := parsed.Query()
+			if query.Get("resourcekey") == "" {
+				query.Set("resourcekey", file.ResourceKey)
+				parsed.RawQuery = query.Encode()
+				link = parsed.String()
+			}
+		}
+	}
+	return link
+}
+
+func (i *GoogleDriveImporter) renameDriveFile(ctx context.Context, file *drive.File, outputName string) (*drive.File, string, error) {
+	targetName, err := datedDriveFilename(file, outputName)
+	if err != nil {
+		return nil, "", err
+	}
+	if file.Name == targetName {
+		return file, driveWebViewLink(file), nil
+	}
+	if file.Capabilities != nil && !file.Capabilities.CanEdit {
+		return nil, "", fmt.Errorf("บัญชี Gmail ระบบต้องมีสิทธิ์ Editor ที่ไฟล์ %q เพื่อเปลี่ยนชื่อ", file.Name)
+	}
+	renamed, err := driveRetry(ctx, func() (*drive.File, error) {
+		call := i.service.Files.Update(file.Id, &drive.File{Name: targetName}).SupportsAllDrives(true).
+			Fields(googleapi.Field(driveFileFields)).Context(ctx)
+		driveResourceHeader(call.Header(), file.Id, file.ResourceKey)
+		return call.Do()
+	})
+	if err != nil {
+		var apiError *googleapi.Error
+		if errors.As(err, &apiError) && apiError.Code == http.StatusForbidden {
+			return nil, "", fmt.Errorf("เปลี่ยนชื่อไม่ได้ ตรวจสิทธิ์ Editor ของ Gmail ระบบและสิทธิ์แก้ไขไฟล์ใน Google Drive: %w", err)
+		}
+		return nil, "", fmt.Errorf("เปลี่ยนชื่อไฟล์ใน Google Drive ไม่สำเร็จ: %w", err)
+	}
+	if renamed.ResourceKey == "" {
+		renamed.ResourceKey = file.ResourceKey
+	}
+	if renamed.CreatedTime == "" {
+		renamed.CreatedTime = file.CreatedTime
+	}
+	return renamed, driveWebViewLink(renamed), nil
+}
+
+func (i *GoogleDriveImporter) updateImportedDriveSource(ctx context.Context, imported *DriveImportedFile, fileName, webViewLink string) error {
+	return i.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if imported.WebViewLink != webViewLink {
+			if err := tx.Model(imported).Update("web_view_link", webViewLink).Error; err != nil {
+				return err
+			}
+			imported.WebViewLink = webViewLink
+		}
+		var document Document
+		if err := tx.First(&document, imported.DocumentID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		updates := map[string]any{}
+		if document.DriveWebViewLink != webViewLink {
+			updates["drive_web_view_link"] = webViewLink
+		}
+		if document.ImportSource == "GOOGLE_DRIVE" {
+			if document.OriginalFilename != fileName {
+				updates["original_filename"] = fileName
+				oldTitle := strings.TrimSuffix(document.OriginalFilename, filepath.Ext(document.OriginalFilename))
+				if document.Title == oldTitle {
+					updates["title"] = strings.TrimSuffix(fileName, filepath.Ext(fileName))
+				}
+				extension := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
+				if extension != "" {
+					if err := tx.Model(&StoredDocument{}).Where("id = ?", document.ID).Updates(map[string]any{
+						"file_name": fileName, "file_type": extension, "updated_at": time.Now(),
+					}).Error; err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if len(updates) == 0 {
+			return nil
+		}
+		updates["updated_at"] = time.Now()
+		return tx.Model(&Document{}).Where("id = ?", document.ID).Updates(updates).Error
+	})
+}
+
+func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, fileName, exportMime, webViewLink string, item *DriveSyncItem) (bool, error) {
 	storageDir := getenv("UPLOAD_DIR", "./storage")
 	if err := os.MkdirAll(storageDir, 0o750); err != nil {
 		return false, fmt.Errorf("prepare storage directory: %w", err)
@@ -214,7 +340,13 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 		if created {
 			savedPath = document.StoragePath
 		}
-		if err := tx.Create(&DriveImportedFile{FileID: file.Id, DocumentID: document.ID, FileHash: hash, ImportedAt: time.Now()}).Error; err != nil {
+		if err := tx.Model(&Document{}).Where("id = ?", document.ID).Updates(map[string]any{
+			"drive_web_view_link": webViewLink,
+			"updated_at":          time.Now(),
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&DriveImportedFile{FileID: file.Id, DocumentID: document.ID, FileHash: hash, WebViewLink: webViewLink, ImportedAt: time.Now()}).Error; err != nil {
 			return err
 		}
 		status := "DUPLICATE"

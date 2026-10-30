@@ -26,6 +26,7 @@ type Document struct {
 	ID                   uint                `json:"id" gorm:"primaryKey"`
 	Title                string              `json:"title" gorm:"size:500;not null"`
 	OriginalFilename     string              `json:"originalFilename" gorm:"size:500;not null"`
+	DriveWebViewLink     string              `json:"driveWebViewLink,omitempty" gorm:"size:2048"`
 	StoragePath          string              `json:"-" gorm:"size:1000;not null"`
 	SourceType           string              `json:"sourceType" gorm:"size:20;not null"`
 	MimeType             string              `json:"mimeType" gorm:"size:150;not null"`
@@ -392,7 +393,7 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.GET("/api/v1/settings/drive/status", requireRole("ADMIN", "STAFF", "DEVELOPER"), getDriveAutomationStatus(db, settingsStore))
 	router.POST("/api/v1/settings/drive/test", requireRole("ADMIN"), func(c *gin.Context) {
 		if driveImporter == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า OAuth credential ของบัญชี Google Drive ใน backend"})
 			return
 		}
 		var request struct {
@@ -413,7 +414,7 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	})
 	router.POST("/api/v1/settings/drive/sync", requireRole("ADMIN"), func(c *gin.Context) {
 		if driveImporter == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า service account ของ Google Drive ใน backend"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ยังไม่ได้ตั้งค่า OAuth credential ของบัญชี Google Drive ใน backend"})
 			return
 		}
 		run, err := driveImporter.StartNow()
