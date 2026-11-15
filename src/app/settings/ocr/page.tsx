@@ -204,7 +204,7 @@ export default function OCRSettingsPage() {
   </SettingsFrame>;
 }
 
-// สวิตช์ยืนยันอัตโนมัติ: เอกสารที่ผูกชื่อครบและอ่านข้อมูลคำสั่งได้มั่นใจจะถูกยืนยันโดย "ระบบ (อัตโนมัติ)"
+// สวิตช์ยืนยันอัตโนมัติ (เปิดเป็นค่าเริ่มต้น): เอกสารที่อ่านข้อมูลคำสั่งได้มั่นใจและไม่มีแถวโดยตำแหน่งที่ยังว่าง จะถูกยืนยันโดย "ระบบ (อัตโนมัติ)"
 function AutoConfirmCard({ editable }: { editable: boolean }) {
   const toast = useToast();
   const [state, setState] = useState<{ enabled: boolean; readyNow: number } | null>(null);
@@ -234,7 +234,7 @@ function AutoConfirmCard({ editable }: { editable: boolean }) {
     <div className="flex items-start gap-5 px-5 py-5 lg:px-6">
       <div className="min-w-0 flex-1">
         <p className="text-[15px] font-medium">ยืนยันเอกสารอัตโนมัติ</p>
-        <p className="mt-1.5 text-[13px] leading-6 text-[var(--muted)]">เมื่อ OCR อ่านเสร็จ ถ้าผูกรายชื่อครบทุกคน และอ่านเลขที่คำสั่ง วันที่ออกคำสั่ง วันที่มีผล ได้มั่นใจ ระบบจะยืนยันให้เองโดยบันทึกผู้ยืนยันเป็น “ระบบ (อัตโนมัติ)” เอกสารที่ไม่ผ่านจะรอให้คนเปิดตรวจใน “รอยืนยัน”</p>
+        <p className="mt-1.5 text-[13px] leading-6 text-[var(--muted)]">เปิดไว้เป็นค่าเริ่มต้น เมื่อ OCR อ่านเสร็จ ถ้าอ่านเลขที่คำสั่ง วันที่ออกคำสั่ง วันที่มีผล ได้มั่นใจ และไม่มีแถวโดยตำแหน่งที่ยังหาผู้ดำรงไม่ได้ ระบบจะยืนยันให้เองโดยบันทึกผู้ยืนยันเป็น “ระบบ (อัตโนมัติ)” ชื่อที่ไม่อยู่ในระบบ (เช่น คนนอกคณะ) ไม่ขวางการยืนยัน เอกสารที่ไม่ผ่านจะรอให้คนเปิดตรวจใน “รอยืนยัน”</p>
         {asking && <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-lg bg-[var(--accent-soft)] px-3 py-2.5 text-[13px]"><span className="flex-1">เปิดแล้วจะยืนยันเอกสารที่ค้างและผ่านเกณฑ์ทันที {state?.readyNow ?? 0} ฉบับ</span><button type="button" onClick={() => setAsking(false)} className="focus-ring h-9 rounded-md border border-[var(--line-strong)] bg-white px-3 text-xs">ยกเลิก</button><button type="button" disabled={saving} onClick={() => save(true)} className="focus-ring h-9 rounded-md bg-[var(--accent)] px-3 text-xs font-medium text-white disabled:opacity-50">{saving ? "กำลังบันทึก..." : "เปิดและยืนยันเลย"}</button></div>}
       </div>
       <button type="button" role="switch" aria-checked={enabled} aria-label="ยืนยันเอกสารอัตโนมัติ" disabled={!editable || !state || saving} onClick={() => enabled ? save(false) : setAsking(true)} className={`focus-ring relative h-8 w-14 shrink-0 rounded-full transition disabled:opacity-50 ${enabled ? "bg-[var(--accent)]" : "bg-[#c2ccd6]"}`}><span className={`absolute top-1 h-6 w-6 rounded-full bg-white shadow transition-all ${enabled ? "left-7" : "left-1"}`} /></button>

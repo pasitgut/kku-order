@@ -17,6 +17,7 @@ const documentReturned = "RETURNED"
 const (
 	autoConfirmSettingKey = "auto_confirm"
 	autoConfirmActor      = "ระบบ (อัตโนมัติ)"
+	autoConfirmDetails    = "ยืนยันอัตโนมัติ: อ่านข้อมูลคำสั่งได้มั่นใจ และไม่มีแถวโดยตำแหน่งที่ยังว่าง"
 )
 
 // confirmNow ยืนยันเอกสาร และนับทุกรายชื่อในคำสั่งว่าตรวจแล้ว ใช้ทั้งตอนคนกดและตอนยืนยันอัตโนมัติ
@@ -108,7 +109,7 @@ func returnDocument(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
-// readyToAutoConfirm: ยืนยันอัตโนมัติได้เฉพาะเอกสารที่ไม่มีอะไรต้องแก้ ผูกชื่อครบ วันที่อ่านออก
+// readyToAutoConfirm: ยืนยันอัตโนมัติได้เฉพาะเอกสารที่ไม่มีอะไรต้องแก้ ไม่มีแถวโดยตำแหน่งที่ยังว่าง วันที่อ่านออก
 // และเลขที่คำสั่ง วันที่ออกคำสั่ง วันที่มีผล อ่านได้มั่นใจถึงเกณฑ์เดียวกับที่ขึ้นป้าย "ควรตรวจ"
 func readyToAutoConfirm(db *gorm.DB, documentID uint, threshold float64) (bool, error) {
 	// ชื่อที่ผูกไม่ได้ส่วนใหญ่เป็นคนนอกคณะ เก็บไว้ตามเอกสารแล้วผูกเองเมื่อคนนั้นเข้าระบบ จึงไม่นับเป็นงานค้าง
@@ -213,7 +214,7 @@ func confirmReadyPending(db *gorm.DB, threshold float64) (int, error) {
 	}
 	confirmed := 0
 	for _, document := range ready {
-		if _, err := confirmNow(db, document, autoConfirmActor, "ยืนยันอัตโนมัติ: ผูกรายชื่อครบและอ่านข้อมูลคำสั่งได้มั่นใจ"); err != nil {
+		if _, err := confirmNow(db, document, autoConfirmActor, autoConfirmDetails); err != nil {
 			return confirmed, err
 		}
 		confirmed++
@@ -232,7 +233,7 @@ func autoConfirmAfterExtraction(db *gorm.DB, documentID uint, threshold float64)
 		return
 	}
 	if ok, err := readyToAutoConfirm(db, documentID, threshold); err == nil && ok {
-		_, _ = confirmNow(db, document, autoConfirmActor, "ยืนยันอัตโนมัติ: ผูกรายชื่อครบและอ่านข้อมูลคำสั่งได้มั่นใจ")
+		_, _ = confirmNow(db, document, autoConfirmActor, autoConfirmDetails)
 	}
 }
 

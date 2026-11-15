@@ -22,7 +22,7 @@ export default function HomePage() {
 
   const stats = [
     ["เอกสารทั้งหมด", dashboard.total, "คลังเอกสารใน MySQL", FilePdf, "text-[var(--accent)]", "bg-[var(--accent-soft)]"],
-    ["รอยืนยัน", dashboard.review + dashboard.needsReview, "รอกดยืนยันด้วยตนเอง", Clock, "text-[#155e97]", "bg-[var(--accent-soft)]"],
+    ["รอยืนยัน", dashboard.review + dashboard.needsReview, "ระบบยืนยันเองไม่ได้ รอคนตรวจ", Clock, "text-[#155e97]", "bg-[var(--accent-soft)]"],
     ["ยืนยันแล้ว", dashboard.confirmed, "ผ่านการตรวจสอบ", CheckCircle, "text-[var(--success)]", "bg-[var(--success-soft)]"],
     ["ใกล้หมดวาระ", dashboard.expiring, "ภายใน 3 เดือน", WarningCircle, "text-[var(--danger)]", "bg-[var(--danger-soft)]"],
   ] as const;
