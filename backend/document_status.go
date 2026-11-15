@@ -111,8 +111,13 @@ func returnDocument(db *gorm.DB) gin.HandlerFunc {
 // readyToAutoConfirm: ยืนยันอัตโนมัติได้เฉพาะเอกสารที่ไม่มีอะไรต้องแก้ ผูกชื่อครบ วันที่อ่านออก
 // และเลขที่คำสั่ง วันที่ออกคำสั่ง วันที่มีผล อ่านได้มั่นใจถึงเกณฑ์เดียวกับที่ขึ้นป้าย "ควรตรวจ"
 func readyToAutoConfirm(db *gorm.DB, documentID uint, threshold float64) (bool, error) {
+	// ชื่อที่ผูกไม่ได้ส่วนใหญ่เป็นคนนอกคณะ เก็บไว้ตามเอกสารแล้วผูกเองเมื่อคนนั้นเข้าระบบ จึงไม่นับเป็นงานค้าง
+	// ที่ยังต้องรอคนตรวจ: แถวโดยตำแหน่งที่ยังไม่มีผู้ดำรง และกรณียังไม่มีฐานบุคลากรเลย
 	var unlinked int64
-	if err := db.Model(&Appointment{}).Where("document_id = ? AND directory_user_id IS NULL", documentID).Count(&unlinked).Error; err != nil || unlinked > 0 {
+	if err := db.Model(&Appointment{}).
+		Where("document_id = ? AND directory_user_id IS NULL", documentID).
+		Where("TRIM(COALESCE(full_name, '')) = '' OR name_match_method = ?", matchMethodEmpty).
+		Count(&unlinked).Error; err != nil || unlinked > 0 {
 		return false, err
 	}
 	var fields []ExtractedField
@@ -185,6 +190,21 @@ func setAutoConfirm(db *gorm.DB, enabled bool, userID string, threshold float64)
 	if !enabled {
 		return 0, nil
 	}
+	return confirmReadyPending(db, threshold)
+}
+
+// autoConfirmPendingIfEnabled ยืนยันเอกสารที่ค้าง "รอยืนยัน" และผ่านเกณฑ์แล้ว เฉพาะเมื่อเปิดสวิตช์ยืนยันอัตโนมัติไว้
+// เรียกตอน backend เริ่มทำงาน และหลังผูกชื่อคนนอกย้อนหลัง
+func autoConfirmPendingIfEnabled(db *gorm.DB) (int, error) {
+	enabled, err := autoConfirmEnabled(db)
+	if err != nil || !enabled {
+		return 0, err
+	}
+	return confirmReadyPending(db, reviewThresholdOf(NewSettingsStore(db)))
+}
+
+// confirmReadyPending ยืนยันเอกสาร "รอยืนยัน" ทุกฉบับที่ผ่านเกณฑ์ คืนจำนวนที่ยืนยัน
+func confirmReadyPending(db *gorm.DB, threshold float64) (int, error) {
 	ready, err := pendingAutoConfirm(db, threshold)
 	if err != nil {
 		return 0, err

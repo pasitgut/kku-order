@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -94,13 +95,26 @@ func TestAutoConfirmTakesOnlyDocumentsWithNothingToFix(t *testing.T) {
 	unlinked, _ := createReviewDocument(t, db, map[string]string{})
 	setFieldConfidence(t, db, unlinked.ID, "order_no", "2/2569", 0.98)
 	setFieldConfidence(t, db, unlinked.ID, "issued_date", "2026-10-11", 0.98)
-	db.Create(&Appointment{DocumentID: unlinked.ID, FullName: "ดร.วิไล ศรีสุข", BoundingBoxJSON: "null"})
+	db.Create(&Appointment{DocumentID: unlinked.ID, FullName: "ดร.วิไล ศรีสุข", NameMatchMethod: matchMethodNotFound, BoundingBoxJSON: "null"})
+	// ชื่อคนนอกคณะที่ผูกไม่ได้ (ไม่เจอ ใกล้เคียง หรือซ้ำ) ไม่ขวางการยืนยันอัตโนมัติ
+	readyDocument := func(order string, row Appointment) Document {
+		document, _ := createReviewDocument(t, db, map[string]string{})
+		setFieldConfidence(t, db, document.ID, "order_no", order, 0.98)
+		setFieldConfidence(t, db, document.ID, "issued_date", "2026-10-11", 0.98)
+		row.DocumentID, row.BoundingBoxJSON = document.ID, "null"
+		db.Create(&row)
+		return document
+	}
+	fuzzy := readyDocument("3/2569", Appointment{FullName: "ดร.วิไร ศรีสุข", NameMatchMethod: matchMethodFuzzy})
+	// แถวโดยตำแหน่งที่ยังไม่มีผู้ดำรง และกรณียังไม่มีฐานบุคลากร ยังต้องรอคนตรวจ
+	vacant := readyDocument("4/2569", Appointment{Position: "คณบดี", NameMatchMethod: matchMethodExOfficio})
+	emptyDirectory := readyDocument("5/2569", Appointment{FullName: "ดร.วิไล ศรีสุข", NameMatchMethod: matchMethodEmpty})
 
 	for _, tc := range []struct {
 		name     string
 		document Document
 		want     bool
-	}{{"clean", clean, true}, {"low confidence date", shaky, false}, {"unlinked name", unlinked, false}} {
+	}{{"clean", clean, true}, {"low confidence date", shaky, false}, {"unlinked name", unlinked, true}, {"external fuzzy", fuzzy, true}, {"vacant ex-officio", vacant, false}, {"empty directory", emptyDirectory, false}} {
 		got, err := readyToAutoConfirm(db, tc.document.ID, 0.9)
 		if err != nil || got != tc.want {
 			t.Errorf("%s: readyToAutoConfirm = %v, %v; want %v", tc.name, got, err, tc.want)
@@ -127,5 +141,51 @@ func TestTurningOnAutoConfirmConfirmsTheReadyBacklog(t *testing.T) {
 	}
 	if _, err := setAutoConfirm(db, false, "admin@kku.ac.th", 0.9); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAutoConfirmPendingIfEnabledRespectsTheSwitch(t *testing.T) {
+	db := testDatabase(t)
+	var saved AppSetting
+	hadSetting := db.Where("setting_key = ?", autoConfirmSettingKey).Take(&saved).Error == nil
+	t.Cleanup(func() {
+		if hadSetting {
+			db.Save(&saved)
+		} else {
+			db.Where("setting_key = ?", autoConfirmSettingKey).Delete(&AppSetting{})
+		}
+	})
+	setSwitch := func(enabled bool) {
+		value, _ := json.Marshal(autoConfirmSetting{Enabled: enabled})
+		if err := db.Save(&AppSetting{SettingKey: autoConfirmSettingKey, Value: string(value), UpdatedBy: "test", UpdatedAt: time.Now()}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	document, _ := createReviewDocument(t, db, map[string]string{})
+	setFieldConfidence(t, db, document.ID, "order_no", "9/2569", 0.98)
+	setFieldConfidence(t, db, document.ID, "issued_date", "2026-10-11", 0.98)
+	db.Create(&Appointment{DocumentID: document.ID, FullName: "ดร.คนนอก คณะอื่น", NameMatchMethod: matchMethodNotFound, BoundingBoxJSON: "null"})
+	statusOf := func() Document {
+		var current Document
+		if err := db.First(&current, document.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		return current
+	}
+
+	setSwitch(false)
+	if _, err := autoConfirmPendingIfEnabled(db); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got.Status != "REVIEW" {
+		t.Fatalf("switch off must leave the document alone, got %s", got.Status)
+	}
+
+	setSwitch(true)
+	if _, err := autoConfirmPendingIfEnabled(db); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(); got.Status != "CONFIRMED" || got.ConfirmedBy != autoConfirmActor {
+		t.Fatalf("switch on must confirm a document held back only by an external name, got %s by %q", got.Status, got.ConfirmedBy)
 	}
 }

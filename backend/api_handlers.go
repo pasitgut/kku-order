@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -717,6 +718,12 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 		if len(positionPeriods) > 0 {
 			// เอกสารที่รอยืนยันและอ้างถึงตำแหน่งนี้ได้คนทันที
 			linked, _ = linkPendingByPosition(db, person.ID)
+		}
+		// ชื่อในเอกสารที่เคยหาคนนี้ไม่เจอ ได้ผูกทันที รวมเอกสารที่ยืนยันแล้ว
+		if external, err := linkExternalNames(db, createdBy); err == nil {
+			linked += external
+		} else {
+			log.Printf("link external names after creating %s: %v", user.FullName, err)
 		}
 		c.JSON(http.StatusCreated, gin.H{"data": user, "linked": linked})
 	}

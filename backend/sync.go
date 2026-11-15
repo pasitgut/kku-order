@@ -135,6 +135,10 @@ func (s *UserSyncService) SyncUsers(ctx context.Context, actor string) (UserSync
 	} else if err := refreshPendingMatches(s.db); err != nil {
 		s.logger.Printf("refresh pending matches after sync: %v", err)
 	}
+	// คนนอกคณะที่เพิ่งเข้ามาในรายชื่อ ได้ผูกกับชื่อในเอกสารที่เคยหาไม่เจอ รวมเอกสารที่ยืนยันแล้ว
+	if _, err := linkExternalNames(s.db, "sync"); err != nil {
+		s.logger.Printf("link external names after sync: %v", err)
+	}
 	return finish("SUCCESS", nil)
 }
 

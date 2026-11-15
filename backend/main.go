@@ -487,6 +487,10 @@ func main() {
 	if err := refreshPendingMatches(db); err != nil {
 		logger.Printf("refresh pending matches: %v", err)
 	}
+	// เอกสารที่ค้างเพราะมีแต่ชื่อคนนอกคณะ ยืนยันได้ตามกฎใหม่ ถ้าเปิดยืนยันอัตโนมัติไว้
+	if _, err := autoConfirmPendingIfEnabled(db); err != nil {
+		logger.Printf("auto-confirm pending at startup: %v", err)
+	}
 
 	ocrConfig := loadOCRAPIConfigFromEnv()
 	processor := NewDocumentProcessor(db, logger, ocrConfig)
