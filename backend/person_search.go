@@ -411,6 +411,31 @@ func topPeopleHandler(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+func fiscalYearRangeHandler(db *gorm.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var result struct {
+			Earliest *time.Time `gorm:"column:earliest"`
+		}
+		if err := db.Table("document_workflows AS d").
+			Joins("JOIN appointments AS a ON a.document_id = d.id").
+			Select("MIN(d.issued_date) AS earliest").
+			Where(historyDocuments).
+			Where("d.issued_date IS NOT NULL").Scan(&result).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดช่วงปีงบประมาณได้"})
+			return
+		}
+		if result.Earliest == nil {
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"fromYear": nil}})
+			return
+		}
+		year := result.Earliest.Year() + 543
+		if result.Earliest.Month() >= time.October {
+			year++
+		}
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"fromYear": year}})
+	}
+}
+
 // loadPersonHistory คืนคำสั่งที่ยืนยันแล้วและยกเลิกแล้วของคนคนนี้ เรียงจากใหม่ไปเก่า หนึ่งแถวต่อหนึ่งคำสั่ง
 func loadPersonHistory(db *gorm.DB, personID uint, today time.Time) ([]historyRow, error) {
 	return loadHistory(db, today, "a.directory_user_id = ?", personID)

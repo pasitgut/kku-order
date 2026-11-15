@@ -1,4 +1,4 @@
-export type Period = "all" | "this" | "last" | "custom";
+export type Period = "all" | "this" | "last" | "year" | "custom";
 // name = ชื่อในคำสั่งที่ยังไม่ผูกกับบุคคลในระบบ ไม่มี id จึงแยกกันด้วยตัวชื่อ
 export type RecentSearch = { kind: "person" | "order" | "name"; id: number; label: string };
 
@@ -18,10 +18,10 @@ export function fiscalYearRange(today: Date, offset = 0) {
 }
 
 // periodRange แปลงช่วงเวลาที่เลือกเป็นช่วงวันที่ออกคำสั่ง ช่องที่ว่างไม่ส่ง
-export function periodRange(period: Period, today: Date, custom: { from: string; to: string } = { from: "", to: "" }): { from?: string; to?: string } {
+export function periodRange(period: Period, today: Date, custom: { from: string; to: string } = { from: "", to: "" }, year?: number): { from?: string; to?: string } {
   if (period === "all") return {};
   if (period === "custom") return Object.fromEntries(Object.entries(custom).filter(([, value]) => value));
-  const { from, to } = fiscalYearRange(today, period === "last" ? -1 : 0);
+  const { from, to } = period === "year" && year ? fiscalYearRange(new Date(year - 544, 9, 1)) : fiscalYearRange(today, period === "last" ? -1 : 0);
   return { from, to };
 }
 

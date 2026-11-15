@@ -6,12 +6,13 @@ import { KeyboardEvent, Suspense, useEffect, useId, useMemo, useState, useSyncEx
 import { ArrowLeft, ClockCounterClockwise, FilePdf, MagnifyingGlass, SpinnerGap, User } from "@phosphor-icons/react";
 import { AppShell } from "@/components/app-shell";
 import { ExportReportButton } from "@/components/export-report-button";
-import { NameSummary, OrderSuggestion, PersonHistory, PersonSummary, formatThaiDate, getNameHistory, getPersonHistory, getSearchSuggestions, getTopPeople, statusLabel } from "@/lib/api";
+import { NameSummary, OrderSuggestion, PersonHistory, PersonSummary, formatThaiDate, getFiscalYearRange, getNameHistory, getPersonHistory, getSearchSuggestions, getTopPeople, statusLabel } from "@/lib/api";
 import { initials } from "@/lib/person";
 import { AppointmentState, Period, RecentSearch, appointmentStateLabel, fiscalYearRange, moveSelection, periodRange, rememberSearch } from "@/lib/search";
 
 const recentKey = "docflow.recentSearches";
 const chipClass = (active: boolean) => `focus-ring min-h-10 rounded-full border px-4 text-xs ${active ? "border-[var(--accent)] bg-[var(--accent)] font-medium text-white" : "border-[var(--line-strong)] bg-white hover:border-[var(--accent)]"}`;
+const fiscalYearsThroughCurrent = (year: number, firstYear: number | null) => Array.from({ length: year - Math.min(firstYear ?? year, year) + 1 }, (_, index) => year - index);
 const stateTone: Record<AppointmentState, string> = {
   ACTIVE: "bg-[var(--success-soft)] text-[var(--success)]",
   EXPIRING: "bg-[#ffead6] text-[#9a4a0c]",
@@ -67,6 +68,13 @@ function SearchView() {
   const subject = useMemo<Subject | null>(() => personId ? { person: personId } : name ? { name } : null, [personId, name]);
   const subjectKey = personId ? `person-${personId}` : `name-${name}`;
   const recent = useSyncExternalStore(subscribeRecent, recentSnapshot, () => noRecent);
+  const [firstFiscalYear, setFirstFiscalYear] = useState<number | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    getFiscalYearRange().then((response) => { if (active) setFirstFiscalYear(response.data.fromYear); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
 
   const pick = (entry: RecentSearch) => {
     addRecent(entry);
@@ -75,7 +83,7 @@ function SearchView() {
 
   return <div className="space-y-6">
     <SearchBox key={`search-${subjectKey}`} onPick={pick} />
-    {subject ? <PersonView key={subjectKey} subject={subject} /> : <StartView recent={recent} />}
+    {subject ? <PersonView key={subjectKey} subject={subject} firstFiscalYear={firstFiscalYear} /> : <StartView recent={recent} firstFiscalYear={firstFiscalYear} />}
   </div>;
 }
 
@@ -159,22 +167,27 @@ function SearchBox({ onPick }: { onPick: (entry: RecentSearch) => void }) {
   </section>;
 }
 
-function StartView({ recent }: { recent: RecentSearch[] }) {
-  const fiscal = fiscalYearRange(new Date());
+function StartView({ recent, firstFiscalYear }: { recent: RecentSearch[]; firstFiscalYear: number | null }) {
+  const currentFiscal = fiscalYearRange(new Date());
+  const currentYear = Number(currentFiscal.label.replace("ปีงบ ", ""));
+  const [fiscalYear, setFiscalYear] = useState(currentYear);
+  const fiscal = fiscalYearRange(new Date(fiscalYear - 544, 9, 1));
   const [top, setTop] = useState<PersonSummary[] | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
     let active = true;
-    const { from, to } = fiscalYearRange(new Date());
-    getTopPeople({ from, to }).then((response) => { if (active) setTop(response.data); }).catch((reason: Error) => { if (active) { setTop([]); setError(reason.message); } });
+    setTop(null);
+    setError("");
+    getTopPeople({ from: fiscal.from, to: fiscal.to }).then((response) => { if (active) setTop(response.data); }).catch((reason: Error) => { if (active) { setTop([]); setError(reason.message); } });
     return () => { active = false; };
-  }, []);
+  }, [fiscal.from, fiscal.to]);
 
   return <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
     <section className="card overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-[var(--line)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-        <div><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้ว ตั้งแต่ {formatThaiDate(fiscal.from)}</p></div>
+        <div><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้วใน{fiscal.label}</p></div>
+        <label className="flex items-center gap-2 text-sm text-[var(--muted)]">ปีงบประมาณ<select value={fiscalYear} onChange={(event) => setFiscalYear(Number(event.target.value))} className="focus-ring h-10 rounded-lg border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]">{fiscalYearsThroughCurrent(currentYear, firstFiscalYear).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
         <ExportReportButton filters={{ from: fiscal.from, to: fiscal.to }} description={`ส่งออกรายงาน${fiscal.label}`} />
       </div>
       {error && <p role="alert" className="px-5 py-3 text-sm text-[var(--danger)]">{error}</p>}
@@ -200,29 +213,29 @@ function StartView({ recent }: { recent: RecentSearch[] }) {
   </div>;
 }
 
-function PersonView({ subject }: { subject: Subject }) {
-  const [period, setPeriod] = useState<Period>("this");
+function PersonView({ subject, firstFiscalYear }: { subject: Subject; firstFiscalYear: number | null }) {
+  const currentFiscal = fiscalYearRange(new Date());
+  const currentYear = Number(currentFiscal.label.replace("ปีงบ ", ""));
+  const [period, setPeriod] = useState<Period>("year");
+  const [fiscalYear, setFiscalYear] = useState(currentYear);
   const [custom, setCustom] = useState({ from: "", to: "" });
   const [activeOnly, setActiveOnly] = useState(false);
   const [history, setHistory] = useState<PersonHistory | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const fiscal = fiscalYearRange(new Date());
-  const lastFiscal = fiscalYearRange(new Date(), -1);
-
   useEffect(() => {
     let active = true;
-    const range = periodRange(period, new Date(), custom);
+    const range = periodRange(period, new Date(), custom, fiscalYear);
     const request = "person" in subject ? getPersonHistory(subject.person, range, activeOnly) : getNameHistory(subject.name, range, activeOnly);
     request.then((response) => { if (active) { setHistory(response.data); setError(""); } })
       .catch((reason: Error) => { if (active) setError(reason.message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [subject, period, custom, activeOnly]);
+  }, [subject, period, fiscalYear, custom, activeOnly]);
 
   const choosePeriod = (value: Period) => { setLoading(true); setPeriod(value); };
   const person = history?.person;
-  const periods: [Period, string][] = [["all", "ทั้งหมด"], ["this", `ปีงบนี้ (${fiscal.label.replace("ปีงบ ", "")})`], ["last", `ปีงบก่อน (${lastFiscal.label.replace("ปีงบ ", "")})`], ["custom", "กำหนดเอง"]];
+  const periods: [Period, string][] = [["all", "ทั้งหมด"], ["year", "ปีงบประมาณ"], ["custom", "กำหนดเอง"]];
 
   return <div className="space-y-6">
     <Link href="/search" className="focus-ring inline-flex min-h-10 items-center gap-1.5 rounded-md text-sm text-[var(--accent)] hover:underline"><ArrowLeft size={16} />กลับไปหน้าค้นหา</Link>
@@ -235,12 +248,13 @@ function PersonView({ subject }: { subject: Subject }) {
         <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm"><span><b className="font-semibold">{person.orders.toLocaleString("th-TH")}</b> คำสั่ง</span><span className="text-[var(--success)]">ยังมีผล {person.active.toLocaleString("th-TH")}</span><span className="text-[#9a4a0c]">ใกล้หมดวาระ {person.expiring.toLocaleString("th-TH")}</span></p>
         {"name" in subject && <p className="mt-2 text-xs leading-5 text-[#9a4a0c]">ชื่อนี้มาจากคำสั่ง ยังไม่ผูกกับบุคคลในระบบ · <Link href="/settings/teachers#add-teacher" className="focus-ring rounded underline underline-offset-4">เพิ่มเป็นบุคลากร</Link></p>}
       </div>
-      <ExportReportButton filters={{ ...subject, ...periodRange(period, new Date(), custom), activeOnly }} description={`ส่งออกรายงานของ ${person.name}`} />
+      <ExportReportButton filters={{ ...subject, ...periodRange(period, new Date(), custom, fiscalYear), activeOnly }} description={`ส่งออกรายงานของ ${person.name}`} />
     </section>}
 
     <section className="card overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-[var(--line)] bg-[var(--surface-muted)] px-5 py-4">
         <div role="group" aria-label="ช่วงวันที่ออกคำสั่ง" className="flex flex-wrap gap-2">{periods.map(([value, label]) => <button key={value} type="button" aria-pressed={period === value} onClick={() => choosePeriod(value)} className={chipClass(period === value)}>{label}</button>)}</div>
+        {period === "year" && <label className="flex w-fit items-center gap-2 text-xs text-[var(--muted)]">ปีงบ<select value={fiscalYear} onChange={(event) => { setLoading(true); setFiscalYear(Number(event.target.value)); }} className="focus-ring h-10 rounded-lg border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]">{fiscalYearsThroughCurrent(currentYear, firstFiscalYear).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>}
         {period === "custom" && <div className="flex flex-wrap items-center gap-3 text-xs text-[var(--muted)]">
           <label className="flex items-center gap-2">ตั้งแต่<input type="date" value={custom.from} onChange={(event) => { setLoading(true); setCustom({ ...custom, from: event.target.value }); }} className="focus-ring h-10 rounded-lg border border-[var(--line)] bg-white px-2 text-sm" /></label>
           <label className="flex items-center gap-2">ถึง<input type="date" value={custom.to} onChange={(event) => { setLoading(true); setCustom({ ...custom, to: event.target.value }); }} className="focus-ring h-10 rounded-lg border border-[var(--line)] bg-white px-2 text-sm" /></label>

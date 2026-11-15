@@ -354,6 +354,7 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.GET("/api/v1/search", searchDocuments(db))
 	router.GET("/api/v1/search/suggest", searchSuggestHandler(db))
 	router.GET("/api/v1/search/top-people", topPeopleHandler(db))
+	router.GET("/api/v1/search/fiscal-years", fiscalYearRangeHandler(db))
 	router.GET("/api/v1/search/people/:id", personHistoryHandler(db))
 	router.GET("/api/v1/search/names", nameHistoryHandler(db))
 	router.GET("/api/v1/reports/workload", workloadReport(db))

@@ -343,6 +343,10 @@ export async function getTopPeople(range: { from?: string; to?: string }) {
   return apiFetch<{ data: PersonSummary[] }>(`/api/v1/search/top-people?${new URLSearchParams(range)}`);
 }
 
+export async function getFiscalYearRange() {
+  return apiFetch<{ data: { fromYear: number | null } }>("/api/v1/search/fiscal-years");
+}
+
 export async function getPersonHistory(id: number, range: { from?: string; to?: string }, activeOnly: boolean) {
   const params = new URLSearchParams(range);
   if (activeOnly) params.set("activeOnly", "1");
