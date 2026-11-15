@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -624,10 +625,13 @@ func (i *GoogleDriveImporter) processItem(ctx context.Context, item *DriveSyncIt
 	if !isExisting && file.Capabilities != nil && !file.Capabilities.CanDownload {
 		return false, fmt.Errorf("บัญชีระบบไม่มีสิทธิ์ดาวน์โหลดไฟล์นี้")
 	}
-	file, name, webViewLink, err := i.renameDriveFile(ctx, &file, name)
+	renamed, webViewLink, err := i.renameDriveFile(ctx, &file, name)
 	if err != nil {
 		return false, err
 	}
+	// ใช้ไฟล์และชื่อหลังเปลี่ยนชื่อ (ชื่อที่มีวันที่นำหน้า) ในขั้นตอนต่อไป
+	file = *renamed
+	name = renamed.Name
 	item.FileName = truncateDriveName(name)
 	if err := i.db.WithContext(ctx).Model(item).Update("file_name", item.FileName).Error; err != nil {
 		return false, err
