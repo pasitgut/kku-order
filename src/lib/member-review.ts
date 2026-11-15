@@ -1,7 +1,7 @@
 import type { Appointment } from "./api";
 
 export type MemberFilter = "all" | "warning" | "pending" | "verified";
-export type MatchTone = "good" | "warning" | "danger";
+export type MatchTone = "good" | "warning" | "danger" | "neutral";
 export type MatchState = { label: string; detail: string; tone: MatchTone };
 export type DepartmentSummary = { name: string; total: number; unlinked: number };
 export type RosterRow = { id: number; no: number; fullName: string; department: string; position: string; role: string; unlinked: boolean };
@@ -15,6 +15,12 @@ export function isLinked(row: Appointment) {
   return Boolean(row.directoryUserId);
 }
 
+// isExternalName: แถวที่มีชื่อแต่ระบบผูกกับใครไม่ได้ ถือเป็นคนนอกคณะ ไม่นับเป็นงานค้าง และผูกเองเมื่อคนนั้นเข้าระบบ
+// ยกเว้นกรณียังไม่มีฐานบุคลากรเลย ที่ต้อง sync ก่อน (ตรงกับ readyToAutoConfirm ใน backend/document_status.go)
+export function isExternalName(row: Appointment) {
+  return !isLinked(row) && row.fullName.trim() !== "" && row.nameMatchMethod !== "DIRECTORY_EMPTY";
+}
+
 export function departmentOf(row: Appointment) {
   return row.department?.trim() || NO_DEPARTMENT;
 }
@@ -26,6 +32,14 @@ export function personLabel(row: { fullName: string; position: string }): string
 export function matchState(row: Appointment): MatchState {
   const method = row.nameMatchMethod ?? "";
   if (!isLinked(row)) {
+    if (isExternalName(row)) {
+      // เจ้าหน้าที่ปล่อยว่างเอง ระบบจะไม่ผูกกลับ จึงไม่บอกว่าจะผูกให้
+      if (method === "MANUAL") return { label: "ปล่อยว่างไว้", detail: "เจ้าหน้าที่ปล่อยว่างไว้ เก็บเป็นชื่อตามเอกสาร", tone: "neutral" };
+      if (resolvedMethods.has(method)) return { label: "พบชื่อตรง รอผูก", detail: "พบชื่อที่ตรงกัน กดเพื่อผูก", tone: "neutral" };
+      if (method === "AMBIGUOUS") return { label: `ชื่อซ้ำ ${row.candidates?.length || "หลาย"} คน`, detail: "มีชื่อซ้ำกันหลายคน เลือกเองได้ ถ้าไม่เลือกระบบเก็บไว้เป็นชื่อตามเอกสาร", tone: "neutral" };
+      if (method === "FUZZY" && row.candidates?.length) return { label: "ชื่อใกล้เคียง", detail: "มีชื่อใกล้เคียงในระบบ ยืนยันเองได้ ถ้าไม่ใช่ระบบเก็บไว้เป็นชื่อตามเอกสาร", tone: "neutral" };
+      return { label: "ไม่อยู่ในระบบ", detail: "ไม่พบในรายชื่อบุคลากร อาจเป็นคนนอกคณะ ระบบจะผูกให้เองเมื่อคนนี้เข้าระบบ", tone: "neutral" };
+    }
     if (resolvedMethods.has(method)) return { label: "พบชื่อตรง รอผูก", detail: "พบชื่อที่ตรงกัน กดเพื่อผูก", tone: "warning" };
     if (method === "AMBIGUOUS") return { label: `ชื่อซ้ำ ${row.candidates?.length || "หลาย"} คน`, detail: "มีชื่อซ้ำกันหลายคน ต้องเลือกเอง", tone: "danger" };
     if (method === "EX_OFFICIO") return { label: "รอผู้ตรวจเลือกบุคคล", detail: "กรรมการโดยตำแหน่งที่ไม่มีชื่อ ต้องให้ผู้ตรวจเลือกบุคคล", tone: "warning" };
@@ -43,7 +57,7 @@ export function matchState(row: Appointment): MatchState {
 
 export function matchesFilter(row: Appointment, filter: MemberFilter) {
   const tone = matchState(row).tone;
-  if (filter === "warning") return tone !== "good";
+  if (filter === "warning") return tone === "warning" || tone === "danger";
   if (filter === "pending") return !row.verified && tone === "good";
   if (filter === "verified") return row.verified;
   return true;

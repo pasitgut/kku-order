@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Appointment } from "./api.ts";
-import { countByFilter, filterMembers, groupByDepartment, matchState, personLabel, rosterRows, summarizeDepartments } from "./member-review.ts";
+import { countByFilter, filterMembers, groupByDepartment, isExternalName, matchState, personLabel, rosterRows, summarizeDepartments } from "./member-review.ts";
 
 function appointment(overrides: Partial<Appointment>): Appointment {
   return {
@@ -32,17 +32,19 @@ test("matchState keeps unlinked names out of the good tone", () => {
   assert.equal(matchState(rows[0]).tone, "good");
   assert.equal(matchState(rows[1]).tone, "warning");
   assert.equal(matchState(rows[1]).label, "ใกล้เคียง 86%");
-  assert.equal(matchState(rows[2]).tone, "danger");
+  // ชื่อที่ผูกไม่ได้เป็นคนนอกคณะ แสดงโทนกลาง ไม่ใช่งานค้าง
+  assert.equal(matchState(rows[2]).tone, "neutral");
   assert.equal(matchState(rows[2]).label, "ชื่อซ้ำ 2 คน");
-  assert.equal(matchState(rows[4]).label, "ไม่พบในระบบ");
+  assert.equal(matchState(rows[4]).label, "ไม่อยู่ในระบบ");
+  assert.equal(matchState(rows[4]).tone, "neutral");
 });
 
 test("countByFilter follows the reviewer filters", () => {
-  assert.deepEqual(countByFilter(rows), { all: 5, warning: 3, pending: 1, verified: 1 });
+  assert.deepEqual(countByFilter(rows), { all: 5, warning: 1, pending: 1, verified: 1 });
 });
 
 test("filterMembers combines filter, department and query", () => {
-  assert.deepEqual(filterMembers(rows, { filter: "warning", department: "", query: "" }).map((row) => row.id), [2, 3, 5]);
+  assert.deepEqual(filterMembers(rows, { filter: "warning", department: "", query: "" }).map((row) => row.id), [2]);
   assert.deepEqual(filterMembers(rows, { filter: "all", department: "ที่ปรึกษา", query: "" }).map((row) => row.id), [4]);
   assert.deepEqual(filterMembers(rows, { filter: "all", department: "", query: "นักวิชาการ" }).map((row) => row.id), [5]);
   assert.deepEqual(filterMembers(rows, { filter: "all", department: "ไม่ระบุฝ่าย", query: "" }).map((row) => row.id), [5]);
@@ -92,4 +94,24 @@ test("ex-officio row without name is labelled by position", () => {
 test("ex-officio row waits for a reviewer to choose the person", () => {
   const row = appointment({ id: 6, fullName: "", position: "เลขานุการ", nameMatchMethod: "EX_OFFICIO" });
   assert.equal(matchState(row).label, "รอผู้ตรวจเลือกบุคคล");
+});
+
+test("isExternalName marks named rows nobody could link, except when there is no directory yet", () => {
+  assert.equal(isExternalName(appointment({ nameMatchMethod: "NOT_FOUND" })), true);
+  assert.equal(isExternalName(appointment({ nameMatchMethod: "AMBIGUOUS" })), true);
+  assert.equal(isExternalName(appointment({ nameMatchMethod: "FUZZY", candidates: [{ userId: 9, fullName: "สมชาย ใจดี", positionTitle: "", score: 0.86 }] })), true);
+  assert.equal(isExternalName(appointment({ directoryUserId: 11, nameMatchMethod: "EXACT" })), false);
+  assert.equal(isExternalName(appointment({ fullName: "", position: "คณบดี", nameMatchMethod: "EX_OFFICIO" })), false);
+  assert.equal(isExternalName(appointment({ nameMatchMethod: "DIRECTORY_EMPTY" })), false);
+});
+
+test("matchState does not promise an automatic link for a row the reviewer left empty", () => {
+  const cleared = matchState(appointment({ nameMatchMethod: "MANUAL" }));
+  assert.equal(cleared.label, "ปล่อยว่างไว้");
+  assert.equal(cleared.tone, "neutral");
+  assert.doesNotMatch(cleared.detail, /ผูกให้เอง/);
+});
+
+test("matchState still says the name was found when an exact match lost its link", () => {
+  assert.equal(matchState(appointment({ nameMatchMethod: "EXACT" })).label, "พบชื่อตรง รอผูก");
 });
