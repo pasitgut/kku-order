@@ -314,6 +314,13 @@ export async function getVacantPositions() {
   return apiFetch<{ data: VacantPosition[] }>("/api/v1/position-holders/vacant");
 }
 
+export type CurrentPositionHolder = { positionTitle: string; directoryUserId: number; fullName: string; startsOn: string | null; endsOn: string | null; source: string };
+
+// getCurrentPositionHolders ผู้ดำรงตำแหน่งบริหาร ณ วันนี้ เลือกด้วยกฎเดียวกับที่ผูกแถวโดยตำแหน่งในเอกสาร
+export async function getCurrentPositionHolders() {
+  return apiFetch<{ data: CurrentPositionHolder[] }>("/api/v1/position-holders/current");
+}
+
 export async function setPositionHolder(payload: { positionTitle: string; directoryUserId: number; startsOn: string }) {
   return apiFetch<{ data: { positionTitle: string; directoryUserId: number }; linked: number }>("/api/v1/position-holders", {
     method: "POST",
