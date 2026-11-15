@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { ArrowClockwise, ArrowLeft, Bell, CaretDown, ChartLineUp, FileArrowUp, Files, GearSix, MagnifyingGlass, SignOut, User, WifiSlash } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowLeft, Bell, CaretDown, ChartLineUp, FileArrowUp, Files, GearSix, IdentificationBadge, MagnifyingGlass, SignOut, User, WifiSlash } from "@phosphor-icons/react";
 import { Avatar, useMe } from "@/components/me-context";
 import { roleLabel } from "@/lib/permissions";
 import { ExpiryNotification, formatThaiDate, getExpiryNotifications } from "@/lib/api";
@@ -14,6 +14,7 @@ const navigation = [
   { href: "/upload", label: "นำเข้าเอกสาร", shortLabel: "นำเข้า", icon: FileArrowUp },
   { href: "/documents", label: "เอกสารทั้งหมด", shortLabel: "เอกสาร", icon: Files },
   { href: "/search", label: "ค้นหาข้อมูล", shortLabel: "ค้นหา", icon: MagnifyingGlass },
+  { href: "/positions", label: "บุคลากรโดยตำแหน่ง", shortLabel: "ตำแหน่ง", icon: IdentificationBadge },
 ];
 
 type AppShellProps = {
@@ -80,7 +81,7 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
         <div className="flex min-h-11 flex-col justify-center gap-0.5 px-5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12 xl:px-16"><span><span className="font-medium text-white">DocFlow</span> · วิทยาลัยการคอมพิวเตอร์ มหาวิทยาลัยขอนแก่น</span><span>123 ถ.มิตรภาพ ต.ในเมือง อ.เมือง จ.ขอนแก่น 40002</span></div>
       </footer>
 
-      <nav aria-label="เมนูหลัก" className="fixed inset-x-0 bottom-0 z-30 grid h-[72px] grid-cols-4 bg-[var(--bar)] px-1 lg:hidden">
+      <nav aria-label="เมนูหลัก" className="fixed inset-x-0 bottom-0 z-30 grid h-[72px] grid-cols-5 bg-[var(--bar)] px-1 lg:hidden">
         {navigation.map((item) => {
           const Icon = item.icon;
           const active = isActive(pathname, item.href);
