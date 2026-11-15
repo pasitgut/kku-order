@@ -189,3 +189,25 @@ func TestAutoConfirmPendingIfEnabledRespectsTheSwitch(t *testing.T) {
 		t.Fatalf("switch on must confirm a document held back only by an external name, got %s by %q", got.Status, got.ConfirmedBy)
 	}
 }
+
+func TestAutoConfirmIsOnUntilSomeoneTurnsItOff(t *testing.T) {
+	db := testDatabase(t)
+	var saved AppSetting
+	hadSetting := db.Where("setting_key = ?", autoConfirmSettingKey).Take(&saved).Error == nil
+	t.Cleanup(func() {
+		if hadSetting {
+			db.Save(&saved)
+		} else {
+			db.Where("setting_key = ?", autoConfirmSettingKey).Delete(&AppSetting{})
+		}
+	})
+	db.Where("setting_key = ?", autoConfirmSettingKey).Delete(&AppSetting{})
+	if enabled, err := autoConfirmEnabled(db); err != nil || !enabled {
+		t.Fatalf("a fresh install must auto-confirm, got %v, %v", enabled, err)
+	}
+	value, _ := json.Marshal(autoConfirmSetting{Enabled: false})
+	db.Save(&AppSetting{SettingKey: autoConfirmSettingKey, Value: string(value), UpdatedBy: "test", UpdatedAt: time.Now()})
+	if enabled, err := autoConfirmEnabled(db); err != nil || enabled {
+		t.Fatalf("an admin who turned it off must keep it off, got %v, %v", enabled, err)
+	}
+}

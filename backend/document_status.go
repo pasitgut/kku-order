@@ -145,11 +145,13 @@ type autoConfirmSetting struct {
 	Enabled bool `json:"enabled"`
 }
 
+// autoConfirmEnabled เปิดเป็นค่าเริ่มต้น: ถ้ายังไม่มีใครตั้งค่า เอกสารที่ผ่านเกณฑ์จะถูกยืนยันเองโดยไม่ต้องคลิก
+// ADMIN ปิดได้ในหน้าตั้งค่า OCR และการนำเข้า และเมื่อปิดแล้วจะปิดอยู่อย่างนั้น
 func autoConfirmEnabled(db *gorm.DB) (bool, error) {
 	var row AppSetting
 	err := db.Where("setting_key = ?", autoConfirmSettingKey).Take(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, nil
+		return true, nil
 	}
 	if err != nil {
 		return false, err
