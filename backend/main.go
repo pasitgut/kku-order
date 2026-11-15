@@ -365,6 +365,7 @@ func newAPIRouter(deps apiRouteDeps) *gin.Engine {
 	router.GET("/api/v1/directory-users/:id/positions", requireRole("ADMIN", "STAFF"), listDirectoryPersonPositions(db))
 	router.POST("/api/v1/directory-users/:id/positions", requireRole("ADMIN", "STAFF"), addDirectoryPersonPosition(db))
 	router.GET("/api/v1/position-holders/vacant", listVacantPositions(db))
+	router.GET("/api/v1/position-holders/current", listCurrentPositionHolders(db))
 	router.POST("/api/v1/position-holders", requireRole("ADMIN", "STAFF"), setPositionHolder(db))
 	router.GET("/api/v1/documents", listDocuments(db))
 	router.GET("/api/v1/documents/:id", getDocument(db))
