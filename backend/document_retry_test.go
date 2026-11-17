@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -112,24 +111,14 @@ func TestReplacedFileUpdatesResetsRetryState(t *testing.T) {
 	}
 }
 
-// ตรวจว่า statement ใน migration 0008 อยู่ในรูปแบบที่ runner รองรับ (ไม่ต้องใช้ DB)
-func TestMigration0008StatementsUseSupportedForms(t *testing.T) {
-	raw, err := os.ReadFile("migrations/0010_extraction_retry.sql")
+func TestBaselineContainsRetryColumnsAndIndex(t *testing.T) {
+	raw, err := migrationFiles.ReadFile("migrations/" + baselineMigration)
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
-	count := 0
-	for _, statement := range strings.Split(string(raw), ";") {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
+	for _, key := range []string{"extraction_attempts", "next_attempt_at", "extraction_last_status", "KEY ix_documents_next_attempt (processing_stage, next_attempt_at)"} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("baseline is missing %q", key)
 		}
-		count++
-		if !addColumnIfMissingPattern.MatchString(statement) && !addKeyPattern.MatchString(statement) {
-			t.Fatalf("statement not supported by migration runner: %s", statement)
-		}
-	}
-	if count != 4 {
-		t.Fatalf("statements = %d, want 4", count)
 	}
 }

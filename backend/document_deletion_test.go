@@ -51,23 +51,13 @@ func TestActivityKeepsLinkToExistingDocument(t *testing.T) {
 	}
 }
 
-func TestDocumentHistoryMigrationUsesIdempotentStatements(t *testing.T) {
-	contents, err := migrationFiles.ReadFile("migrations/0011_audit_history_survives_delete.sql")
+func TestBaselinePreservesAuditHistoryOnDocumentDeletion(t *testing.T) {
+	contents, err := migrationFiles.ReadFile("migrations/" + baselineMigration)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statements := splitMigrationSQL(string(contents))
-	if len(statements) != 2 {
-		t.Fatalf("statements = %d, want 2 (drop, then re-add)", len(statements))
-	}
-	if !dropForeignKeyIfExistsPattern.MatchString(statements[0]) {
-		t.Fatalf("first statement is not a drop-if-exists: %q", statements[0])
-	}
-	if !addConstraintIfMissingPattern.MatchString(statements[1]) {
-		t.Fatalf("second statement is not an add-if-missing: %q", statements[1])
-	}
-	if !strings.Contains(statements[1], "ON DELETE SET NULL") {
-		t.Fatalf("audit history must survive document deletion: %q", statements[1])
+	if !strings.Contains(string(contents), "fk_application_audit_logs_document FOREIGN KEY (document_id) REFERENCES documents (id) ON DELETE SET NULL") {
+		t.Fatal("audit history must survive document deletion")
 	}
 }
 
@@ -91,9 +81,8 @@ func TestDeleteDocumentKeepsAuditHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	core := StoredDocument{FileName: title + ".pdf", StoragePath: storagePath, FileType: "pdf", FileHash: title, CreatedAt: now, UpdatedAt: now}
 	document := Document{Title: title, OriginalFilename: title + ".pdf", StoragePath: storagePath, SourceType: "pdf", MimeType: "application/pdf", Status: "NEEDS_REVIEW", ProcessingStage: "IMPORTED", FileHash: title, ImportSource: "UPLOAD", ImportedBy: "tester", QualityProfile: "STANDARD", CreatedAt: now, UpdatedAt: now}
-	if err := createDocumentBundle(db, &core, &document); err != nil {
+	if err := db.Create(&document).Error; err != nil {
 		t.Fatal(err)
 	}
 	upload := AuditLog{DocumentID: &document.ID, UserID: "tester", Action: "DOCUMENT_UPLOADED", Details: title, CreatedAt: time.Now()}

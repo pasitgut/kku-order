@@ -25,7 +25,7 @@ func vacantPositions(db *gorm.DB) ([]VacantPosition, error) {
 		Position   string
 	}
 	err := db.Table("appointments AS a").Select("a.document_id, a.position").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
 		Where("a.directory_user_id IS NULL AND TRIM(COALESCE(a.full_name, '')) = '' AND TRIM(COALESCE(a.position, '')) <> ''").
 		Scan(&rows).Error
@@ -188,7 +188,7 @@ func assignPositionHolder(tx *gorm.DB, title string, personID uint, startsOn *ti
 func linkPendingByPosition(db *gorm.DB, personID uint) (int, error) {
 	count := func() (int64, error) {
 		var total int64
-		err := db.Table("appointments AS a").Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		err := db.Table("appointments AS a").Joins("JOIN documents AS d ON d.id = a.document_id").
 			Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
 			Where("a.directory_user_id = ? AND a.name_match_method = ?", personID, matchMethodPosition).
 			Count(&total).Error

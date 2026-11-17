@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type DirectoryPersonRevision struct {
@@ -118,7 +119,7 @@ func updateDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 		var updated DirectoryUser
 		err := db.Transaction(func(tx *gorm.DB) error {
 			var person DirectoryPerson
-			if err := tx.First(&person, personID).Error; err != nil {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&person, personID).Error; err != nil {
 				return err
 			}
 			var profile DirectoryPersonProfile
@@ -172,6 +173,9 @@ func updateDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 				return err
 			}
 			encodedFlagsValue := string(encodedFlags)
+			if err := rememberPreviousName(tx, person, payload.FirstName, payload.LastName, sourceManual); err != nil {
+				return err
+			}
 			person.Prefix = payload.Prefix
 			person.FirstName = payload.FirstName
 			person.LastName = payload.LastName

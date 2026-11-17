@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -53,10 +54,7 @@ type directoryCandidate struct {
 	Score         float32 `json:"score"`
 }
 
-// matchDirectoryUser resolves an OCR name against the directory. A stored
-// alias is a decision a reviewer already made, so it wins over any computed
-// score. Anything that does not resolve to exactly one person is reported
-// with the reason, so the reviewer sees why rather than a bare "not found".
+// matchDirectoryUser checks current names, previous names, and trusted OCR aliases before fuzzy scoring.
 func matchDirectoryUser(name string, users []DirectoryUser, aliases map[string]uint) directoryMatch {
 	if len(users) == 0 {
 		return directoryMatch{Method: matchMethodEmpty}
@@ -65,26 +63,31 @@ func matchDirectoryUser(name string, users []DirectoryUser, aliases map[string]u
 	if normalized == "" {
 		return directoryMatch{Method: matchMethodNotFound}
 	}
-	if userID, ok := aliases[normalized]; ok {
-		for _, user := range users {
-			if user.ID == userID {
-				return directoryMatch{User: user, Score: 1, Method: matchMethodAlias, Matched: true}
-			}
+	exact := make([]DirectoryUser, 0, 2)
+	for _, user := range users {
+		if directoryUserKey(user) == normalized || user.ID == aliases[normalized] && user.ID != 0 || slices.Contains(user.PreviousNames, normalized) {
+			exact = append(exact, user)
 		}
+	}
+	switch len(exact) {
+	case 0:
+	case 1:
+		method := matchMethodExact
+		if directoryUserKey(exact[0]) != normalized {
+			method = matchMethodAlias
+		}
+		return directoryMatch{User: exact[0], Score: 1, Method: method, Matched: true}
+	default:
+		return directoryMatch{Method: matchMethodAmbiguous, Candidates: candidatesFor(exact, 1)}
 	}
 
 	ocrFirst, ocrLast := splitPersonName(name)
-	exact := make([]DirectoryUser, 0, 2)
 	best := DirectoryUser{}
 	bestScore := float32(0)
 	scored := make([]directoryCandidate, 0, len(users))
 	for _, user := range users {
 		key := directoryUserKey(user)
 		if key == "" {
-			continue
-		}
-		if key == normalized {
-			exact = append(exact, user)
 			continue
 		}
 		userFirst, userLast := directoryUserNameParts(user)
@@ -103,12 +106,6 @@ func matchDirectoryUser(name string, users []DirectoryUser, aliases map[string]u
 		}
 	}
 
-	switch {
-	case len(exact) == 1:
-		return directoryMatch{User: exact[0], Score: 1, Method: matchMethodExact, Matched: true}
-	case len(exact) > 1:
-		return directoryMatch{Method: matchMethodAmbiguous, Candidates: candidatesFor(exact, 1)}
-	}
 	if bestScore > 0 {
 		return directoryMatch{User: best, Score: bestScore, Method: matchMethodFuzzy, Matched: true}
 	}
@@ -192,15 +189,22 @@ func matchAppointments(appointments []Appointment, users []DirectoryUser, aliase
 	return weak
 }
 
-// suggestCandidates offers the directory people an unlinked, named row might be. Rows
+// suggestCandidates offers matches for named rows and reopens automatic links that became ambiguous. Rows
 // without a name have nothing to match by, so their method (EX_OFFICIO) is left alone.
 func suggestCandidates(appointments []Appointment, users []DirectoryUser, aliases map[string]uint) {
 	for index := range appointments {
 		appointment := &appointments[index]
-		if appointment.DirectoryUserID != nil || strings.TrimSpace(appointment.FullName) == "" {
+		if appointment.NameMatchMethod == matchMethodManual || strings.TrimSpace(appointment.FullName) == "" {
 			continue
 		}
 		match := matchDirectoryUser(appointment.FullName, users, aliases)
+		if appointment.DirectoryUserID != nil {
+			if match.Method != matchMethodAmbiguous {
+				continue
+			}
+			appointment.DirectoryUserID = nil
+			appointment.DirectoryUser = nil
+		}
 		appointment.Candidates = candidatesToOffer(match)
 		appointment.NameMatchMethod = match.Method
 	}
@@ -218,9 +222,6 @@ func applyMatchToAppointment(appointment *Appointment, match directoryMatch) {
 	appointment.DirectoryUserID = &userID
 	appointment.NameMatchScore = match.Score
 	appointment.Confidence = minConfidence(appointment.Confidence, match.Score)
-	if name := displayDirectoryName(match.User); name != "" {
-		appointment.FullName = name
-	}
 	if appointment.Position == "" {
 		appointment.Position = chooseNonEmpty(match.User.PositionTitle, match.User.JobTitle)
 	}

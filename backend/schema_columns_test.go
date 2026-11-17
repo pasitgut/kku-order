@@ -22,6 +22,10 @@ func migrationTableColumns(t *testing.T) map[string]map[string]bool {
 	createPattern := regexp.MustCompile(`(?is)^CREATE TABLE(?:\s+IF NOT EXISTS)?\s+` + "`?" + `(\w+)` + "`?" + `\s*\((.*)\)[^)]*$`)
 	alterPattern := regexp.MustCompile(`(?is)^ALTER TABLE\s+` + "`?" + `(\w+)` + "`?" + `\s+(.*)$`)
 	addColumnPattern := regexp.MustCompile(`(?is)^ADD\s+(?:COLUMN\s+)?(?:IF NOT EXISTS\s+)?` + "`?" + `(\w+)` + "`?")
+	renamePattern := regexp.MustCompile(`(?is)^RENAME TABLE\s+(.+)$`)
+	renamePairPattern := regexp.MustCompile(`(?is)^\s*(\w+)\s+TO\s+(\w+)\s*$`)
+	dropTablePattern := regexp.MustCompile(`(?is)^DROP TABLE\s+(?:IF EXISTS\s+)?(\w+)$`)
+	dropColumnPattern := regexp.MustCompile(`(?is)^DROP COLUMN\s+(?:IF EXISTS\s+)?(\w+)$`)
 	constraintWords := map[string]bool{"PRIMARY": true, "KEY": true, "INDEX": true, "UNIQUE": true, "CONSTRAINT": true, "FOREIGN": true, "FULLTEXT": true, "CHECK": true}
 
 	tables := map[string]map[string]bool{}
@@ -39,6 +43,19 @@ func migrationTableColumns(t *testing.T) map[string]map[string]bool {
 		}
 		for _, statement := range splitMigrationSQL(string(raw)) {
 			statement = strings.TrimSpace(statement)
+			if m := dropTablePattern.FindStringSubmatch(statement); m != nil {
+				delete(tables, m[1])
+				continue
+			}
+			if m := renamePattern.FindStringSubmatch(statement); m != nil {
+				for _, pair := range strings.Split(m[1], ",") {
+					if p := renamePairPattern.FindStringSubmatch(pair); p != nil {
+						tables[p[2]] = tables[p[1]]
+						delete(tables, p[1])
+					}
+				}
+				continue
+			}
 			if m := createPattern.FindStringSubmatch(statement); m != nil {
 				columns := ensure(m[1])
 				for _, item := range splitTopLevelCommas(m[2]) {
@@ -53,6 +70,10 @@ func migrationTableColumns(t *testing.T) map[string]map[string]bool {
 			if m := alterPattern.FindStringSubmatch(statement); m != nil {
 				columns := ensure(m[1])
 				for _, item := range splitTopLevelCommas(m[2]) {
+					if d := dropColumnPattern.FindStringSubmatch(strings.TrimSpace(item)); d != nil {
+						delete(columns, d[1])
+						continue
+					}
 					if a := addColumnPattern.FindStringSubmatch(strings.TrimSpace(item)); a != nil && !constraintWords[strings.ToUpper(a[1])] {
 						columns[a[1]] = true
 					}
@@ -102,10 +123,8 @@ func TestGormModelsMatchMigrationColumns(t *testing.T) {
 		model any
 		table string
 	}{
-		{Document{}, "document_workflows"},
+		{Document{}, "documents"},
 		{ExtractedField{}, "extracted_fields"},
-		{OCRPage{}, "ocr_pages"},
-		{OCRLine{}, "ocr_lines"},
 		{Appointment{}, "appointments"},
 		{DocumentReference{}, "document_references"},
 		{DocumentRevision{}, "document_revisions"},
@@ -114,16 +133,17 @@ func TestGormModelsMatchMigrationColumns(t *testing.T) {
 		{DirectoryPerson{}, "directory_people"},
 		{DirectoryPersonProfile{}, "directory_person_profiles"},
 		{PersonNameAlias{}, "person_name_aliases"},
+		{DirectoryPreviousName{}, "directory_previous_names"},
+		{DocumentConfirmation{}, "document_confirmations"},
 		{UserSyncRun{}, "user_sync_runs"},
 		{AppSetting{}, "app_settings"},
 		{UserProfile{}, "user_profiles"},
-		{StoredDocument{}, "documents"},
-		{StoredOrderType{}, "order_types"},
-		{StoredUser{}, "users"},
-		{StoredOrder{}, "orders"},
-		{StoredCommittee{}, "committees"},
-		{StoredCommitteeRole{}, "committee_roles"},
-		{StoredCommitteeMember{}, "committee_members"},
+		{PositionHolder{}, "position_holders"},
+		{DirectoryPersonRevision{}, "directory_person_revisions"},
+		{DriveSyncRun{}, "drive_sync_runs"},
+		{DriveSyncFolder{}, "drive_sync_folders"},
+		{DriveSyncItem{}, "drive_sync_items"},
+		{DriveImportedFile{}, "drive_imported_files"},
 	}
 
 	for _, m := range models {
@@ -151,10 +171,10 @@ func TestGormModelsMatchMigrationColumns(t *testing.T) {
 	}
 }
 
-// Update maps written to document_workflows must only name columns the
+// Update maps written to documents must only name columns the
 // migrations create; a missing column fails the UPDATE with a 500 at runtime.
 func TestWorkflowUpdateMapsUseMigratedColumns(t *testing.T) {
-	columns := migrationTableColumns(t)["document_workflows"]
+	columns := migrationTableColumns(t)["documents"]
 	maps := map[string]map[string]any{
 		"replacedFileUpdates": replacedFileUpdates(replacementFile{}, "user", time.Now()),
 		"rescanResetUpdates":  rescanResetUpdates(),
@@ -163,7 +183,7 @@ func TestWorkflowUpdateMapsUseMigratedColumns(t *testing.T) {
 	for name, updates := range maps {
 		for key := range updates {
 			if !columns[key] {
-				t.Errorf("%s writes column %q, which document_workflows does not have", name, key)
+				t.Errorf("%s writes column %q, which documents does not have", name, key)
 			}
 		}
 	}

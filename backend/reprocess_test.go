@@ -131,11 +131,11 @@ func TestRescanResetUpdatesClearsConfirmationAndRetryState(t *testing.T) {
 	if u["status"] != "PROCESSING" || u["processing_stage"] != "QUEUED" || u["ocr_error"] != "" {
 		t.Fatalf("status/stage/error not reset: %v", u)
 	}
-	if u["confirmed_by"] != "" {
-		t.Fatalf("confirmed_by = %v, want empty", u["confirmed_by"])
+	if _, ok := u["confirmed_by"]; ok {
+		t.Fatal("rescan must preserve the previous confirming user")
 	}
-	if v, ok := u["confirmed_at"]; !ok || v != nil {
-		t.Fatalf("confirmed_at = %v (present=%t), want nil", v, ok)
+	if _, ok := u["confirmed_at"]; ok {
+		t.Fatal("rescan must preserve the previous confirmation time")
 	}
 	if u["extraction_attempts"] != 0 || u["extraction_last_status"] != 0 {
 		t.Fatalf("retry counters not reset: %v", u)

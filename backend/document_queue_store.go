@@ -80,7 +80,7 @@ func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started ti
 }
 
 // SaveExtraction เขียนผลตาม extractionRecords ในทรานแซกชันเดียว แล้วล้าง retry state
-// ลำดับ: Updates ของ document -> ลบแถวเดิม -> สร้าง fields, appointments, references, ocr_pages (แล้ว ocr_lines ที่ผูก ocr_page_id) -> sync core
+// ผล OCR เก็บในไฟล์ JSON ส่วนข้อมูลสกัดยังบันทึกลง DB ตาม workflow เดิม
 func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResult, started time.Time) error {
 	threshold := loadOCRSettingsOrDefault(g.settings).ReviewThreshold
 	rec := buildExtractionRecords(result, threshold)
@@ -111,67 +111,39 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 		for key, value := range retryResetUpdates() {
 			rec.Updates[key] = value
 		}
-		if err := tx.Model(&Document{}).Where("id = ?", docID).Updates(rec.Updates).Error; err != nil {
-			return err
-		}
 		// หน้าที่ที่ผู้ตรวจเขียนเพิ่มไม่ได้มาจาก OCR สแกนใหม่แล้วต้องยังอยู่กับฝ่ายเดิม
 		var previous []Appointment
 		if err := tx.Select("department", "extra_duties").Where("document_id = ? AND COALESCE(extra_duties, '') <> ''", docID).Find(&previous).Error; err != nil {
 			return err
 		}
 		carryExtraDuties(previous, rec.Appointments)
-		for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
-			if err := tx.Where("document_id = ?", docID).Delete(model).Error; err != nil {
-				return err
-			}
-		}
-		for i := range rec.Fields {
-			rec.Fields[i].DocumentID = docID
-		}
-		for i := range rec.Appointments {
-			rec.Appointments[i].DocumentID = docID
-		}
-		for i := range rec.References {
-			rec.References[i].DocumentID = docID
-		}
-		if len(rec.Fields) > 0 {
-			if err := tx.Create(&rec.Fields).Error; err != nil {
-				return err
-			}
-		}
-		if len(rec.Appointments) > 0 {
-			if err := tx.Create(&rec.Appointments).Error; err != nil {
-				return err
-			}
-		}
-		if len(rec.References) > 0 {
-			if err := tx.Create(&rec.References).Error; err != nil {
-				return err
-			}
-		}
-		pageIDs := make(map[int]uint, len(rec.OCRPages))
-		for i := range rec.OCRPages {
-			rec.OCRPages[i].DocumentID = docID
-			if err := tx.Create(&rec.OCRPages[i]).Error; err != nil {
-				return err
-			}
-			pageIDs[rec.OCRPages[i].PageNo] = rec.OCRPages[i].ID
-		}
-		for i := range rec.OCRLines {
-			rec.OCRLines[i].DocumentID = docID
-			rec.OCRLines[i].OCRPageID = pageIDs[rec.OCRLines[i].PageNo]
-			if err := tx.Create(&rec.OCRLines[i]).Error; err != nil {
-				return err
-			}
-		}
-		var updated Document
-		if err := tx.First(&updated, docID).Error; err != nil {
+		ocrText, ocrPages := extractionOCR(rec, docID)
+		path, err := writeExtractionFile(doc.StoragePath, extractionFile{
+			DocumentID: docID, Result: result, Fields: rec.Fields,
+			Appointments: rec.Appointments, References: rec.References, Updates: rec.Updates,
+			OCRText: ocrText, OCRPages: ocrPages,
+		})
+		if err != nil {
 			return err
 		}
-		if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+		var current Document
+		if err := tx.First(&current, docID).Error; err != nil {
 			return err
 		}
-		if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
+		updates := map[string]any{
+			"status": status, "processing_stage": stage, "ocr_provider": result.Engine,
+			"ocr_error": "", "processing_finished_at": rec.Updates["processing_finished_at"],
+			"processing_duration_ms": rec.Updates["processing_duration_ms"],
+		}
+		for key, value := range retryResetUpdates() {
+			updates[key] = value
+		}
+		if current.ContentState == "UNSAVED" {
+			updates["extraction_json_path"] = path
+		} else {
+			updates["pending_extraction_json_path"] = path
+		}
+		if err := tx.Model(&Document{}).Where("id = ?", docID).Updates(updates).Error; err != nil {
 			return err
 		}
 		return tx.Create(&AuditLog{DocumentID: &docID, UserID: auditSystemUser("document-queue"), Action: "DOCUMENT_PROCESSED", Details: fmt.Sprintf("engine=%s pages=%d fields=%d appointments=%d", result.Engine, len(rec.OCRPages), len(rec.Fields), len(rec.Appointments))}).Error

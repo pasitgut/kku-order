@@ -36,9 +36,8 @@ func createReviewDocument(t *testing.T, db *gorm.DB, fields map[string]string) (
 	t.Helper()
 	title := "ทดสอบวันที่-" + time.Now().Format("150405.000000000")
 	now := time.Now()
-	core := StoredDocument{FileName: title + ".pdf", StoragePath: "/tmp/" + title + ".pdf", FileType: "pdf", FileHash: title, CreatedAt: now, UpdatedAt: now}
-	document := Document{Title: title, OriginalFilename: title + ".pdf", StoragePath: core.StoragePath, SourceType: "pdf", MimeType: "application/pdf", Status: "REVIEW", ProcessingStage: "COMPLETED", FileHash: title, ImportSource: "UPLOAD", ImportedBy: "tester", QualityProfile: "STANDARD", CreatedAt: now, UpdatedAt: now}
-	if err := createDocumentBundle(db, &core, &document); err != nil {
+	document := Document{Title: title, OriginalFilename: title + ".pdf", StoragePath: "/tmp/" + title + ".pdf", SourceType: "pdf", MimeType: "application/pdf", Status: "REVIEW", ProcessingStage: "COMPLETED", FileHash: title, ImportSource: "UPLOAD", ImportedBy: "tester", QualityProfile: "STANDARD", CreatedAt: now, UpdatedAt: now}
+	if err := db.Create(&document).Error; err != nil {
 		t.Fatal(err)
 	}
 	ids := map[string]uint{}

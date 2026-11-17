@@ -165,7 +165,7 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 		Select(`a.id, a.directory_user_id, a.full_name, a.position, a.committee_role, a.responsibilities, COALESCE(a.extra_duties, '') AS extra_duties,
 			d.id AS document_id, d.order_no, d.title, d.issuing_unit, d.issued_date, d.effective_date, d.expiry_date,
 			d.status, d.cancellation_reason, d.replaced_by_order_no, COALESCE(ef.value, '') AS effective_text`).
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Joins("LEFT JOIN extracted_fields AS ef ON ef.document_id = d.id AND ef.field_key = 'effective_date'").
 		Where(historyDocuments)
 	if filter.PersonID != 0 {
@@ -215,6 +215,27 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 	if err := query.Order("a.id").Scan(&rows).Error; err != nil {
 		return appointmentReport{}, err
 	}
+	documentIDs := make(map[uint]bool)
+	for _, row := range rows {
+		documentIDs[row.DocumentID] = true
+	}
+	confirmedNames := make(map[uint]ConfirmationName)
+	if len(documentIDs) > 0 {
+		ids := make([]uint, 0, len(documentIDs))
+		for id := range documentIDs {
+			ids = append(ids, id)
+		}
+		var confirmations []DocumentConfirmation
+		latest := db.Model(&DocumentConfirmation{}).Select("MAX(id)").Where("document_id IN ?", ids).Group("document_id")
+		if err := db.Where("id IN (?)", latest).Find(&confirmations).Error; err != nil {
+			return appointmentReport{}, err
+		}
+		for _, confirmation := range confirmations {
+			for _, name := range confirmation.Names {
+				confirmedNames[name.AppointmentID] = name
+			}
+		}
+	}
 
 	unique := map[uint]bool{}
 	if filter.PersonID != 0 {
@@ -257,6 +278,9 @@ func buildAppointmentReport(db *gorm.DB, filter reportFilter, today time.Time) (
 		name, key := strings.TrimSpace(row.FullName), ""
 		if row.DirectoryUserID != nil && names[*row.DirectoryUserID] != "" {
 			name, key = names[*row.DirectoryUserID], "u"+strconv.FormatUint(uint64(*row.DirectoryUserID), 10)
+		}
+		if confirmed, ok := confirmedNames[row.ID]; ok {
+			name = confirmed.displayName()
 		}
 		if name == "" {
 			// แถวโดยตำแหน่งที่ยังไม่ผูกคน แสดงตำแหน่งแทนชื่อ

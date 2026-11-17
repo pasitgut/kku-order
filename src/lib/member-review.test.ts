@@ -32,19 +32,19 @@ test("matchState keeps unlinked names out of the good tone", () => {
   assert.equal(matchState(rows[0]).tone, "good");
   assert.equal(matchState(rows[1]).tone, "warning");
   assert.equal(matchState(rows[1]).label, "ใกล้เคียง 86%");
-  // ชื่อที่ผูกไม่ได้เป็นคนนอกคณะ แสดงโทนกลาง ไม่ใช่งานค้าง
-  assert.equal(matchState(rows[2]).tone, "neutral");
+  // ชื่อซ้ำต้องให้ผู้ตรวจเลือก ส่วนชื่อคนนอกคณะแสดงโทนกลาง
+  assert.equal(matchState(rows[2]).tone, "danger");
   assert.equal(matchState(rows[2]).label, "ชื่อซ้ำ 2 คน");
   assert.equal(matchState(rows[4]).label, "ไม่อยู่ในระบบ");
   assert.equal(matchState(rows[4]).tone, "neutral");
 });
 
 test("countByFilter follows the reviewer filters", () => {
-  assert.deepEqual(countByFilter(rows), { all: 5, warning: 1, pending: 1, verified: 1 });
+  assert.deepEqual(countByFilter(rows), { all: 5, warning: 2, pending: 1, verified: 1 });
 });
 
 test("filterMembers combines filter, department and query", () => {
-  assert.deepEqual(filterMembers(rows, { filter: "warning", department: "", query: "" }).map((row) => row.id), [2]);
+  assert.deepEqual(filterMembers(rows, { filter: "warning", department: "", query: "" }).map((row) => row.id), [2, 3]);
   assert.deepEqual(filterMembers(rows, { filter: "all", department: "ที่ปรึกษา", query: "" }).map((row) => row.id), [4]);
   assert.deepEqual(filterMembers(rows, { filter: "all", department: "", query: "นักวิชาการ" }).map((row) => row.id), [5]);
   assert.deepEqual(filterMembers(rows, { filter: "all", department: "ไม่ระบุฝ่าย", query: "" }).map((row) => row.id), [5]);
@@ -98,7 +98,7 @@ test("ex-officio row waits for a reviewer to choose the person", () => {
 
 test("isExternalName marks named rows nobody could link, except when there is no directory yet", () => {
   assert.equal(isExternalName(appointment({ nameMatchMethod: "NOT_FOUND" })), true);
-  assert.equal(isExternalName(appointment({ nameMatchMethod: "AMBIGUOUS" })), true);
+  assert.equal(isExternalName(appointment({ nameMatchMethod: "AMBIGUOUS" })), false);
   assert.equal(isExternalName(appointment({ nameMatchMethod: "FUZZY", candidates: [{ userId: 9, fullName: "สมชาย ใจดี", positionTitle: "", score: 0.86 }] })), true);
   assert.equal(isExternalName(appointment({ directoryUserId: 11, nameMatchMethod: "EXACT" })), false);
   assert.equal(isExternalName(appointment({ fullName: "", position: "คณบดี", nameMatchMethod: "EX_OFFICIO" })), false);

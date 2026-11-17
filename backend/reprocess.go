@@ -56,28 +56,19 @@ func (s gormReprocessStore) RequestReprocess(id uint, actor string, now time.Tim
 		if result.RowsAffected == 0 {
 			return errDocumentBusy
 		}
-		var updated Document
-		if err := tx.First(&updated, id).Error; err != nil {
-			return err
-		}
-		if err := syncCoreConfirmation(tx, &updated); err != nil {
-			return err
-		}
 		docID := id
 		return tx.Create(&AuditLog{DocumentID: &docID, UserID: actor, Action: action, CreatedAt: now}).Error
 	})
 }
 
 // rescanResetUpdates คืนค่าที่ทำให้เอกสารกลับเข้าคิวเพื่อสแกนไฟล์เดิมใหม่
-// ล้างการยืนยัน (เหมือนอัปโหลดทับ) และรีเซ็ตการลองใหม่ ไม่ลบข้อมูลที่สกัดไว้ จะถูกแทนเมื่อผลใหม่ถูกบันทึก
+// สถานะ PROCESSING ระงับการยืนยัน แต่เก็บข้อมูลเดิมไว้จนกว่าผู้ใช้จะเลือกผลใหม่
 func rescanResetUpdates() map[string]any {
 	updates := map[string]any{
 		"status":                "PROCESSING",
 		"processing_stage":      "QUEUED",
 		"ocr_error":             "",
 		"processing_started_at": nil,
-		"confirmed_by":          "",
-		"confirmed_at":          nil,
 	}
 	for key, value := range retryResetUpdates() {
 		updates[key] = value

@@ -99,7 +99,7 @@ func unlinkedNameRows(db *gorm.DB, text string, exact bool) ([]unlinkedAppointme
 	}
 	var rows []unlinkedAppointment
 	query := db.Table("appointments AS a").Select("a.id, a.document_id, a.full_name, a.position, d.status").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where("a.directory_user_id IS NULL AND TRIM(COALESCE(a.full_name, '')) <> '' AND "+historyDocuments).
 		Where("a.full_name LIKE ? ESCAPE '!'", "%"+auditLikeEscaper.Replace(probe)+"%").
 		Order("a.id DESC")
@@ -265,7 +265,7 @@ func withinRange(issued, from, to *time.Time) bool {
 // confirmedOrderCounts นับคำสั่งที่ยืนยันแล้วต่อคน ids ว่างคือนับทุกคน
 func confirmedOrderCounts(db *gorm.DB, ids []uint, from, to *time.Time) (map[uint]int, error) {
 	query := db.Table("appointments AS a").Select("a.directory_user_id AS person_id, COUNT(DISTINCT a.document_id) AS orders").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where("d.status = ? AND a.directory_user_id IS NOT NULL", "CONFIRMED").Group("a.directory_user_id")
 	if len(ids) > 0 {
 		query = query.Where("a.directory_user_id IN ?", ids)
@@ -313,7 +313,8 @@ func searchSuggestHandler(db *gorm.DB) gin.HandlerFunc {
 		if key != "" {
 			pattern := "%" + auditLikeEscaper.Replace(key) + "%"
 			var err error
-			matched, err = searchPeople(db, db.Where("REPLACE(CONCAT(first_name, last_name), ' ', '') LIKE ? ESCAPE '!'", pattern).Limit(50))
+			matched, err = searchPeople(db, db.Where(`REPLACE(CONCAT(first_name, last_name), ' ', '') LIKE ? ESCAPE '!'
+				OR EXISTS (SELECT 1 FROM directory_previous_names AS n WHERE n.directory_person_id = directory_people.id AND n.normalized_name LIKE ? ESCAPE '!')`, pattern, pattern).Limit(50))
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหารายชื่อได้"})
 				return
@@ -376,6 +377,36 @@ func searchSuggestHandler(db *gorm.DB) gin.HandlerFunc {
 		for _, document := range documents {
 			result.Orders = append(result.Orders, orderSuggestion{ID: document.ID, OrderNo: document.OrderNo, Title: document.Title, IssuedDate: document.IssuedDate, Status: document.Status})
 		}
+		if len(result.Orders) < suggestionLimit {
+			ids, err := searchOCRFiles(db, text)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหาผลสกัดได้"})
+				return
+			}
+			var unsaved []Document
+			if err := db.Where("id IN ? AND content_state = ?", ids, "UNSAVED").Order("id DESC").Find(&unsaved).Error; err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหาผลสกัดได้"})
+				return
+			}
+			seen := make(map[uint]bool, len(result.Orders))
+			for _, order := range result.Orders {
+				seen[order.ID] = true
+			}
+			for _, document := range unsaved {
+				if seen[document.ID] {
+					continue
+				}
+				snapshot, err := readExtractionFile(document.ExtractionJSONPath, document.ID)
+				if err != nil || applyExtractionPreview(&document, snapshot, document.ExtractionJSONPath) != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
+					return
+				}
+				result.Orders = append(result.Orders, orderSuggestion{ID: document.ID, OrderNo: document.OrderNo, Title: document.Title, IssuedDate: document.IssuedDate, Status: document.Status})
+				if len(result.Orders) == suggestionLimit {
+					break
+				}
+			}
+		}
 		c.JSON(http.StatusOK, gin.H{"data": result})
 	}
 }
@@ -416,7 +447,7 @@ func fiscalYearRangeHandler(db *gorm.DB) gin.HandlerFunc {
 		var result struct {
 			Earliest *time.Time `gorm:"column:earliest"`
 		}
-		if err := db.Table("document_workflows AS d").
+		if err := db.Table("documents AS d").
 			Joins("JOIN appointments AS a ON a.document_id = d.id").
 			Select("MIN(d.issued_date) AS earliest").
 			Where(historyDocuments).
@@ -455,7 +486,7 @@ func loadHistory(db *gorm.DB, today time.Time, condition string, args ...any) ([
 	}
 	err := db.Table("appointments AS a").
 		Select("d.id AS document_id, d.order_no, d.title, d.status, d.issued_date, d.expiry_date, a.committee_role, a.position").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where(historyDocuments).Where(condition, args...).
 		Order("d.issued_date IS NULL, d.issued_date DESC, d.order_no DESC, a.id").Scan(&rows).Error
 	if err != nil {

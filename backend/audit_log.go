@@ -81,7 +81,7 @@ type auditLogStore interface {
 }
 
 // buildAuditLogWhere turns the filters into a SQL condition over the aliases
-// a (application_audit_logs) and w (document_workflows). An empty filter gives
+// a (application_audit_logs) and w (documents). An empty filter gives
 // an empty condition.
 func buildAuditLogWhere(filter auditLogFilter) (string, []any) {
 	var clauses []string
@@ -324,7 +324,7 @@ const auditSelectColumns = `a.id, a.created_at, a.user_id, a.action, a.document_
 	COALESCE(w.title, '') AS document_title, (w.id IS NOT NULL) AS document_exists`
 
 func (s gormAuditLogStore) query(filter auditLogFilter) *gorm.DB {
-	query := s.db.Table("application_audit_logs AS a").Joins("LEFT JOIN document_workflows AS w ON w.id = a.document_id")
+	query := s.db.Table("application_audit_logs AS a").Joins("LEFT JOIN documents AS w ON w.id = a.document_id")
 	if where, args := buildAuditLogWhere(filter); where != "" {
 		query = query.Where(where, args...)
 	}

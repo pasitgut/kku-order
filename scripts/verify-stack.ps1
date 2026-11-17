@@ -34,8 +34,9 @@ if (-not $apiHealthy) {
 }
 
 $migrationCount = (& docker compose @composeEnvArgs exec -T mysql mysql -udocflow -pdocflow docflow -N -B -e "SELECT COUNT(*) FROM schema_migrations;").Trim()
-if ([int]$migrationCount -lt 3) {
-    throw "ไม่พบ migration ครบตามที่คาดไว้: $migrationCount"
+$baselineCount = (& docker compose @composeEnvArgs exec -T mysql mysql -udocflow -pdocflow docflow -N -B -e "SELECT COUNT(*) FROM schema_migrations WHERE version = '0001_clean_baseline.sql';").Trim()
+if ([int]$baselineCount -ne 1) {
+    throw "ไม่พบ baseline migration: $baselineCount"
 }
 
 $web = Invoke-WebRequest -Uri "http://localhost:3000" -TimeoutSec 10

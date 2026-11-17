@@ -42,7 +42,7 @@ func orderIssuer(issuedBy string) string {
 func backfillIssuingUnits(db *gorm.DB) error {
 	var sources []ExtractedField
 	err := db.Table("extracted_fields AS f").Select("f.*").
-		Joins("JOIN document_workflows AS d ON d.id = f.document_id").
+		Joins("JOIN documents AS d ON d.id = f.document_id").
 		Where("f.field_key = ? AND d.issuing_unit = ''", "issued_by").
 		Where("NOT EXISTS (SELECT 1 FROM extracted_fields AS u WHERE u.document_id = f.document_id AND u.field_key = ?)", issuingUnitKey).
 		Scan(&sources).Error

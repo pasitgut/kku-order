@@ -246,14 +246,6 @@ func (i *GoogleDriveImporter) updateImportedDriveSource(ctx context.Context, imp
 				if document.Title == oldTitle {
 					updates["title"] = strings.TrimSuffix(fileName, filepath.Ext(fileName))
 				}
-				extension := strings.TrimPrefix(strings.ToLower(filepath.Ext(fileName)), ".")
-				if extension != "" {
-					if err := tx.Model(&StoredDocument{}).Where("id = ?", document.ID).Updates(map[string]any{
-						"file_name": fileName, "file_type": extension, "updated_at": time.Now(),
-					}).Error; err != nil {
-						return err
-					}
-				}
 			}
 		}
 		if len(updates) == 0 {
@@ -333,7 +325,7 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 		if storeErr != nil {
 			return storeErr
 		}
-		var document StoredDocument
+		var document Document
 		if err := tx.Where("file_hash = ?", hash).Take(&document).Error; err != nil {
 			return err
 		}
@@ -346,7 +338,7 @@ func (i *GoogleDriveImporter) importFile(ctx context.Context, file *drive.File, 
 		}).Error; err != nil {
 			return err
 		}
-		if err := tx.Create(&DriveImportedFile{FileID: file.Id, DocumentID: document.ID, FileHash: hash, WebViewLink: webViewLink, ImportedAt: time.Now()}).Error; err != nil {
+		if err := tx.Create(&DriveImportedFile{FileID: file.Id, DocumentID: uint64(document.ID), FileHash: hash, WebViewLink: webViewLink, ImportedAt: time.Now()}).Error; err != nil {
 			return err
 		}
 		status := "DUPLICATE"

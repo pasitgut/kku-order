@@ -19,6 +19,9 @@ import (
 )
 
 type updateDocumentRequest struct {
+	ExtractionVersion    string                `json:"extractionVersion"`
+	Confirm              bool                  `json:"confirm"`
+	ExpectedUpdatedAt    *time.Time            `json:"expectedUpdatedAt"`
 	Title                *string               `json:"title"`
 	OrderNo              *string               `json:"orderNo"`
 	OrderYearBE          *int                  `json:"orderYearBE"`
@@ -46,6 +49,7 @@ type fieldUpdateRequest struct {
 type appointmentRequest struct {
 	ID               uint    `json:"id"`
 	DirectoryUserID  *uint   `json:"directoryUserId"`
+	ManualMatch      bool    `json:"manualMatch"`
 	FullName         string  `json:"fullName" binding:"required"`
 	Position         string  `json:"position"`
 	Department       string  `json:"department"`
@@ -90,6 +94,10 @@ func searchDocuments(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหาข้อมูลได้"})
 			return
 		}
+		if err := hydrateUnsavedDocuments(documents); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"data": documents})
 	}
 }
@@ -114,6 +122,7 @@ func respondDirectoryUsers(c *gin.Context, users []DirectoryUser) {
 		return
 	}
 	filtered := make([]DirectoryUser, 0, len(users))
+	nameQuery := normalizePersonName(query)
 	for _, user := range users {
 		if (source == sourceManual && user.Source != sourceManual) || (source == sourceSynced && user.Source == sourceManual) {
 			continue
@@ -123,6 +132,12 @@ func respondDirectoryUsers(c *gin.Context, users []DirectoryUser) {
 			matched := false
 			for _, value := range values {
 				if strings.Contains(strings.ToLower(value), query) {
+					matched = true
+					break
+				}
+			}
+			for _, oldName := range user.PreviousNames {
+				if nameQuery != "" && strings.Contains(oldName, nameQuery) {
 					matched = true
 					break
 				}
@@ -242,6 +257,24 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			writeCancelledConflict(c, errDocumentCancelled)
 			return
 		}
+		var preview *extractionFile
+		previewPath := ""
+		if document.ContentState == "UNSAVED" || payload.ExtractionVersion != "" {
+			previewPath = document.ExtractionJSONPath
+			if document.ContentState != "UNSAVED" {
+				previewPath = document.PendingExtractionJSONPath
+			}
+			if previewPath == "" || payload.ExtractionVersion != extractionVersion(previewPath) || payload.Fields == nil || payload.Appointments == nil || payload.ExpectedUpdatedAt == nil {
+				c.JSON(http.StatusConflict, gin.H{"error": "ผลสกัดเปลี่ยนแล้ว กรุณาโหลดเอกสารใหม่"})
+				return
+			}
+			snapshot, err := readExtractionFile(previewPath, document.ID)
+			if err != nil || applyExtractionPreview(&document, snapshot, previewPath) != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
+				return
+			}
+			preview = &snapshot
+		}
 		changedBy := currentUserID(c)
 		updates := map[string]any{}
 		revisions := make([]DocumentRevision, 0)
@@ -347,7 +380,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				updates["effective_date"] = document.IssuedDate
 			}
 		}
-		if len(updates) == 0 {
+		if len(updates) == 0 && !payload.Confirm && payload.Fields == nil && payload.Appointments == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ไม่มีข้อมูลที่เปลี่ยนแปลง"})
 			return
 		}
@@ -355,8 +388,42 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			if err := lockEditableDocument(tx, document.ID); err != nil {
 				return err
 			}
+			var current Document
+			if err := tx.First(&current, document.ID).Error; err != nil {
+				return err
+			}
+			if (payload.ExpectedUpdatedAt != nil && !current.UpdatedAt.Equal(*payload.ExpectedUpdatedAt)) ||
+				current.Status == "CONFIRMED" || current.Status == "PROCESSING" {
+				return errDocumentChanged
+			}
+			if payload.Confirm && current.Status != "REVIEW" && current.Status != "NEEDS_REVIEW" && current.Status != documentReturned {
+				return errDocumentChanged
+			}
+			if preview != nil {
+				currentPath := current.PendingExtractionJSONPath
+				if current.ContentState == "UNSAVED" {
+					currentPath = current.ExtractionJSONPath
+				}
+				if currentPath != previewPath {
+					return errExtractionChanged
+				}
+				if err := materializeExtraction(tx, document.ID, *preview, &payload); err != nil {
+					return err
+				}
+				base := buildExtractionRecords(preview.Result, 0).Updates
+				delete(base, "ocr_text")
+				delete(base, "ocr_provider")
+				base["extraction_json_path"] = previewPath
+				base["pending_extraction_json_path"] = ""
+				base["content_state"] = "DRAFT"
+				base["confirmed_by"] = ""
+				base["confirmed_at"] = nil
+				if err := tx.Model(&Document{}).Where("id = ?", document.ID).Updates(base).Error; err != nil {
+					return err
+				}
+			}
 			if len(updates) > 0 {
-				if err := tx.Model(&document).Updates(updates).Error; err != nil {
+				if err := tx.Model(&Document{}).Where("id = ?", document.ID).Updates(updates).Error; err != nil {
 					return err
 				}
 			}
@@ -396,8 +463,13 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					appointment := Appointment{DocumentID: document.ID, FullName: truncateRunes(input.FullName, colLimitAppointmentFullName), Position: truncateRunes(input.Position, colLimitAppointmentPosition), Department: truncateRunes(input.Department, colLimitAppointmentDept), CommitteeRole: truncateRunes(input.CommitteeRole, colLimitAppointmentRole), Responsibilities: input.Responsibilities, ExtraDuties: input.ExtraDuties, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
 					before := previous[input.ID]
 					match := resolveAppointmentMatch(input, before.NameMatchMethod, directoryUsers, aliases)
+					if !input.ManualMatch && before.NameMatchMethod != matchMethodManual && input.DirectoryUserID != nil {
+						if currentMatch := matchDirectoryUser(input.FullName, directoryUsers, aliases); currentMatch.Method == matchMethodAmbiguous {
+							match = currentMatch
+						}
+					}
 					// คนเดิมที่ระบบผูกให้ (ชื่อตรง, เคยผูกไว้, ตามตำแหน่ง) คงที่มาเดิม ป้ายในหน้าเว็บจะได้ไม่กลายเป็น "เลือกเอง"
-					keptSystemLink := match.Method == matchMethodManual && before.DirectoryUserID != nil && match.User.ID == *before.DirectoryUserID && (before.NameMatchMethod == matchMethodExact || before.NameMatchMethod == matchMethodAlias || before.NameMatchMethod == matchMethodPosition)
+					keptSystemLink := !input.ManualMatch && match.Method == matchMethodManual && before.DirectoryUserID != nil && match.User.ID == *before.DirectoryUserID && (before.NameMatchMethod == matchMethodExact || before.NameMatchMethod == matchMethodAlias || before.NameMatchMethod == matchMethodPosition)
 					if keptSystemLink {
 						match.Method = before.NameMatchMethod
 					}
@@ -435,14 +507,46 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 			if err := tx.First(&updated, document.ID).Error; err != nil {
 				return err
 			}
-			if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
+			if err := tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: describeDocumentChanges(revisions, payload.Appointments != nil)}).Error; err != nil {
 				return err
 			}
-			if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
-				return err
+			if payload.Confirm {
+				var dateFields []ExtractedField
+				if err := tx.Where("document_id = ? AND field_key IN ?", document.ID, []string{"issued_date", "effective_date", "expiry_date"}).Find(&dateFields).Error; err != nil {
+					return err
+				}
+				if len(unreadableDates(dateFields)) > 0 {
+					return errUnreadableExtractionDates
+				}
+				if _, err := confirmNow(tx, updated, changedBy, "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล"); err != nil {
+					return err
+				}
+				if err := tx.Model(&Document{}).Where("id = ?", document.ID).Update("content_state", "CONFIRMED").Error; err != nil {
+					return err
+				}
 			}
-			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: changedBy, Action: "DOCUMENT_UPDATED", Details: describeDocumentChanges(revisions, payload.Appointments != nil)}).Error
+			updatedAt := time.Now().Truncate(time.Millisecond)
+			if !updatedAt.After(current.UpdatedAt) {
+				updatedAt = current.UpdatedAt.Add(time.Millisecond)
+			}
+			return tx.Model(&Document{}).Where("id = ?", document.ID).UpdateColumn("updated_at", updatedAt).Error
 		}); err != nil {
+			if errors.Is(err, errDocumentChanged) {
+				c.JSON(http.StatusConflict, gin.H{"error": "เอกสารเปลี่ยนแล้ว กรุณาโหลดเอกสารใหม่"})
+				return
+			}
+			if errors.Is(err, errAmbiguousConfirmationName) {
+				c.JSON(http.StatusConflict, gin.H{"error": "พบชื่อที่ตรงกับหลายคน กรุณาโหลดเอกสารใหม่และเลือกบุคคลก่อนยืนยัน"})
+				return
+			}
+			if errors.Is(err, errUnreadableExtractionDates) {
+				c.JSON(http.StatusConflict, gin.H{"error": "อ่านวันที่ไม่ได้ กรุณาแก้ในแท็บข้อมูลคำสั่งก่อนยืนยัน"})
+				return
+			}
+			if errors.Is(err, errExtractionChanged) {
+				c.JSON(http.StatusConflict, gin.H{"error": "ผลสกัดเปลี่ยนแล้ว กรุณาโหลดเอกสารใหม่"})
+				return
+			}
 			if writeCancelledConflict(c, err) {
 				return
 			}
@@ -470,7 +574,7 @@ func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 			// portable and does not rely on database-level cascade constraints.
 			// Audit rows stay: their document_id is cleared by the foreign key.
 			for _, model := range []any{
-				&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{},
+				&ExtractedField{}, &Appointment{},
 				&DocumentReference{}, &DocumentRevision{}, &ExpiryNotification{},
 			} {
 				if err := tx.Where("document_id = ?", document.ID).Delete(model).Error; err != nil {
@@ -480,9 +584,6 @@ func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 			if err := tx.Delete(&Document{}, document.ID).Error; err != nil {
 				return err
 			}
-			if err := tx.Delete(&StoredDocument{}, document.ID).Error; err != nil {
-				return err
-			}
 			details, err := json.Marshal(deletedDocumentDetails{Title: document.Title, OriginalFilename: document.OriginalFilename})
 			if err != nil {
 				return err
@@ -490,26 +591,22 @@ func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 			if err := tx.Create(&AuditLog{UserID: currentUserID(c), Action: "DOCUMENT_DELETED", Details: string(details), CreatedAt: time.Now()}).Error; err != nil {
 				return err
 			}
-			if err := tx.Exec(`DELETE FROM committee_members
-				WHERE committee_id IN (SELECT id FROM committees WHERE order_id IN
-					(SELECT id FROM orders WHERE document_id = ?))`, document.ID).Error; err != nil {
-				return err
-			}
-			if err := tx.Exec(`DELETE FROM committees
-				WHERE order_id IN (SELECT id FROM orders WHERE document_id = ?)`, document.ID).Error; err != nil {
-				return err
-			}
-			return tx.Where("document_id = ?", document.ID).Delete(&StoredOrder{}).Error
+			return nil
 		})
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถลบข้อมูลเอกสารได้"})
 			return
 		}
 		if document.StoragePath != "" {
-			if err := os.Remove(document.StoragePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			ocrErr := os.RemoveAll(extractionDirectory(document.StoragePath, document.ID))
+			fileErr := os.Remove(document.StoragePath)
+			if errors.Is(fileErr, os.ErrNotExist) {
+				fileErr = nil
+			}
+			if cleanupErr := errors.Join(ocrErr, fileErr); cleanupErr != nil {
 				// The database deletion succeeded. Return success and expose the
 				// storage cleanup issue for developer diagnostics.
-				c.JSON(http.StatusOK, gin.H{"message": "ลบข้อมูลเอกสารแล้ว แต่ลบไฟล์ต้นฉบับไม่สำเร็จ", "storageCleanupError": err.Error()})
+				c.JSON(http.StatusOK, gin.H{"message": "ลบข้อมูลเอกสารแล้ว แต่ลบไฟล์บางส่วนไม่สำเร็จ", "storageCleanupError": cleanupErr.Error()})
 				return
 			}
 		}
@@ -521,7 +618,12 @@ func documentQuery(db *gorm.DB, rawQuery, rawStatus string) *gorm.DB {
 	query := db.Model(&Document{})
 	if q := strings.TrimSpace(rawQuery); q != "" {
 		like := "%" + q + "%"
-		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR ocr_text LIKE ? OR id IN (?)", like, like, like, like, like, like, like, like, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ? OR extra_duties LIKE ?", like, like, like, like, like))
+		ids, err := searchOCRFiles(db, q)
+		if err != nil {
+			query.AddError(err)
+			return query
+		}
+		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR id IN ? OR id IN (?)", like, like, like, like, like, like, like, ids, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ? OR extra_duties LIKE ?", like, like, like, like, like))
 	}
 	if status := strings.TrimSpace(rawStatus); status != "" && status != "ALL" {
 		// รับได้หลายสถานะคั่นด้วยจุลภาค เช่น "REVIEW,NEEDS_REVIEW" คือกลุ่ม "รอยืนยัน"
@@ -531,22 +633,62 @@ func documentQuery(db *gorm.DB, rawQuery, rawStatus string) *gorm.DB {
 }
 
 func applyDocumentFilters(query *gorm.DB, c *gin.Context) *gorm.DB {
+	var unsaved []Document
+	if c.Query("orderType") != "" || c.Query("position") != "" || c.Query("dateFrom") != "" || c.Query("dateTo") != "" {
+		db := query.Session(&gorm.Session{NewDB: true})
+		if err := db.Where("content_state = ? AND extraction_json_path <> ?", "UNSAVED", "").Find(&unsaved).Error; err != nil {
+			query.AddError(err)
+			return query
+		}
+		if err := hydrateUnsavedDocuments(unsaved); err != nil {
+			query.AddError(err)
+			return query
+		}
+	}
 	if orderType := strings.TrimSpace(c.Query("orderType")); orderType != "" {
-		query = query.Where("order_type = ?", orderType)
+		ids := []uint{}
+		for _, doc := range unsaved {
+			if strings.EqualFold(doc.OrderType, orderType) {
+				ids = append(ids, doc.ID)
+			}
+		}
+		query = query.Where("order_type = ? OR id IN ?", orderType, ids)
 	}
 	if position := strings.TrimSpace(c.Query("position")); position != "" {
 		like := "%" + position + "%"
 		appointmentQuery := query.Session(&gorm.Session{NewDB: true}).Model(&Appointment{}).Select("document_id").Where("position LIKE ? OR committee_role LIKE ?", like, like)
-		query = query.Where("id IN (?)", appointmentQuery)
+		ids := []uint{}
+		for _, doc := range unsaved {
+			for _, appointment := range doc.Appointments {
+				if strings.Contains(strings.ToLower(appointment.Position+" "+appointment.CommitteeRole), strings.ToLower(position)) {
+					ids = append(ids, doc.ID)
+					break
+				}
+			}
+		}
+		query = query.Where("id IN (?) OR id IN ?", appointmentQuery, ids)
 	}
 	if raw := strings.TrimSpace(c.Query("dateFrom")); raw != "" {
 		if parsed, err := parseDateInput(raw); err == nil && parsed != nil {
-			query = query.Where("issued_date >= ?", *parsed)
+			ids := []uint{}
+			for _, doc := range unsaved {
+				if doc.IssuedDate != nil && !doc.IssuedDate.Before(*parsed) {
+					ids = append(ids, doc.ID)
+				}
+			}
+			query = query.Where("issued_date >= ? OR id IN ?", *parsed, ids)
 		}
 	}
 	if raw := strings.TrimSpace(c.Query("dateTo")); raw != "" {
 		if parsed, err := parseDateInput(raw); err == nil && parsed != nil {
-			query = query.Where("issued_date < ?", parsed.AddDate(0, 0, 1))
+			end := parsed.AddDate(0, 0, 1)
+			ids := []uint{}
+			for _, doc := range unsaved {
+				if doc.IssuedDate != nil && doc.IssuedDate.Before(end) {
+					ids = append(ids, doc.ID)
+				}
+			}
+			query = query.Where("issued_date < ? OR id IN ?", end, ids)
 		}
 	}
 	return query
@@ -787,7 +929,7 @@ func replacedFileUpdates(file replacementFile, importedBy string, now time.Time)
 		"file_hash": file.Hash, "retention_until": retentionUntil, "import_source": "REUPLOAD",
 		"imported_by": importedBy, "status": "PROCESSING", "processing_stage": "QUEUED",
 		"confirmed_by": "", "confirmed_at": nil,
-		"ocr_text": "", "ocr_error": "", "ocr_provider": "",
+		"ocr_error": "", "ocr_provider": "", "extraction_json_path": "", "pending_extraction_json_path": "", "content_state": "UNSAVED",
 		// Everything below was read out of the file being replaced.
 		"order_type": "", "order_no": "", "order_year_be": 0, "committee": "", "issuing_unit": "",
 		"signer_name": "", "signer_position": "", "responsibilities": "", "additional_refs": "",
@@ -909,28 +1051,12 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 			if err := lockEditableDocument(tx, document.ID); err != nil {
 				return err
 			}
-			for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}, &ExpiryNotification{}} {
+			for _, model := range []any{&ExtractedField{}, &Appointment{}, &DocumentReference{}, &ExpiryNotification{}} {
 				if err := tx.Where("document_id = ?", document.ID).Delete(model).Error; err != nil {
 					return err
 				}
 			}
 			if err := tx.Model(&document).Updates(updates).Error; err != nil {
-				return err
-			}
-			var updated Document
-			if err := tx.First(&updated, document.ID).Error; err != nil {
-				return err
-			}
-			if err := syncCoreDocumentFile(tx, &updated); err != nil {
-				return err
-			}
-			if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
-				return err
-			}
-			if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
-				return err
-			}
-			if err := syncCoreConfirmation(tx, &updated); err != nil {
 				return err
 			}
 			return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: replacedBy, Action: "DOCUMENT_FILE_REPLACED", Details: header.Filename}).Error

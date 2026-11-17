@@ -17,6 +17,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const defaultExternalUsersURL = "https://fs.computing.kku.ac.th/api/ext/v1/users"
@@ -196,24 +197,35 @@ func (s *UserSyncService) upsertUser(item map[string]any) (created bool, updated
 	if queryErr != nil {
 		return false, false, fmt.Errorf("find directory person %s: %w", externalIDText, queryErr)
 	}
-	var existingProfile DirectoryPersonProfile
-	profileErr := s.db.First(&existingProfile, "person_id = ?", existing.ID).Error
-	if profileErr != nil && !errors.Is(profileErr, gorm.ErrRecordNotFound) {
-		return false, false, fmt.Errorf("find directory person profile %s: %w", externalIDText, profileErr)
-	}
-	overrides := decodeDirectoryLocalOverrides(existingProfile.LocalOverrides)
-	person.ID = existing.ID
-	person.CreatedAt = existing.CreatedAt
-	unchanged := (overrides["email"] || sameOptionalString(existing.Email, person.Email)) &&
-		(overrides["phone"] || sameOptionalString(existing.Phone, person.Phone)) &&
-		(overrides["prefix"] || existing.Prefix == person.Prefix) &&
-		(overrides["firstName"] || existing.FirstName == person.FirstName) &&
-		(overrides["lastName"] || existing.LastName == person.LastName) &&
-		(overrides["positionTitle"] || existing.PositionTitle == person.PositionTitle) &&
-		existing.Status == person.Status &&
-		(overrides["department"] || existingProfile.Department == profile.Department) &&
-		existingProfile.Faculty == profile.Faculty
+	var unchanged bool
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&existing, existing.ID).Error; err != nil {
+			return err
+		}
+		var existingProfile DirectoryPersonProfile
+		profileErr := tx.First(&existingProfile, "person_id = ?", existing.ID).Error
+		if profileErr != nil && !errors.Is(profileErr, gorm.ErrRecordNotFound) {
+			return profileErr
+		}
+		overrides := decodeDirectoryLocalOverrides(existingProfile.LocalOverrides)
+		person.ID = existing.ID
+		if overrides["firstName"] {
+			person.FirstName = existing.FirstName
+		}
+		if overrides["lastName"] {
+			person.LastName = existing.LastName
+		}
+		unchanged = (overrides["email"] || sameOptionalString(existing.Email, person.Email)) &&
+			(overrides["phone"] || sameOptionalString(existing.Phone, person.Phone)) &&
+			(overrides["prefix"] || existing.Prefix == person.Prefix) &&
+			existing.FirstName == person.FirstName && existing.LastName == person.LastName &&
+			(overrides["positionTitle"] || existing.PositionTitle == person.PositionTitle) &&
+			existing.Status == person.Status &&
+			(overrides["department"] || existingProfile.Department == profile.Department) &&
+			existingProfile.Faculty == profile.Faculty
+		if err := rememberPreviousName(tx, existing, person.FirstName, person.LastName, sourceSynced); err != nil {
+			return err
+		}
 		personUpdates := map[string]any{"status": person.Status, "synced_at": now}
 		if !overrides["prefix"] {
 			personUpdates["prefix"] = person.Prefix

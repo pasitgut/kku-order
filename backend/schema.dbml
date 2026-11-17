@@ -1,0 +1,381 @@
+// Generated from backend/migrations/*.sql. Represents the latest migrated schema.
+// MySQL types are preserved; MySQL-specific defaults and ON UPDATE clauses are omitted where DBML cannot express them.
+
+Table directory_people {
+  id bigint [pk, not null, increment]
+  external_id bigint [unique]
+  prefix varchar(50)
+  first_name varchar(255) [not null]
+  last_name varchar(255) [not null]
+  email varchar(255) [unique]
+  phone varchar(20) [unique]
+  position_title varchar(255)
+  status varchar(50)
+  created_at timestamp [not null]
+  updated_at timestamp [not null]
+  synced_at timestamp [not null]
+}
+
+Table documents {
+  id bigint [pk, not null, increment]
+  title varchar(500) [not null]
+  original_filename varchar(500) [not null]
+  storage_path varchar(1000) [not null]
+  source_type varchar(20) [not null]
+  mime_type varchar(150) [not null]
+  order_type varchar(50)
+  order_year_be int [not null, default: 0]
+  status varchar(30) [not null, default: 'NEEDS_REVIEW']
+  order_no varchar(100)
+  committee varchar(500)
+  signer_name varchar(500)
+  signer_position varchar(255)
+  responsibilities text
+  additional_refs text
+  confidentiality varchar(30)
+  quality_profile varchar(30)
+  page_count int [not null, default: 0]
+  person_count int [not null, default: 0]
+  file_size_bytes bigint [not null, default: 0]
+  file_hash varchar(64) [not null, unique]
+  retention_until datetime(3)
+  import_source varchar(30) [not null, default: 'UPLOAD']
+  processing_stage varchar(50)
+  processing_started_at datetime(3)
+  processing_finished_at datetime(3)
+  processing_duration_ms bigint [not null, default: 0]
+  review_notes text
+  issued_date datetime(3)
+  effective_date datetime(3)
+  expiry_date datetime(3)
+  confidence float [not null, default: 0]
+  imported_by varchar(255)
+  confirmed_by varchar(255)
+  confirmed_at datetime(3)
+  ocr_provider varchar(100)
+  ocr_error longtext
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+  cancellation_reason text
+  cancelled_by varchar(255) [not null, default: '']
+  cancelled_at datetime(3)
+  extraction_attempts int [not null, default: 0]
+  next_attempt_at datetime
+  extraction_last_status int [not null, default: 0]
+  issuing_unit varchar(255) [not null, default: '']
+  replaced_by_order_no varchar(100) [not null, default: '']
+  drive_web_view_link varchar(2048) [not null, default: '']
+  extraction_json_path varchar(1000) [not null, default: '']
+  content_state varchar(20) [not null, default: 'LEGACY']
+  pending_extraction_json_path varchar(1000) [not null, default: '']
+
+  indexes {
+    status [name: 'ix_documents_status']
+    expiry_date [name: 'ix_documents_expiry_date']
+    (processing_stage, next_attempt_at) [name: 'ix_documents_next_attempt']
+  }
+}
+
+Table extracted_fields {
+  id bigint [pk, not null, increment]
+  document_id bigint [not null]
+  field_key varchar(100) [not null]
+  field_label varchar(255) [not null]
+  field_type varchar(50)
+  value text
+  source_text text
+  confidence float [not null, default: 0]
+  page_no int [not null, default: 0]
+  bounding_box json
+  verified boolean [not null, default: false]
+  verified_by varchar(255)
+  verified_at datetime(3)
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+
+  indexes {
+    document_id [name: 'ix_extracted_fields_document_id']
+  }
+}
+
+Table appointments {
+  id bigint [pk, not null, increment]
+  document_id bigint [not null]
+  directory_user_id bigint
+  full_name varchar(500) [not null]
+  position varchar(255)
+  department varchar(500)
+  committee_role varchar(255)
+  responsibilities text
+  name_match_method varchar(50)
+  name_match_score float [not null, default: 0]
+  confidence float [not null, default: 0]
+  page_no int [not null, default: 0]
+  bounding_box json
+  verified boolean [not null, default: false]
+  verified_by varchar(255)
+  verified_at datetime(3)
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+  extra_duties text
+
+  indexes {
+    document_id [name: 'ix_appointments_document_id']
+    directory_user_id [name: 'ix_appointments_directory_user_id']
+  }
+}
+
+Table document_references {
+  id bigint [pk, not null, increment]
+  document_id bigint [not null]
+  reference_type varchar(100)
+  reference_text text
+  page_no int [not null, default: 0]
+  bounding_box json
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+
+  indexes {
+    document_id [name: 'ix_document_references_document_id']
+  }
+}
+
+Table document_revisions {
+  id bigint [pk, not null, increment]
+  document_id bigint [not null]
+  field_key varchar(100) [not null]
+  old_value text
+  new_value text
+  changed_by varchar(255) [not null]
+  changed_at datetime(3) [not null]
+
+  indexes {
+    document_id [name: 'ix_document_revisions_document_id']
+  }
+}
+
+Table expiry_notifications {
+  id bigint [pk, not null, increment]
+  document_id bigint [not null]
+  appointment_id bigint
+  notice_type varchar(20) [not null]
+  due_at datetime(3) [not null]
+  status varchar(30) [not null, default: 'PENDING']
+  sent_at datetime(3)
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+
+  indexes {
+    document_id [name: 'ix_expiry_notifications_document_id']
+    appointment_id [name: 'ix_expiry_notifications_appointment_id']
+    status [name: 'ix_expiry_notifications_status']
+  }
+}
+
+Table application_audit_logs {
+  id bigint [pk, not null, increment]
+  document_id bigint
+  user_id varchar(255) [not null]
+  action varchar(100) [not null]
+  details text
+  created_at datetime(3) [not null]
+
+  indexes {
+    document_id [name: 'ix_application_audit_logs_document_id']
+  }
+}
+
+Table user_sync_runs {
+  id bigint [pk, not null, increment]
+  started_at datetime(3) [not null]
+  completed_at datetime(3)
+  status varchar(30) [not null]
+  fetched int [not null, default: 0]
+  created int [not null, default: 0]
+  updated int [not null, default: 0]
+  unchanged int [not null, default: 0]
+  error_message text
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+
+  indexes {
+    status [name: 'ix_user_sync_runs_status']
+  }
+}
+
+Table directory_person_profiles {
+  person_id bigint [pk, not null]
+  department varchar(255)
+  faculty varchar(255)
+  source varchar(20) [not null, default: 'SYNCED']
+  created_by varchar(255)
+  source_updated_at varchar(50)
+  raw_payload json
+  fingerprint char(64)
+  local_overrides json
+
+  indexes {
+    source [name: 'ix_directory_person_profiles_source']
+  }
+}
+
+Table person_name_aliases {
+  id bigint [pk, not null, increment]
+  normalized_name varchar(255) [not null, unique]
+  directory_person_id bigint [not null]
+  source_text varchar(500)
+  created_by varchar(255)
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+
+  indexes {
+    directory_person_id [name: 'ix_person_name_aliases_person']
+  }
+}
+
+Table app_settings {
+  setting_key varchar(100) [pk, not null]
+  value json [not null]
+  updated_by varchar(255)
+  updated_at datetime(3) [not null]
+}
+
+Table user_profiles {
+  user_id varchar(255) [pk, not null]
+  photo_path varchar(500) [not null, default: '']
+  photo_updated_at datetime(3)
+}
+
+Table drive_sync_runs {
+  id bigint [pk, not null, increment]
+  root_id varchar(255) [not null]
+  root_resource_key varchar(255) [not null, default: '']
+  folder_name varchar(500) [not null, default: '']
+  status varchar(30) [not null]
+  trigger_type varchar(20) [not null, default: 'SCHEDULED']
+  started_at datetime(3) [not null]
+  finished_at datetime(3)
+  retry_at datetime(3)
+  last_error text [not null]
+
+  indexes {
+    (root_id, id) [name: 'ix_drive_runs_root']
+  }
+}
+
+Table drive_sync_folders {
+  run_id bigint [not null]
+  folder_id varchar(255) [not null]
+  resource_key varchar(255) [not null, default: '']
+  drive_id varchar(255) [not null, default: '']
+  page_token text [not null]
+  status varchar(30) [not null]
+  attempts int [not null, default: 0]
+  retry_at datetime(3)
+  last_error text [not null]
+
+  indexes {
+    (run_id, folder_id) [pk]
+    (run_id, status, retry_at) [name: 'ix_drive_folders_pending']
+  }
+}
+
+Table drive_sync_items {
+  run_id bigint [not null]
+  file_id varchar(255) [not null]
+  file_name varchar(500) [not null]
+  metadata json [not null]
+  status varchar(30) [not null]
+  attempts int [not null, default: 0]
+  retry_at datetime(3)
+  last_error text [not null]
+
+  indexes {
+    (run_id, file_id) [pk]
+    (run_id, status, retry_at) [name: 'ix_drive_items_pending']
+  }
+}
+
+Table drive_imported_files {
+  file_id varchar(255) [pk, not null]
+  document_id bigint [not null]
+  file_hash char(64) [not null]
+  imported_at datetime(3) [not null]
+  web_view_link varchar(2048) [not null, default: '']
+}
+
+Table position_holders {
+  id bigint [pk, not null, increment]
+  position_key varchar(255) [not null]
+  position_title varchar(255) [not null]
+  directory_person_id bigint [not null]
+  starts_on date
+  ends_on date
+  source varchar(20) [not null]
+  created_by varchar(255)
+  created_at datetime(3) [not null]
+  updated_at datetime(3) [not null]
+
+  indexes {
+    position_key [name: 'ix_position_holders_key']
+    directory_person_id [name: 'ix_position_holders_person']
+  }
+}
+
+Table directory_person_revisions {
+  id bigint [pk, not null, increment]
+  directory_person_id bigint [not null]
+  changes json [not null]
+  changed_by varchar(255) [not null]
+  changed_at datetime(3) [not null]
+
+  indexes {
+    (directory_person_id, changed_at) [name: 'ix_directory_person_revisions_person_changed']
+  }
+}
+
+Table schema_migrations {
+  version varchar(255) [pk, not null]
+  applied_at datetime(3) [not null]
+}
+
+Table directory_previous_names {
+  directory_person_id bigint [not null]
+  normalized_name varchar(511) [not null]
+  first_name varchar(255) [not null]
+  last_name varchar(255) [not null]
+  source varchar(20) [not null]
+  created_at datetime(3) [not null]
+
+  indexes {
+    (directory_person_id, normalized_name) [pk]
+    normalized_name [name: 'ix_directory_previous_names_name']
+  }
+}
+
+Table document_confirmations {
+  id bigint [pk, not null, increment]
+  document_id bigint [not null]
+  confirmed_by varchar(255) [not null]
+  confirmed_at datetime(3) [not null]
+  names json [not null]
+
+  indexes {
+    (document_id, id) [name: 'ix_document_confirmations_document']
+  }
+}
+
+Ref: extracted_fields.document_id > documents.id [delete: cascade]
+Ref: appointments.document_id > documents.id [delete: cascade]
+Ref: appointments.directory_user_id > directory_people.id
+Ref: document_references.document_id > documents.id [delete: cascade]
+Ref: document_revisions.document_id > documents.id [delete: cascade]
+Ref: expiry_notifications.document_id > documents.id [delete: cascade]
+Ref: expiry_notifications.appointment_id > appointments.id [delete: cascade]
+Ref: application_audit_logs.document_id > documents.id [delete: set null]
+Ref: directory_person_profiles.person_id > directory_people.id [delete: cascade]
+Ref: person_name_aliases.directory_person_id > directory_people.id [delete: cascade]
+Ref: position_holders.directory_person_id > directory_people.id [delete: cascade]
+Ref: directory_person_revisions.directory_person_id > directory_people.id [delete: cascade]
+Ref: directory_previous_names.directory_person_id > directory_people.id [delete: cascade]
+Ref: document_confirmations.document_id > documents.id [delete: cascade]

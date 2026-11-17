@@ -20,11 +20,33 @@ const (
 	autoConfirmDetails    = "ยืนยันอัตโนมัติ: อ่านข้อมูลคำสั่งได้มั่นใจ และไม่มีแถวโดยตำแหน่งที่ยังว่าง"
 )
 
+var errDocumentChanged = errors.New("document changed")
+var errAmbiguousConfirmationName = errors.New("confirmation name matches multiple people")
+
 // confirmNow ยืนยันเอกสาร และนับทุกรายชื่อในคำสั่งว่าตรวจแล้ว ใช้ทั้งตอนคนกดและตอนยืนยันอัตโนมัติ
 func confirmNow(db *gorm.DB, document Document, confirmedBy, details string) (Document, error) {
-	now := time.Now()
+	now := time.Now().Truncate(time.Millisecond)
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if err := lockEditableDocument(tx, document.ID); err != nil {
+			return err
+		}
+		var current Document
+		if err := tx.First(&current, document.ID).Error; err != nil {
+			return err
+		}
+		automatic := confirmedBy == autoConfirmActor
+		if current.Status == "CONFIRMED" && !automatic {
+			document = current
+			return nil
+		}
+		canConfirm := current.Status == "REVIEW" || current.Status == "NEEDS_REVIEW" || (!automatic && current.Status == documentReturned)
+		if !canConfirm || !current.UpdatedAt.Equal(document.UpdatedAt) {
+			if automatic {
+				return errAutoConfirmNotReady
+			}
+			return errDocumentChanged
+		}
+		if err := checkConfirmationNames(tx, document.ID); err != nil {
 			return err
 		}
 		if err := tx.Model(&document).Updates(map[string]any{"status": "CONFIRMED", "confirmed_by": confirmedBy, "confirmed_at": now}).Error; err != nil {
@@ -36,9 +58,10 @@ func confirmNow(db *gorm.DB, document Document, confirmedBy, details string) (Do
 		document.Status = "CONFIRMED"
 		document.ConfirmedBy = confirmedBy
 		document.ConfirmedAt = &now
-		if err := syncCoreConfirmation(tx, &document); err != nil {
+		if err := recordDocumentConfirmation(tx, document.ID, confirmedBy, now); err != nil {
 			return err
 		}
+
 		return tx.Create(&AuditLog{DocumentID: &document.ID, UserID: confirmedBy, Action: "DOCUMENT_CONFIRMED", Details: details}).Error
 	})
 	return document, err
@@ -83,9 +106,7 @@ func returnDocument(db *gorm.DB) gin.HandlerFunc {
 			document.Status = documentReturned
 			document.ConfirmedBy = ""
 			document.ConfirmedAt = nil
-			if err := syncCoreConfirmation(tx, &document); err != nil {
-				return err
-			}
+
 			revision := DocumentRevision{DocumentID: document.ID, FieldKey: "status", OldValue: previous, NewValue: documentReturned, ChangedBy: changedBy, ChangedAt: time.Now()}
 			if err := tx.Create(&revision).Error; err != nil {
 				return err
@@ -117,7 +138,7 @@ func readyToAutoConfirm(db *gorm.DB, documentID uint, threshold float64) (bool, 
 	var unlinked int64
 	if err := db.Model(&Appointment{}).
 		Where("document_id = ? AND directory_user_id IS NULL", documentID).
-		Where("TRIM(COALESCE(full_name, '')) = '' OR name_match_method = ?", matchMethodEmpty).
+		Where("TRIM(COALESCE(full_name, '')) = '' OR name_match_method IN ?", []string{matchMethodEmpty, matchMethodAmbiguous}).
 		Count(&unlinked).Error; err != nil || unlinked > 0 {
 		return false, err
 	}
@@ -167,7 +188,7 @@ func autoConfirmEnabled(db *gorm.DB) (bool, error) {
 // pendingAutoConfirm คืนเอกสาร "รอยืนยัน" ที่ยืนยันอัตโนมัติได้ทันที (ไม่รวมที่ผู้ใช้ส่งกลับมาตรวจสอบ)
 func pendingAutoConfirm(db *gorm.DB, threshold float64) ([]Document, error) {
 	var pending []Document
-	if err := db.Where("status IN ?", []string{"REVIEW", "NEEDS_REVIEW"}).Find(&pending).Error; err != nil {
+	if err := db.Where("status IN ? AND content_state <> ? AND pending_extraction_json_path = ?", []string{"REVIEW", "NEEDS_REVIEW"}, "UNSAVED", "").Find(&pending).Error; err != nil {
 		return nil, err
 	}
 	ready := make([]Document, 0, len(pending))
@@ -208,13 +229,29 @@ func autoConfirmPendingIfEnabled(db *gorm.DB) (int, error) {
 
 // confirmReadyPending ยืนยันเอกสาร "รอยืนยัน" ทุกฉบับที่ผ่านเกณฑ์ คืนจำนวนที่ยืนยัน
 func confirmReadyPending(db *gorm.DB, threshold float64) (int, error) {
+	var unsaved []Document
+	if err := db.Where("status IN ? AND content_state = ? AND extraction_json_path <> ?", []string{"REVIEW", "NEEDS_REVIEW"}, "UNSAVED", "").Find(&unsaved).Error; err != nil {
+		return 0, err
+	}
+	confirmed := 0
+	for _, document := range unsaved {
+		ok, err := autoConfirmSnapshot(db, document, threshold)
+		if err != nil {
+			return confirmed, err
+		}
+		if ok {
+			confirmed++
+		}
+	}
 	ready, err := pendingAutoConfirm(db, threshold)
 	if err != nil {
 		return 0, err
 	}
-	confirmed := 0
 	for _, document := range ready {
 		if _, err := confirmNow(db, document, autoConfirmActor, autoConfirmDetails); err != nil {
+			if errors.Is(err, errAutoConfirmNotReady) || errors.Is(err, errAmbiguousConfirmationName) {
+				continue
+			}
 			return confirmed, err
 		}
 		confirmed++
@@ -232,9 +269,72 @@ func autoConfirmAfterExtraction(db *gorm.DB, documentID uint, threshold float64)
 	if err := db.First(&document, documentID).Error; err != nil || (document.Status != "REVIEW" && document.Status != "NEEDS_REVIEW") {
 		return
 	}
+	if document.ContentState == "UNSAVED" {
+		_, _ = autoConfirmSnapshot(db, document, threshold)
+		return
+	}
+	if document.PendingExtractionJSONPath != "" {
+		return
+	}
 	if ok, err := readyToAutoConfirm(db, documentID, threshold); err == nil && ok {
 		_, _ = confirmNow(db, document, autoConfirmActor, autoConfirmDetails)
 	}
+}
+
+var errAutoConfirmNotReady = errors.New("auto confirmation not ready")
+
+func autoConfirmSnapshot(db *gorm.DB, document Document, threshold float64) (bool, error) {
+	snapshot, err := readExtractionFile(document.ExtractionJSONPath, document.ID)
+	if err != nil {
+		return false, err
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if err := lockEditableDocument(tx, document.ID); err != nil {
+			return err
+		}
+		var current Document
+		if err := tx.First(&current, document.ID).Error; err != nil {
+			return err
+		}
+		if current.ContentState != "UNSAVED" || current.ExtractionJSONPath != document.ExtractionJSONPath || (current.Status != "REVIEW" && current.Status != "NEEDS_REVIEW") {
+			return errAutoConfirmNotReady
+		}
+		fields := make([]fieldUpdateRequest, len(snapshot.Fields))
+		for i, field := range snapshot.Fields {
+			fields[i] = fieldUpdateRequest{ID: uint(i + 1), FieldKey: field.FieldKey}
+		}
+		appointments := make([]appointmentRequest, len(snapshot.Appointments))
+		for i := range appointments {
+			appointments[i].ID = uint(i + 1)
+		}
+		if err := materializeExtraction(tx, document.ID, snapshot, &updateDocumentRequest{Fields: &fields, Appointments: &appointments}); err != nil {
+			return err
+		}
+		ready, err := readyToAutoConfirm(tx, document.ID, threshold)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			return errAutoConfirmNotReady
+		}
+		updates := buildExtractionRecords(snapshot.Result, threshold).Updates
+		delete(updates, "ocr_text")
+		delete(updates, "ocr_provider")
+		updates["content_state"] = "CONFIRMED"
+		if err := tx.Model(&Document{}).Where("id = ?", document.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&current, document.ID).Error; err != nil {
+			return err
+		}
+
+		_, err = confirmNow(tx, current, autoConfirmActor, autoConfirmDetails)
+		return err
+	})
+	if errors.Is(err, errAutoConfirmNotReady) || errors.Is(err, errAmbiguousConfirmationName) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func reviewThresholdOf(store SettingsStore) float64 {

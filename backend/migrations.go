@@ -3,7 +3,6 @@ package main
 import (
 	"embed"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -12,6 +11,9 @@ import (
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
+
+const baselineMigration = "0001_clean_baseline.sql"
+const baselineInProgress = "__baseline_in_progress__"
 
 func migrateDatabase(db *gorm.DB) error {
 	if err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -25,108 +27,78 @@ func migrateDatabase(db *gorm.DB) error {
 		return fmt.Errorf("read migration files: %w", err)
 	}
 	versions := make([]string, 0, len(entries))
+	known := map[string]bool{baselineInProgress: true}
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sql") {
 			versions = append(versions, entry.Name())
+			known[entry.Name()] = true
 		}
 	}
 	sort.Strings(versions)
-
-	for _, version := range versions {
-		var applied int64
-		if err := db.Raw("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", version).Scan(&applied).Error; err != nil {
-			return fmt.Errorf("check migration %s: %w", version, err)
+	if len(versions) == 0 || versions[0] != baselineMigration {
+		return fmt.Errorf("clean baseline migration is missing")
+	}
+	var appliedVersions []string
+	if err := db.Table("schema_migrations").Pluck("version", &appliedVersions).Error; err != nil {
+		return fmt.Errorf("read migration history: %w", err)
+	}
+	applied, err := validateMigrationHistory(appliedVersions, known)
+	if err != nil {
+		return err
+	}
+	if !applied[baselineMigration] && !applied[baselineInProgress] {
+		var count int64
+		if err := db.Raw(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'schema_migrations'`).Scan(&count).Error; err != nil {
+			return fmt.Errorf("check database is empty: %w", err)
 		}
-		if applied > 0 {
+		if count != 0 {
+			return fmt.Errorf("database is not empty: use an empty database for the clean baseline")
+		}
+		if err := db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP(3))", baselineInProgress).Error; err != nil {
+			return fmt.Errorf("start baseline migration: %w", err)
+		}
+	}
+	for _, version := range versions {
+		if applied[version] {
 			continue
 		}
-
 		contents, err := migrationFiles.ReadFile("migrations/" + version)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", version, err)
 		}
-		statements := splitMigrationSQL(string(contents))
-		for _, statement := range statements {
-			if err := executeMigrationStatement(db, statement); err != nil {
+		for _, statement := range splitMigrationSQL(string(contents)) {
+			if err := db.Exec(statement).Error; err != nil {
 				return fmt.Errorf("execute %s: %w", version, err)
 			}
 		}
-		if err := db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP(3))", version).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, CURRENT_TIMESTAMP(3))", version).Error; err != nil {
+				return err
+			}
+			if version == baselineMigration {
+				return tx.Exec("DELETE FROM schema_migrations WHERE version = ?", baselineInProgress).Error
+			}
+			return nil
+		}); err != nil {
 			return fmt.Errorf("record migration %s: %w", version, err)
 		}
 	}
 	return nil
 }
 
-var (
-	addColumnIfMissingPattern     = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD COLUMN IF NOT EXISTS ([A-Za-z0-9_]+) (.+)$`)
-	addKeyPattern                 = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD KEY ([A-Za-z0-9_]+) (.+)$`)
-	dropForeignKeyIfExistsPattern = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) DROP FOREIGN KEY IF EXISTS ([A-Za-z0-9_]+)$`)
-	addConstraintIfMissingPattern = regexp.MustCompile(`(?i)^ALTER TABLE ([A-Za-z0-9_]+) ADD CONSTRAINT IF NOT EXISTS ([A-Za-z0-9_]+) (.+)$`)
-)
-
-// executeMigrationStatement keeps migrations portable across MySQL/MariaDB
-// versions. Some servers reject ADD COLUMN IF NOT EXISTS even though the
-// operation is supported by newer versions.
-func executeMigrationStatement(db *gorm.DB, statement string) error {
-	if matches := addColumnIfMissingPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
-		var count int64
-		if err := db.Raw(`
-			SELECT COUNT(*)
-			FROM INFORMATION_SCHEMA.COLUMNS
-			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`, matches[1], matches[2]).Scan(&count).Error; err != nil {
-			return err
+func validateMigrationHistory(versions []string, known map[string]bool) (map[string]bool, error) {
+	applied := make(map[string]bool, len(versions))
+	for _, version := range versions {
+		if !known[version] {
+			return nil, fmt.Errorf("unsupported migration history %q: use an empty database for the clean baseline", version)
 		}
-		if count > 0 {
-			return nil
-		}
-		return db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", matches[1], matches[2], matches[3])).Error
+		applied[version] = true
 	}
-
-	// Foreign keys are dropped and re-added only when the state still needs
-	// it, so a migration that failed midway can run again.
-	if matches := dropForeignKeyIfExistsPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
-		exists, err := foreignKeyExists(db, matches[1], matches[2])
-		if err != nil || !exists {
-			return err
-		}
-		return db.Exec(fmt.Sprintf("ALTER TABLE %s DROP FOREIGN KEY %s", matches[1], matches[2])).Error
+	if applied[baselineMigration] && applied[baselineInProgress] {
+		return nil, fmt.Errorf("inconsistent baseline migration history")
 	}
-
-	if matches := addConstraintIfMissingPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
-		exists, err := foreignKeyExists(db, matches[1], matches[2])
-		if err != nil || exists {
-			return err
-		}
-		return db.Exec(fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s", matches[1], matches[2], matches[3])).Error
-	}
-
-	if matches := addKeyPattern.FindStringSubmatch(strings.TrimSpace(statement)); matches != nil {
-		var count int64
-		if err := db.Raw(`
-			SELECT COUNT(*)
-			FROM INFORMATION_SCHEMA.STATISTICS
-			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`, matches[1], matches[2]).Scan(&count).Error; err != nil {
-			return err
-		}
-		if count > 0 {
-			return nil
-		}
-		return db.Exec(fmt.Sprintf("ALTER TABLE %s ADD KEY %s %s", matches[1], matches[2], matches[3])).Error
-	}
-
-	return db.Exec(statement).Error
-}
-
-func foreignKeyExists(db *gorm.DB, table, name string) (bool, error) {
-	var count int64
-	if err := db.Raw(`
-		SELECT COUNT(*)
-		FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND CONSTRAINT_NAME = ? AND CONSTRAINT_TYPE = 'FOREIGN KEY'`, table, name).Scan(&count).Error; err != nil {
-		return false, err
-	}
-	return count > 0, nil
+	return applied, nil
 }
 
 func splitMigrationSQL(contents string) []string {

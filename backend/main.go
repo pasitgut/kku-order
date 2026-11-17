@@ -23,64 +23,69 @@ import (
 )
 
 type Document struct {
-	ID                   uint                `json:"id" gorm:"primaryKey"`
-	Title                string              `json:"title" gorm:"size:500;not null"`
-	OriginalFilename     string              `json:"originalFilename" gorm:"size:500;not null"`
-	DriveWebViewLink     string              `json:"driveWebViewLink,omitempty" gorm:"size:2048"`
-	StoragePath          string              `json:"-" gorm:"size:1000;not null"`
-	SourceType           string              `json:"sourceType" gorm:"size:20;not null"`
-	MimeType             string              `json:"mimeType" gorm:"size:150;not null"`
-	OrderType            string              `json:"orderType" gorm:"size:50;index"`
-	OrderYearBE          int                 `json:"orderYearBE" gorm:"index"`
-	Status               string              `json:"status" gorm:"size:30;not null;index"`
-	OrderNo              string              `json:"orderNo" gorm:"size:100;index"`
-	Committee            string              `json:"committee" gorm:"size:500"`
-	SignerName           string              `json:"signerName" gorm:"size:500"`
-	SignerPosition       string              `json:"signerPosition" gorm:"size:255"`
-	Responsibilities     string              `json:"responsibilities" gorm:"type:text"`
-	AdditionalRefs       string              `json:"additionalReferences" gorm:"type:text"`
-	Confidentiality      string              `json:"confidentiality" gorm:"size:30;index"`
-	QualityProfile       string              `json:"qualityProfile" gorm:"size:30"`
-	PageCount            int                 `json:"pageCount"`
-	PersonCount          int                 `json:"personCount"`
-	FileSizeBytes        int64               `json:"fileSizeBytes"`
-	FileHash             string              `json:"fileHash" gorm:"size:64;index"`
-	RetentionUntil       *time.Time          `json:"retentionUntil"`
-	ImportSource         string              `json:"importSource" gorm:"size:30;not null;default:UPLOAD"`
-	ProcessingStage      string              `json:"processingStage" gorm:"size:50"`
-	ProcessingStartedAt  *time.Time          `json:"processingStartedAt"`
-	ProcessingFinishedAt *time.Time          `json:"processingFinishedAt"`
-	ExtractionAttempts   int                 `json:"extractionAttempts" gorm:"not null;default:0"`
-	NextAttemptAt        *time.Time          `json:"nextAttemptAt"`
-	ExtractionLastStatus int                 `json:"-" gorm:"not null;default:0"`
-	ProcessingDurationMs int64               `json:"processingDurationMs"`
-	ReviewNotes          string              `json:"reviewNotes" gorm:"type:text"`
-	IssuedDate           *time.Time          `json:"issuedDate"`
-	EffectiveDate        *time.Time          `json:"effectiveDate"`
-	ExpiryDate           *time.Time          `json:"expiryDate"`
-	Confidence           float32             `json:"confidence"`
-	ImportedBy           string              `json:"importedBy" gorm:"size:255"`
-	ConfirmedBy          string              `json:"confirmedBy" gorm:"size:255"`
-	ConfirmedAt          *time.Time          `json:"confirmedAt"`
-	CancellationReason   string              `json:"cancellationReason" gorm:"type:text"`
-	ReplacedByOrderNo    string              `json:"replacedByOrderNo" gorm:"size:100"`
-	IssuingUnit          string              `json:"issuingUnit" gorm:"size:255"`
-	CancelledBy          string              `json:"cancelledBy" gorm:"size:255"`
-	CancelledAt          *time.Time          `json:"cancelledAt"`
-	OCRProvider          string              `json:"ocrProvider" gorm:"size:100"`
-	OCRText              string              `json:"ocrText" gorm:"type:longtext"`
-	OCRError             string              `json:"ocrError" gorm:"type:longtext"`
-	Fields               []ExtractedField    `json:"fields" gorm:"foreignKey:DocumentID"`
-	OCRPages             []OCRPage           `json:"ocrPages" gorm:"foreignKey:DocumentID"`
-	Appointments         []Appointment       `json:"appointments" gorm:"foreignKey:DocumentID"`
-	References           []DocumentReference `json:"references" gorm:"foreignKey:DocumentID"`
-	CreatedAt            time.Time           `json:"createdAt"`
-	UpdatedAt            time.Time           `json:"updatedAt"`
+	ID                        uint                   `json:"id" gorm:"primaryKey"`
+	Title                     string                 `json:"title" gorm:"size:500;not null"`
+	OriginalFilename          string                 `json:"originalFilename" gorm:"size:500;not null"`
+	DriveWebViewLink          string                 `json:"driveWebViewLink,omitempty" gorm:"size:2048"`
+	StoragePath               string                 `json:"-" gorm:"size:1000;not null"`
+	ExtractionJSONPath        string                 `json:"-" gorm:"size:1000;not null;default:''"`
+	ContentState              string                 `json:"contentState" gorm:"size:20;not null;default:LEGACY"`
+	PendingExtractionJSONPath string                 `json:"-" gorm:"size:1000;not null;default:''"`
+	ExtractionVersion         string                 `json:"extractionVersion,omitempty" gorm:"-"`
+	HasPendingExtraction      bool                   `json:"hasPendingExtraction" gorm:"-"`
+	SourceType                string                 `json:"sourceType" gorm:"size:20;not null"`
+	MimeType                  string                 `json:"mimeType" gorm:"size:150;not null"`
+	OrderType                 string                 `json:"orderType" gorm:"size:50;index"`
+	OrderYearBE               int                    `json:"orderYearBE" gorm:"index"`
+	Status                    string                 `json:"status" gorm:"size:30;not null;index"`
+	OrderNo                   string                 `json:"orderNo" gorm:"size:100;index"`
+	Committee                 string                 `json:"committee" gorm:"size:500"`
+	SignerName                string                 `json:"signerName" gorm:"size:500"`
+	SignerPosition            string                 `json:"signerPosition" gorm:"size:255"`
+	Responsibilities          string                 `json:"responsibilities" gorm:"type:text"`
+	AdditionalRefs            string                 `json:"additionalReferences" gorm:"type:text"`
+	Confidentiality           string                 `json:"confidentiality" gorm:"size:30;index"`
+	QualityProfile            string                 `json:"qualityProfile" gorm:"size:30"`
+	PageCount                 int                    `json:"pageCount"`
+	PersonCount               int                    `json:"personCount"`
+	FileSizeBytes             int64                  `json:"fileSizeBytes"`
+	FileHash                  string                 `json:"fileHash" gorm:"size:64;index"`
+	RetentionUntil            *time.Time             `json:"retentionUntil"`
+	ImportSource              string                 `json:"importSource" gorm:"size:30;not null;default:UPLOAD"`
+	ProcessingStage           string                 `json:"processingStage" gorm:"size:50"`
+	ProcessingStartedAt       *time.Time             `json:"processingStartedAt"`
+	ProcessingFinishedAt      *time.Time             `json:"processingFinishedAt"`
+	ExtractionAttempts        int                    `json:"extractionAttempts" gorm:"not null;default:0"`
+	NextAttemptAt             *time.Time             `json:"nextAttemptAt"`
+	ExtractionLastStatus      int                    `json:"-" gorm:"not null;default:0"`
+	ProcessingDurationMs      int64                  `json:"processingDurationMs"`
+	ReviewNotes               string                 `json:"reviewNotes" gorm:"type:text"`
+	IssuedDate                *time.Time             `json:"issuedDate"`
+	EffectiveDate             *time.Time             `json:"effectiveDate"`
+	ExpiryDate                *time.Time             `json:"expiryDate"`
+	Confidence                float32                `json:"confidence"`
+	ImportedBy                string                 `json:"importedBy" gorm:"size:255"`
+	ConfirmedBy               string                 `json:"confirmedBy" gorm:"size:255"`
+	ConfirmedAt               *time.Time             `json:"confirmedAt"`
+	CancellationReason        string                 `json:"cancellationReason" gorm:"type:text"`
+	ReplacedByOrderNo         string                 `json:"replacedByOrderNo" gorm:"size:100"`
+	IssuingUnit               string                 `json:"issuingUnit" gorm:"size:255"`
+	CancelledBy               string                 `json:"cancelledBy" gorm:"size:255"`
+	CancelledAt               *time.Time             `json:"cancelledAt"`
+	OCRProvider               string                 `json:"ocrProvider" gorm:"size:100"`
+	OCRText                   string                 `json:"ocrText" gorm:"-"`
+	OCRError                  string                 `json:"ocrError" gorm:"type:longtext"`
+	Fields                    []ExtractedField       `json:"fields" gorm:"foreignKey:DocumentID"`
+	OCRPages                  []OCRPage              `json:"ocrPages" gorm:"-"`
+	Appointments              []Appointment          `json:"appointments" gorm:"foreignKey:DocumentID"`
+	Confirmations             []DocumentConfirmation `json:"confirmations,omitempty" gorm:"foreignKey:DocumentID"`
+	References                []DocumentReference    `json:"references" gorm:"foreignKey:DocumentID"`
+	CreatedAt                 time.Time              `json:"createdAt"`
+	UpdatedAt                 time.Time              `json:"updatedAt"`
 }
 
-// Document keeps the review/OCR state beside, rather than inside, the
-// user-defined documents table. Its primary key is also documents.id.
-func (Document) TableName() string { return "document_workflows" }
+// Document is the canonical record for document metadata and review state.
+func (Document) TableName() string { return "documents" }
 
 type ExtractedField struct {
 	ID              uint       `json:"id" gorm:"primaryKey"`
@@ -151,6 +156,7 @@ type Appointment struct {
 	DirectoryUser    *DirectoryUser   `json:"directoryUser,omitempty" gorm:"-"`
 	DirectoryPerson  *DirectoryPerson `json:"-" gorm:"foreignKey:DirectoryUserID"`
 	FullName         string           `json:"fullName" gorm:"size:500;not null"`
+	ConfirmedName    *string          `json:"confirmedName,omitempty" gorm:"-"`
 	Position         string           `json:"position" gorm:"size:255"`
 	Department       string           `json:"department" gorm:"size:500"`
 	CommitteeRole    string           `json:"committeeRole" gorm:"size:255"`
@@ -203,6 +209,7 @@ type DirectoryUser struct {
 	FullName         string    `json:"fullName" gorm:"size:500"`
 	FirstName        string    `json:"firstName" gorm:"size:255"`
 	LastName         string    `json:"lastName" gorm:"size:255"`
+	PreviousNames    []string  `json:"-" gorm:"-"`
 	Gender           string    `json:"gender" gorm:"size:30"`
 	Email            string    `json:"email" gorm:"size:255;index"`
 	Phone            string    `json:"phone" gorm:"size:100"`
@@ -606,6 +613,10 @@ func listDocuments(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
+		if err := hydrateUnsavedDocuments(documents); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"data": documents, "pagination": gin.H{"total": total, "page": parsePage(c), "limit": parseLimit(c)}})
 	}
 }
@@ -613,7 +624,7 @@ func listDocuments(db *gorm.DB) gin.HandlerFunc {
 func getDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var document Document
-		if err := db.Preload("Fields").Preload("Appointments").Preload("Appointments.DirectoryPerson").Preload("References").Preload("OCRPages.Lines").First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Preload("Fields").Preload("Appointments").Preload("Appointments.DirectoryPerson").Preload("References").Preload("Confirmations", func(q *gorm.DB) *gorm.DB { return q.Order("id DESC") }).First(&document, c.Param("id")).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -621,9 +632,52 @@ func getDocument(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
+		document.HasPendingExtraction = document.PendingExtractionJSONPath != ""
+		previewPath := ""
+		if document.ContentState == "UNSAVED" {
+			previewPath = document.ExtractionJSONPath
+		} else if c.Query("previewExtraction") == "true" {
+			previewPath = document.PendingExtractionJSONPath
+			if previewPath == "" {
+				c.JSON(http.StatusConflict, gin.H{"error": "ไม่มีผลสแกนใหม่ให้ตรวจสอบ"})
+				return
+			}
+		}
+		if previewPath != "" {
+			snapshot, err := readExtractionFile(previewPath, document.ID)
+			if err != nil || applyExtractionPreview(&document, snapshot, previewPath) != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
+				return
+			}
+		} else if document.ExtractionJSONPath != "" {
+			snapshot, err := readExtractionFile(document.ExtractionJSONPath, document.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผล OCR ได้"})
+				return
+			}
+			if snapshot.OCRPages == nil && len(snapshot.Result.Pages) > 0 {
+				text, pages := extractionOCR(buildExtractionRecords(snapshot.Result, 0), document.ID)
+				snapshot.OCRPages = pages
+				if snapshot.OCRText == "" {
+					snapshot.OCRText = text
+				}
+			}
+			document.OCRText, document.OCRPages = snapshot.OCRText, snapshot.OCRPages
+		}
 		if err := enrichAppointmentDirectoryPeople(db, &document); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดข้อมูลบุคลากรที่ผูกไว้ได้"})
 			return
+		}
+		if previewPath == "" && document.ConfirmedAt != nil && len(document.Confirmations) > 0 {
+			confirmed := make(map[uint]string)
+			for _, name := range document.Confirmations[0].Names {
+				confirmed[name.AppointmentID] = name.displayName()
+			}
+			for i := range document.Appointments {
+				if name, ok := confirmed[document.Appointments[i].ID]; ok {
+					document.Appointments[i].ConfirmedName = &name
+				}
+			}
 		}
 		attachAppointmentCandidates(db, &document)
 		annotateDateFields(document.Fields)
@@ -635,9 +689,12 @@ func getDocument(db *gorm.DB) gin.HandlerFunc {
 // computed per request rather than stored, so a suggestion never outlives the
 // directory it came from.
 func attachAppointmentCandidates(db *gorm.DB, document *Document) {
+	if document.Status == "CONFIRMED" || document.Status == documentCancelled {
+		return
+	}
 	needed := false
 	for _, appointment := range document.Appointments {
-		if appointment.DirectoryUserID == nil {
+		if appointment.NameMatchMethod != matchMethodManual && strings.TrimSpace(appointment.FullName) != "" {
 			needed = true
 			break
 		}
@@ -717,7 +774,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		}
 
 		retentionUntil := time.Now().AddDate(10, 0, 0)
-		document := Document{Title: strings.TrimSuffix(storedFilename, filepath.Ext(storedFilename)), OriginalFilename: storedFilename, StoragePath: storagePath, SourceType: strings.TrimPrefix(ext, "."), MimeType: header.Header.Get("Content-Type"), Status: "PROCESSING", ProcessingStage: "QUEUED", FileSizeBytes: header.Size, FileHash: fileHash, RetentionUntil: &retentionUntil, ImportSource: "UPLOAD", ImportedBy: currentUserID(c), QualityProfile: "STANDARD"}
+		document := Document{Title: strings.TrimSuffix(storedFilename, filepath.Ext(storedFilename)), OriginalFilename: storedFilename, StoragePath: storagePath, ContentState: "UNSAVED", SourceType: strings.TrimPrefix(ext, "."), MimeType: header.Header.Get("Content-Type"), Status: "PROCESSING", ProcessingStage: "QUEUED", FileSizeBytes: header.Size, FileHash: fileHash, RetentionUntil: &retentionUntil, ImportSource: "UPLOAD", ImportedBy: currentUserID(c), QualityProfile: "STANDARD"}
 		if document.MimeType == "" {
 			document.MimeType = "application/octet-stream"
 		}
@@ -728,7 +785,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				"storage_path": storagePath, "source_type": strings.TrimPrefix(ext, "."), "mime_type": document.MimeType,
 				"status": "PROCESSING", "processing_stage": "QUEUED", "file_size_bytes": header.Size, "file_hash": fileHash,
 				"retention_until": retentionUntil, "import_source": "UPLOAD", "imported_by": currentUserID(c),
-				"confirmed_by": "", "confirmed_at": nil, "ocr_error": "", "ocr_text": "", "page_count": 0,
+				"confirmed_by": "", "confirmed_at": nil, "ocr_error": "", "extraction_json_path": "", "pending_extraction_json_path": "", "content_state": "UNSAVED", "page_count": 0,
 				"person_count": 0, "confidence": 0, "processing_started_at": nil, "processing_finished_at": nil,
 				"processing_duration_ms": 0,
 			}
@@ -741,28 +798,12 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				if err := lockEditableDocument(tx, duplicate.ID); err != nil {
 					return err
 				}
-				for _, model := range []any{&OCRLine{}, &OCRPage{}, &ExtractedField{}, &Appointment{}, &DocumentReference{}} {
+				for _, model := range []any{&ExtractedField{}, &Appointment{}, &DocumentReference{}} {
 					if err := tx.Where("document_id = ?", duplicate.ID).Delete(model).Error; err != nil {
 						return err
 					}
 				}
 				if err := tx.Model(&duplicate).Updates(updates).Error; err != nil {
-					return err
-				}
-				var updated Document
-				if err := tx.First(&updated, duplicate.ID).Error; err != nil {
-					return err
-				}
-				if err := syncCoreDocumentFile(tx, &updated); err != nil {
-					return err
-				}
-				if err := syncCoreOrderFromWorkflow(tx, &updated); err != nil {
-					return err
-				}
-				if err := syncCoreCommitteeFromWorkflow(tx, &updated); err != nil {
-					return err
-				}
-				if err := syncCoreConfirmation(tx, &updated); err != nil {
 					return err
 				}
 				return tx.Create(&AuditLog{DocumentID: &duplicate.ID, UserID: currentUserID(c), Action: "DOCUMENT_OVERWRITTEN", Details: header.Filename}).Error
@@ -785,12 +826,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			c.JSON(http.StatusOK, gin.H{"data": duplicate, "overwritten": true})
 			return
 		}
-		core := StoredDocument{
-			FileName: document.OriginalFilename, StoragePath: document.StoragePath,
-			FileType: document.SourceType, FileHash: document.FileHash,
-			CreatedAt: document.CreatedAt, UpdatedAt: document.UpdatedAt,
-		}
-		if err := createDocumentBundle(db, &core, &document); err != nil {
+		if err := db.Create(&document).Error; err != nil {
 			_ = os.Remove(storagePath)
 			logUploadFailure("create document bundle", 0, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกข้อมูลเอกสารได้"})
@@ -833,6 +869,10 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 			writeCancelledConflict(c, errDocumentCancelled)
 			return
 		}
+		if document.ContentState == "UNSAVED" {
+			c.JSON(http.StatusConflict, gin.H{"error": "กรุณาบันทึกข้อมูลก่อนยืนยัน"})
+			return
+		}
 		if document.Status == "CONFIRMED" {
 			c.JSON(http.StatusOK, gin.H{"message": "เอกสารนี้ยืนยันแล้ว", "data": document})
 			return
@@ -852,6 +892,14 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 		}
 		confirmed, err := confirmNow(db, document, currentUserID(c), "เจ้าหน้าที่ตรวจสอบและยืนยันข้อมูล")
 		if err != nil {
+			if errors.Is(err, errDocumentChanged) {
+				c.JSON(http.StatusConflict, gin.H{"error": "เอกสารเปลี่ยนแล้ว กรุณาโหลดเอกสารใหม่"})
+				return
+			}
+			if errors.Is(err, errAmbiguousConfirmationName) {
+				c.JSON(http.StatusConflict, gin.H{"error": "พบชื่อที่ตรงกับหลายคน กรุณาโหลดเอกสารใหม่และเลือกบุคคลก่อนยืนยัน"})
+				return
+			}
 			if writeCancelledConflict(c, err) {
 				return
 			}

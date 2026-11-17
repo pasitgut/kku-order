@@ -35,6 +35,7 @@ export type Appointment = {
   id: number;
   documentId: number;
   fullName: string;
+  confirmedName?: string;
   position: string;
   department: string;
   committeeRole: string;
@@ -82,6 +83,8 @@ export type ApiDocument = {
   orderType: string;
   orderYearBE: number;
   status: string;
+  extractionVersion?: string;
+  hasPendingExtraction?: boolean;
   orderNo: string;
   committee: string;
   signerName: string;
@@ -119,8 +122,24 @@ export type ApiDocument = {
   appointments: Appointment[];
   ocrPages: OCRPage[];
   revisions?: DocumentRevision[];
+  confirmations?: DocumentConfirmation[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type DocumentConfirmation = {
+  id: number;
+  confirmedBy: string;
+  confirmedAt: string;
+  names: {
+    appointmentId: number;
+    directoryPersonId: number | null;
+    documentName: string;
+    prefix: string;
+    firstName: string;
+    lastName: string;
+    position: string;
+  }[];
 };
 
 export type DocumentRevision = {
@@ -240,8 +259,8 @@ export async function getDocuments(params: { q?: string; status?: string; page?:
   return apiFetch<ListResponse>(`/api/v1/documents${query.size ? `?${query.toString()}` : ""}`);
 }
 
-export async function getDocument(id: string | number) {
-  return apiFetch<{ data: ApiDocument }>(`/api/v1/documents/${id}`);
+export async function getDocument(id: string | number, previewExtraction = false) {
+  return apiFetch<{ data: ApiDocument }>(`/api/v1/documents/${id}${previewExtraction ? "?previewExtraction=true" : ""}`);
 }
 
 export async function getDocumentRevisions(id: string | number) {

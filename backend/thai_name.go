@@ -74,7 +74,7 @@ func nameAndPosition(rawName, position string) (string, string) {
 func tidyAppointmentNames(db *gorm.DB) error {
 	var rows []Appointment
 	err := db.Table("appointments AS a").Select("a.id", "a.document_id", "a.full_name", "a.position").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
 		Where("a.full_name LIKE ? OR a.full_name LIKE ? OR a.full_name LIKE ? OR a.full_name LIKE ? OR a.full_name LIKE ? OR a.full_name LIKE ? OR a.full_name LIKE ? OR a.full_name LIKE ?",
 			"ผู้ช่วยศาสตราจารย์%", "รองศาสตราจารย์%", "ศาสตราจารย์%", "อาจารย์%", "นาย%", "นาง%", "น.ส.%", "_ศ.%").
@@ -105,7 +105,7 @@ func tidyAppointmentNames(db *gorm.DB) error {
 func refreshPendingMatches(db *gorm.DB) error {
 	var rows []Appointment
 	err := db.Table("appointments AS a").Select("a.*").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where("d.status NOT IN ?", []string{"CONFIRMED", documentCancelled}).
 		Where("a.directory_user_id IS NULL OR a.name_match_method IN ?", []string{matchMethodFuzzy, matchMethodPosition}).
 		Scan(&rows).Error

@@ -8,7 +8,8 @@ import { AppShell, StatusBadge } from "@/components/app-shell";
 import { useMe } from "@/components/me-context";
 import { useToast } from "@/components/toast";
 import { DepartmentDutiesPanel } from "@/components/department-duties-panel";
-import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, confirmDocument, returnDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, returnDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
+import { formatAuditTime } from "@/lib/audit-log";
 import { MatchState, departmentOf, isExternalName, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 import { canRescan, processingNote, rescanNeedsConfirm } from "@/lib/processing-status";
@@ -76,7 +77,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState("");
   const cancelled = document.status === "CANCELLED";
-  const editable = !cancelled && !cancelling && can(me?.role ?? "", "edit");
+  const canChangeDocument = !cancelled && !cancelling && document.status !== "PROCESSING" && can(me?.role ?? "", "edit");
+  const editable = canChangeDocument && document.status !== "CONFIRMED";
   const cancelReasonRef = useRef<HTMLTextAreaElement>(null);
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -100,8 +102,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 
   const departmentSummary = useMemo(() => summarizeDepartments(appointments), [appointments]);
   const unlinkedAppointments = useMemo(() => appointments.filter((row) => !isLinked(row) && !(guessFor(row) && !rejectedGuesses.has(row.id))), [appointments, rejectedGuesses]);
-  // ชื่อคนนอกคณะไม่นับเป็นงานค้าง ที่ต้องจัดการจริงคือแถวโดยตำแหน่งที่ยังไม่มีคน (และกรณียังไม่มีฐานบุคลากร)
+  // ชื่อคนนอกคณะไม่นับเป็นงานค้าง ส่วนชื่อซ้ำต้องให้ผู้ตรวจเลือกก่อนยืนยัน
   const blockingRows = unlinkedAppointments.filter((row) => !isExternalName(row));
+  const ambiguousCount = blockingRows.filter((row) => row.nameMatchMethod === "AMBIGUOUS").length;
   const externalRows = appointments.filter(isExternalName);
   const linkedCount = appointments.length - unlinkedAppointments.length;
   const linkedByPosition = appointments.filter((row) => isLinked(row) && row.nameMatchMethod === "POSITION").length;
@@ -161,7 +164,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     if (before && !isLinked(before)) {
       setRestorePoints((points) => ({ ...points, [id]: { fullName: before.fullName, position: before.position, nameMatchMethod: before.nameMatchMethod ?? "NOT_FOUND", nameMatchScore: before.nameMatchScore ?? 0 } }));
     }
-    setAppointments((current) => current.map((item) => item.id === id ? { ...item, directoryUserId: userId, fullName: fullName || item.fullName, position: item.position || positionTitle || "", nameMatchMethod: "MANUAL", nameMatchScore: 1 } : item));
+    setAppointments((current) => current.map((item) => item.id === id ? { ...item, directoryUserId: userId, directoryUser: undefined, position: item.position || positionTitle || "", candidates: [{ userId, fullName, positionTitle: positionTitle ?? "", score: 1 }], nameMatchMethod: "MANUAL", nameMatchScore: 1 } : item));
     setPicker(null);
     setDraft(null);
     setCompare(null);
@@ -195,6 +198,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     try {
       const response = await returnDocument(document.id);
       setDocument(response.data);
+      setFields(response.data.fields ?? []);
+      setAppointments(response.data.appointments ?? []);
       toast("ส่งกลับไปตรวจสอบแล้ว · แก้ไขเสร็จกดยืนยันอีกครั้ง");
     } catch (reason) {
       showError(reason, "ส่งกลับไปตรวจสอบไม่สำเร็จ");
@@ -293,20 +298,20 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const showUnlinked = () => { setPanel("members"); setOnlyUnlinked(true); setMemberQuery(""); };
 
   const buildPayload = () => ({
+    extractionVersion: document.extractionVersion ?? "",
+    expectedUpdatedAt: document.updatedAt,
     responsibilities: document.responsibilities,
     additionalReferences: document.additionalReferences,
     fields: fields.map((field) => ({ id: field.id, fieldKey: field.fieldKey, fieldLabel: field.fieldLabel, value: field.value, verified: field.verified })),
-    appointments: appointments.map((item) => ({ id: item.id, directoryUserId: item.directoryUserId ?? (rejectedGuesses.has(item.id) ? undefined : guessFor(item)?.userId), fullName: item.fullName, position: item.position, department: item.department, committeeRole: item.committeeRole, responsibilities: item.responsibilities, extraDuties: item.extraDuties ?? "", confidence: item.confidence, pageNo: item.pageNo, boundingBox: item.boundingBox, verified: item.verified })),
+    appointments: appointments.map((item) => ({ id: item.id, directoryUserId: item.directoryUserId ?? (rejectedGuesses.has(item.id) ? undefined : guessFor(item)?.userId), manualMatch: isLinked(item) && item.nameMatchMethod === "MANUAL", fullName: item.fullName, position: item.position, department: item.department, committeeRole: item.committeeRole, responsibilities: item.responsibilities, extraDuties: item.extraDuties ?? "", confidence: item.confidence, pageNo: item.pageNo, boundingBox: item.boundingBox, verified: item.verified })),
   });
 
   const saveDraft = async (confirm = false) => {
     setSaving(true);
     try {
-      const response = await updateDocument(document.id, { ...buildPayload(), reviewNotes: document.reviewNotes });
+      const response = await updateDocument(document.id, { ...buildPayload(), reviewNotes: document.reviewNotes, confirm });
       setDocument(response.data); setFields(response.data.fields ?? fields); setAppointments(response.data.appointments ?? appointments); setRestorePoints({});
       if (confirm) {
-        await confirmDocument(document.id);
-        setDocument((current) => ({ ...current, status: "CONFIRMED", confirmedAt: new Date().toISOString(), confirmedBy: "local-user" }));
         toast("บันทึกและยืนยันข้อมูลเรียบร้อยแล้ว");
       } else toast("บันทึกฉบับร่างลงฐานข้อมูลแล้ว");
     } catch (reason) {
@@ -314,6 +319,14 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     } finally {
       setSaving(false);
     }
+  };
+
+  const showExtraction = async (preview: boolean) => {
+    if (!window.confirm("การเปลี่ยนมุมมองจะละทิ้งข้อมูลที่แก้แต่ยังไม่ได้บันทึก ต้องการดำเนินการหรือไม่?")) return;
+    try {
+      const { data } = await getDocument(document.id, preview);
+      setDocument(data); setFields(data.fields ?? []); setAppointments(data.appointments ?? []); setRestorePoints({});
+    } catch (reason) { showError(reason, "ไม่สามารถโหลดข้อมูลได้"); }
   };
 
   // ทับไฟล์แล้วข้อมูลที่สกัดไว้ทั้งหมดถูกสร้างใหม่ จึงโหลดหน้าใหม่เพื่อเริ่มติดตามคิวประมวลผลอีกครั้ง
@@ -407,6 +420,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   </>;
 
   return <AppShell backHref="/documents" breadcrumb="เอกสารทั้งหมด / ตรวจสอบข้อมูล" title={document.title || document.originalFilename} meta={bandMeta}><div className="space-y-6">
+    {document.hasPendingExtraction && <section role="status" className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--line)] bg-white p-4 text-sm"><span>{document.extractionVersion ? "กำลังตรวจผลสแกนใหม่ ข้อมูลเดิมยังอยู่จนกว่าจะบันทึก" : "มีผลสแกนใหม่ ข้อมูลที่บันทึกไว้ยังอยู่"}</span><button type="button" className={smallButton} onClick={() => showExtraction(!document.extractionVersion)}>{document.extractionVersion ? "กลับไปข้อมูลเดิม" : "ดูผลสแกนใหม่"}</button></section>}
     {cancelled && <section role="status" className="rounded-lg border border-[var(--danger)]/25 bg-[var(--danger-soft)] p-5">
       <h2 className="flex items-center gap-2 text-base font-semibold text-[var(--danger)]"><WarningCircle size={20} />ยกเลิกเอกสารแล้ว</h2>
       <p className="mt-3 text-xs font-medium text-[var(--muted)]">เหตุผลที่ยกเลิก</p>
@@ -480,7 +494,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
                   <td className="px-4 py-3">{departmentOf(row)}</td>
                   <td className="px-4 py-3 text-[var(--muted)]">{[row.position, row.committeeRole].filter(Boolean).join(" · ") || "-"}</td>
                   <td className="px-5 py-2 lg:px-6">{isLinked(row)
-                    ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{row.directoryUser?.fullName || row.fullName}</span>{linkedBy[row.nameMatchMethod ?? ""] && <span className="rounded-full bg-[var(--line-soft)] px-2 py-0.5 text-[11px] text-[var(--muted)]">{linkedBy[row.nameMatchMethod ?? ""]}</span>}{editable && <button type="button" onClick={() => toggleRow(row.id, open)} className="focus-ring rounded text-xs text-[var(--accent)] hover:underline">{open ? "ปิด" : "เปลี่ยน"}</button>}</div>
+                    ? <div className="flex flex-wrap items-center gap-x-2 gap-y-1"><span className="font-medium">{row.directoryUser?.fullName || row.candidates?.find((candidate) => candidate.userId === row.directoryUserId)?.fullName || row.fullName}</span>{linkedBy[row.nameMatchMethod ?? ""] && <span className="rounded-full bg-[var(--line-soft)] px-2 py-0.5 text-[11px] text-[var(--muted)]">{linkedBy[row.nameMatchMethod ?? ""]}</span>}{editable && <button type="button" onClick={() => toggleRow(row.id, open)} className="focus-ring rounded text-xs text-[var(--accent)] hover:underline">{open ? "ปิด" : "เปลี่ยน"}</button>}</div>
                     : showGuess
                       ? <select disabled={!editable} aria-label={`เลือกบุคคลสำหรับ ${personLabel(row)}`} value={String(guess.userId)} onChange={(event) => { if (event.target.value === "other") { rejectGuess(row.id); setOpenRows((rows) => ({ ...rows, [row.id]: true })); } else if (event.target.value === "none") rejectGuess(row.id); else { const chosen = row.candidates?.find((candidate) => String(candidate.userId) === event.target.value); if (chosen) linkAppointment(row.id, chosen.userId, chosen.fullName, chosen.positionTitle); } }} className="focus-ring h-9 w-full rounded-md border border-[#f0882a] bg-[#fffaf5] px-2.5 text-[13px]">
                         {row.candidates?.map((candidate) => <option key={candidate.userId} value={candidate.userId}>{candidate.fullName}{candidate.userId === guess.userId ? " (ระบบเดา)" : ""}</option>)}
@@ -509,12 +523,28 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
 
         {panel === "duties" && <div className="flex flex-1 flex-col"><DepartmentDutiesPanel appointments={appointments} editable={editable} onChange={(update) => setAppointments(update)} /><details className="border-t border-[var(--line)] px-5 py-4 lg:px-6"><summary className="focus-ring min-h-10 cursor-pointer rounded py-2 text-sm font-medium text-[var(--navy)]">หน้าที่โดยรวมของคณะกรรมการ และการอ้างอิงประกาศเพิ่มเติม</summary><div className="mt-3 space-y-5"><label className="block"><span className="text-sm font-medium text-[var(--navy)]">หน้าที่รับผิดชอบของคณะกรรมการ</span><textarea readOnly={!editable} value={document.responsibilities} onChange={(event) => setDocument((current) => ({ ...current, responsibilities: event.target.value }))} rows={8} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /><span className="mt-1 block text-xs text-[var(--muted)]">แก้ไขข้อความจากเอกสารได้ แล้วกดบันทึกฉบับร่าง</span></label><label className="block"><span className="text-sm font-medium text-[var(--navy)]">การอ้างอิงประกาศเพิ่มเติม</span><textarea readOnly={!editable} value={document.additionalReferences} onChange={(event) => setDocument((current) => ({ ...current, additionalReferences: event.target.value }))} rows={4} className="focus-ring mt-2 w-full rounded-md border border-[var(--line-strong)] px-3 py-2 text-sm leading-6 outline-none focus:border-[var(--accent)]" /></label></div></details></div>}
       </section>}
+    {panel === "history" && <section className="card px-5 py-4">
+      <h2 className="text-base font-semibold text-[var(--ink)]">ประวัติการยืนยันรายชื่อ</h2>
+      {(document.confirmations ?? []).map((confirmation) => (
+        <details key={confirmation.id} className="mt-3 border-t border-[var(--line)] pt-3 text-sm">
+          <summary className="cursor-pointer font-medium">{formatAuditTime(confirmation.confirmedAt)} · {confirmation.confirmedBy} · {confirmation.names.length} รายการ</summary>
+          <table className="data-grid mt-2 w-full text-left">
+            <thead><tr><th>ชื่อที่ยืนยัน</th><th>ชื่อในทะเบียนเมื่อยืนยัน</th></tr></thead>
+            <tbody>{confirmation.names.map((name) => {
+              const directoryName = [name.prefix, name.firstName, name.lastName].filter(Boolean).join(" ");
+              return <tr key={name.appointmentId}><td>{name.documentName || directoryName || name.position || "–"}</td><td>{directoryName || "–"}</td></tr>;
+            })}</tbody>
+          </table>
+        </details>
+      ))}
+      {!document.confirmations?.length && <p className="mt-2 text-sm text-[var(--muted)]">{document.confirmedAt ? "ไม่มีหลักฐานรายชื่อ ณ รอบที่ยืนยัน" : "ยังไม่มีประวัติการยืนยันรายชื่อ"}</p>}
+    </section>}
     {panel === "history" && <section className="card overflow-hidden"><div className="border-b border-[var(--line)] px-5 py-4 lg:px-6"><h2 className="text-base font-semibold text-[var(--navy)]">ประวัติการแก้ไข</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">บันทึกการเปลี่ยนแปลงข้อมูลและการยกเลิกเอกสาร</p></div><div className="overflow-x-auto"><table className="data-grid w-full min-w-[620px] text-left text-sm"><thead><tr><th className="px-6 py-3">ฟิลด์</th><th className="px-4 py-3">ค่าเดิม</th><th className="px-4 py-3">ค่าที่แก้ไข</th><th className="px-6 py-3">ผู้แก้ไข / เวลา</th></tr></thead><tbody>{revisions.map((revision) => <tr key={revision.id}><td className="px-6 py-3 font-medium">{revision.fieldKey === "cancellation_reason" ? "เหตุผลที่ยกเลิก" : revision.fieldKey === "status" ? "สถานะเอกสาร" : revision.fieldKey}</td><td className="max-w-[180px] truncate px-4 py-3 text-[var(--muted)]">{revision.fieldKey === "status" ? statusLabel(revision.oldValue) : revision.oldValue || "-"}</td><td className="max-w-[180px] truncate px-4 py-3">{revision.fieldKey === "status" ? statusLabel(revision.newValue) : revision.newValue || "-"}</td><td className="px-6 py-3 text-xs text-[var(--muted)]">{revision.changedBy}<br />{formatThaiDate(revision.changedAt)}</td></tr>)}{revisions.length === 0 && <tr><td colSpan={4} className="px-6 py-12 text-center text-[var(--muted)]">ยังไม่มีประวัติการแก้ไขเอกสาร</td></tr>}</tbody></table></div></section>}
     </div>
-        {editable && <div className="card flex flex-col gap-3 border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between lg:px-6">
-          <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5 sm:flex-1">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : blockingRows.length > 0 ? <><Info size={18} className="shrink-0 text-[#9a4a0c]" /><span className="text-[#9a4a0c]">ยังไม่ผูก {blockingRows.length} แถว · ยืนยันได้เลย แถวเหล่านี้เก็บตามเอกสารไว้ก่อน ผูกทีหลังได้</span></>
+        {canChangeDocument && <div className="card flex flex-col gap-3 border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between lg:px-6">
+          <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5 sm:flex-1">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : ambiguousCount > 0 ? <><Info size={18} className="shrink-0 text-[#9a4a0c]" /><span>พบชื่อซ้ำ {ambiguousCount} แถว · เลือกบุคคลก่อนยืนยัน</span></> : blockingRows.length > 0 ? <><Info size={18} className="shrink-0 text-[#9a4a0c]" /><span className="text-[#9a4a0c]">ยังไม่ผูก {blockingRows.length} แถว · ยืนยันได้เลย แถวเหล่านี้เก็บตามเอกสารไว้ก่อน ผูกทีหลังได้</span></>
           : externalRows.length > 0 && document.status !== "CONFIRMED" ? <><Info size={18} className="shrink-0 text-[var(--muted)]" /><span className="text-[var(--muted)]">ไม่อยู่ในระบบ {externalRows.length} ชื่อ · เก็บตามเอกสารไว้ ระบบจะผูกให้เองเมื่อคนเหล่านี้เข้าระบบ</span></> : document.status === "CONFIRMED" ? <><CheckCircle size={18} weight="fill" className="shrink-0 text-[var(--success)]" /><span>ยืนยันข้อมูลแล้วโดย {document.confirmedBy || "เจ้าหน้าที่"}</span></> : <><Info size={18} className="shrink-0 text-[var(--accent)]" /><span className="text-[var(--muted)]">ระบบจะไม่ถือเป็นข้อมูลสมบูรณ์จนกว่าจะยืนยัน</span></>}</div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || document.status === "CONFIRMED"} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button>{editable && <><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || ambiguousCount > 0} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></>}</div>
         </div>}
 
     {editable && compare && <CandidateCompareDialog compare={compare} onSelect={(userId) => setCompare({ ...compare, selected: userId })} onClose={() => setCompare(null)} onConfirm={(candidate) => linkAppointment(compare.appointment.id, candidate.userId, candidate.fullName, candidate.positionTitle)} onCreate={() => { const row = compare.appointment; setCompare(null); openDraft(row); }} />}

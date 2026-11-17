@@ -14,7 +14,7 @@ import (
 func linkExternalNames(db *gorm.DB, changedBy string) (int, error) {
 	var rows []Appointment
 	err := db.Table("appointments AS a").Select("a.*").
-		Joins("JOIN document_workflows AS d ON d.id = a.document_id").
+		Joins("JOIN documents AS d ON d.id = a.document_id").
 		Where("d.status <> ?", documentCancelled).
 		Where("a.directory_user_id IS NULL AND TRIM(COALESCE(a.full_name, '')) <> ''").
 		Where("COALESCE(a.name_match_method, '') <> ?", matchMethodManual).

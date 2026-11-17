@@ -19,9 +19,19 @@ func loadDirectory(db *gorm.DB) ([]DirectoryUser, map[string]uint, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	var previous []DirectoryPreviousName
+	if err := db.Find(&previous).Error; err != nil {
+		return nil, nil, err
+	}
+	previousByPerson := make(map[uint][]string)
+	for _, name := range previous {
+		previousByPerson[name.DirectoryPersonID] = append(previousByPerson[name.DirectoryPersonID], name.NormalizedName)
+	}
 	users := make([]DirectoryUser, 0, len(people))
 	for _, person := range people {
-		users = append(users, directoryPersonAPI(person, profiles[person.ID]))
+		user := directoryPersonAPI(person, profiles[person.ID])
+		user.PreviousNames = previousByPerson[person.ID]
+		users = append(users, user)
 	}
 
 	var rows []PersonNameAlias

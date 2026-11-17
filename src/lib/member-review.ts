@@ -16,9 +16,9 @@ export function isLinked(row: Appointment) {
 }
 
 // isExternalName: แถวที่มีชื่อแต่ระบบผูกกับใครไม่ได้ ถือเป็นคนนอกคณะ ไม่นับเป็นงานค้าง และผูกเองเมื่อคนนั้นเข้าระบบ
-// ยกเว้นกรณียังไม่มีฐานบุคลากรเลย ที่ต้อง sync ก่อน (ตรงกับ readyToAutoConfirm ใน backend/document_status.go)
+// ชื่อซ้ำและกรณียังไม่มีฐานบุคลากรต้องรอตรวจสอบ (ตรงกับ readyToAutoConfirm ใน backend/document_status.go)
 export function isExternalName(row: Appointment) {
-  return !isLinked(row) && row.fullName.trim() !== "" && row.nameMatchMethod !== "DIRECTORY_EMPTY";
+  return !isLinked(row) && row.fullName.trim() !== "" && row.nameMatchMethod !== "DIRECTORY_EMPTY" && row.nameMatchMethod !== "AMBIGUOUS";
 }
 
 export function departmentOf(row: Appointment) {
@@ -36,7 +36,6 @@ export function matchState(row: Appointment): MatchState {
       // เจ้าหน้าที่ปล่อยว่างเอง ระบบจะไม่ผูกกลับ จึงไม่บอกว่าจะผูกให้
       if (method === "MANUAL") return { label: "ปล่อยว่างไว้", detail: "เจ้าหน้าที่ปล่อยว่างไว้ เก็บเป็นชื่อตามเอกสาร", tone: "neutral" };
       if (resolvedMethods.has(method)) return { label: "พบชื่อตรง รอผูก", detail: "พบชื่อที่ตรงกัน กดเพื่อผูก", tone: "neutral" };
-      if (method === "AMBIGUOUS") return { label: `ชื่อซ้ำ ${row.candidates?.length || "หลาย"} คน`, detail: "มีชื่อซ้ำกันหลายคน เลือกเองได้ ถ้าไม่เลือกระบบเก็บไว้เป็นชื่อตามเอกสาร", tone: "neutral" };
       if (method === "FUZZY" && row.candidates?.length) return { label: "ชื่อใกล้เคียง", detail: "มีชื่อใกล้เคียงในระบบ ยืนยันเองได้ ถ้าไม่ใช่ระบบเก็บไว้เป็นชื่อตามเอกสาร", tone: "neutral" };
       return { label: "ไม่อยู่ในระบบ", detail: "ไม่พบในรายชื่อบุคลากร อาจเป็นคนนอกคณะ ระบบจะผูกให้เองเมื่อคนนี้เข้าระบบ", tone: "neutral" };
     }
@@ -107,6 +106,7 @@ export function rosterRows(rows: Appointment[]): RosterRow[] {
 
 // แถวโดยตำแหน่งที่ระบบหาคนให้แล้ว แสดงชื่อคนนั้นแทนช่องว่าง
 export function rosterName(row: Appointment) {
+  if (row.confirmedName !== undefined) return row.confirmedName || row.position;
   if (row.fullName.trim() || !isLinked(row) || !row.directoryUser?.fullName) return row.fullName;
   return `${row.directoryUser.fullName} (ตามตำแหน่ง)`;
 }

@@ -165,7 +165,7 @@ func TestReplacedFileUpdatesClearsEverythingDerivedFromTheOldFile(t *testing.T) 
 	if updates["confirmed_by"] != "" || updates["confirmed_at"] != nil {
 		t.Fatalf("confirmation = %v/%v, want it dropped", updates["confirmed_by"], updates["confirmed_at"])
 	}
-	for _, key := range []string{"ocr_text", "ocr_error"} {
+	for _, key := range []string{"ocr_error"} {
 		if updates[key] != "" {
 			t.Fatalf("%s = %v, want cleared", key, updates[key])
 		}
