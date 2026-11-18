@@ -28,7 +28,8 @@ export default function ProfilePage() {
   const details: [string, string][] = [["บัญชีผู้ใช้", me?.userId ?? "-"], ["อีเมล", me?.email || "ไม่พบในฐานข้อมูลบุคลากร"], ["หน่วยงาน", me?.department || "-"]];
 
   return <AppShell breadcrumb="หน้าหลัก / โปรไฟล์" title="โปรไฟล์ของฉัน" description="บัญชี สิทธิ์ และงานล่าสุดของคุณในระบบ">
-    <div className="grid items-start gap-6 xl:grid-cols-3">
+    {/* grid-cols-1 ให้คอลัมน์บนมือถือกว้างไม่เกินจอ ข้อความยาวในรายการจะถูกตัดแทนที่จะดันการ์ดให้ล้น */}
+    <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-3">
       <section className="card overflow-hidden">
         <div className="flex flex-col items-center gap-2.5 border-b border-[var(--line)] px-6 pb-6 pt-7 text-center">
           <span className="relative">
@@ -48,7 +49,7 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      <div className="space-y-6 xl:col-span-2">
+      <div className="min-w-0 space-y-6 xl:col-span-2">
         {error && <div role="alert" className="rounded-lg bg-[var(--danger-soft)] p-4 text-sm font-medium text-[var(--danger)]">{error}</div>}
         <div role="status" className="card grid grid-cols-3">{[["นำเข้าเดือนนี้", activity?.stats.imported], ["ยืนยันเดือนนี้", activity?.stats.confirmed], ["แก้ไขเดือนนี้", activity?.stats.edited]].map(([label, value]) => <div key={String(label)} className="border-r border-[var(--line-soft)] px-5 py-4 last:border-0"><p className="text-xs text-[var(--muted)]">{label}</p><p className="mt-1 text-2xl font-semibold text-[var(--navy)]">{value ?? "-"}</p></div>)}</div>
 

@@ -17,6 +17,7 @@ import (
 	"mime/multipart"
 
 	"github.com/gin-gonic/gin"
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/robfig/cron/v3"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -613,18 +614,19 @@ func listDocuments(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
-		if err := hydrateUnsavedDocuments(documents); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
-			return
-		}
+		hydrateUnsavedDocuments(documents)
 		c.JSON(http.StatusOK, gin.H{"data": documents, "pagination": gin.H{"total": total, "page": parsePage(c), "limit": parseLimit(c)}})
 	}
 }
 
 func getDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var document Document
-		if err := db.Preload("Fields").Preload("Appointments").Preload("Appointments.DirectoryPerson").Preload("References").Preload("Confirmations", func(q *gorm.DB) *gorm.DB { return q.Order("id DESC") }).First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Preload("Fields").Preload("Appointments").Preload("Appointments.DirectoryPerson").Preload("References").Preload("Confirmations", func(q *gorm.DB) *gorm.DB { return q.Order("id DESC") }).First(&document, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -726,6 +728,9 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "ไฟล์ต้องมีขนาดไม่เกิน 50 MB"})
 			return
 		}
+		if rejectEmptyUpload(c, header.Size) {
+			return
+		}
 		fileHash, err := hashUpload(file)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ไม่สามารถอ่านไฟล์เพื่อตรวจสอบซ้ำได้"})
@@ -742,7 +747,7 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 				return
 			}
 			if !strings.EqualFold(c.PostForm("overwrite"), "true") {
-				c.JSON(http.StatusConflict, gin.H{"error": "พบไฟล์เอกสารที่เคยนำเข้าแล้ว", "duplicateDocumentId": duplicate.ID, "canOverwrite": true})
+				writeDuplicateUpload(c, duplicate)
 				return
 			}
 			if duplicate.Status == "PROCESSING" {
@@ -779,26 +784,19 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 			document.MimeType = "application/octet-stream"
 		}
 		if duplicate.ID != 0 {
-			retentionUntil := time.Now().AddDate(10, 0, 0)
-			updates := map[string]any{
-				"title": document.Title, "original_filename": storedFilename,
-				"storage_path": storagePath, "source_type": strings.TrimPrefix(ext, "."), "mime_type": document.MimeType,
-				"status": "PROCESSING", "processing_stage": "QUEUED", "file_size_bytes": header.Size, "file_hash": fileHash,
-				"retention_until": retentionUntil, "import_source": "UPLOAD", "imported_by": currentUserID(c),
-				"confirmed_by": "", "confirmed_at": nil, "ocr_error": "", "extraction_json_path": "", "pending_extraction_json_path": "", "content_state": "UNSAVED", "page_count": 0,
-				"person_count": 0, "confidence": 0, "processing_started_at": nil, "processing_finished_at": nil,
-				"processing_duration_ms": 0,
-			}
-			for key, value := range retryResetUpdates() {
-				updates[key] = value
-			}
+			// บันทึกทับคือสแกนไฟล์ใหม่ตั้งแต่ต้น ล้างทุกอย่างที่อ่านจากรอบเดิมเหมือนการอัปโหลดไฟล์ทับ
+			updates := replacedFileUpdates(replacementFile{
+				Title: document.Title, Filename: storedFilename, StoragePath: storagePath,
+				SourceType: document.SourceType, MimeType: document.MimeType, SizeBytes: header.Size, Hash: fileHash,
+			}, document.ImportedBy, time.Now())
+			updates["import_source"] = "UPLOAD"
 			// gorm writes the new storage_path back into duplicate, so the old path is read first.
 			previousPath := duplicate.StoragePath
 			if err := db.Transaction(func(tx *gorm.DB) error {
 				if err := lockEditableDocument(tx, duplicate.ID); err != nil {
 					return err
 				}
-				for _, model := range []any{&ExtractedField{}, &Appointment{}, &DocumentReference{}} {
+				for _, model := range []any{&ExtractedField{}, &Appointment{}, &DocumentReference{}, &ExpiryNotification{}} {
 					if err := tx.Where("document_id = ?", duplicate.ID).Delete(model).Error; err != nil {
 						return err
 					}
@@ -828,6 +826,14 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		}
 		if err := db.Create(&document).Error; err != nil {
 			_ = os.Remove(storagePath)
+			// อีกคำขอหนึ่งนำเข้าไฟล์เดียวกันไปก่อนระหว่างที่ตรวจซ้ำเสร็จแล้ว ตอบเหมือนเจอไฟล์ซ้ำตั้งแต่แรก
+			if isDuplicateKeyError(err) {
+				var winner Document
+				if findErr := db.Where("file_hash = ?", fileHash).First(&winner).Error; findErr == nil {
+					writeDuplicateUpload(c, winner)
+					return
+				}
+			}
 			logUploadFailure("create document bundle", 0, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถบันทึกข้อมูลเอกสารได้"})
 			return
@@ -836,6 +842,21 @@ func uploadDocument(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 		processor.Enqueue(document.ID)
 		c.JSON(http.StatusCreated, gin.H{"data": document})
 	}
+}
+
+// writeDuplicateUpload ตอบ 409 เมื่อไฟล์นี้เคยนำเข้าแล้ว เอกสารที่ยกเลิกแล้วบันทึกทับไม่ได้
+func writeDuplicateUpload(c *gin.Context, duplicate Document) {
+	if duplicate.Status == documentCancelled {
+		writeCancelledConflict(c, errDocumentCancelled)
+		return
+	}
+	c.JSON(http.StatusConflict, gin.H{"error": "พบไฟล์เอกสารที่เคยนำเข้าแล้ว", "duplicateDocumentId": duplicate.ID, "canOverwrite": true})
+}
+
+// isDuplicateKeyError บอกว่า MySQL ปฏิเสธเพราะชน unique index (1062)
+func isDuplicateKeyError(err error) bool {
+	var mysqlErr *mysqldriver.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
 }
 
 // logUploadFailure records why an upload answered 500, since the client only sees a generic message.
@@ -860,8 +881,12 @@ func hashUpload(file multipart.File) (string, error) {
 
 func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var document Document
-		if err := db.First(&document, c.Param("id")).Error; err != nil {
+		if err := db.First(&document, id).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 			return
 		}
@@ -913,8 +938,12 @@ func confirmDocument(db *gorm.DB) gin.HandlerFunc {
 
 func listDocumentRevisions(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var revisions []DocumentRevision
-		query := db.Where("document_id = ?", c.Param("id")).Order("changed_at DESC").Limit(parseLimit(c))
+		query := db.Where("document_id = ?", id).Order("changed_at DESC").Limit(parseLimit(c))
 		if err := query.Find(&revisions).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดประวัติการแก้ไขได้"})
 			return
@@ -925,8 +954,12 @@ func listDocumentRevisions(db *gorm.DB) gin.HandlerFunc {
 
 func listDocumentAuditLogs(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var logs []AuditLog
-		query := db.Where("document_id = ?", c.Param("id")).Order("created_at DESC").Limit(parseLimit(c))
+		query := db.Where("document_id = ?", id).Order("created_at DESC").Limit(parseLimit(c))
 		if err := query.Find(&logs).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดประวัติการทำรายการได้"})
 			return

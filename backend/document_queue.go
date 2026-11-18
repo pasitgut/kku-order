@@ -11,8 +11,8 @@ type extractionJobs interface {
 	Claim(id uint, now time.Time) (Document, bool, error)
 	SaveExtraction(doc *Document, result ExtractionResult, started time.Time) error
 	SaveStructured(doc *Document, result workerResult, started time.Time) error
-	MarkRetry(id uint, plan failurePlan) error
-	MarkFailed(id uint, failure ExtractError, started time.Time) error
+	MarkRetry(doc *Document, plan failurePlan) error
+	MarkFailed(doc *Document, failure ExtractError, started time.Time) error
 	DueForQueue(now time.Time, startup bool) ([]uint, error)
 }
 
@@ -121,7 +121,7 @@ func (p *DocumentProcessor) processOne(ctx context.Context, id uint) {
 	if err != nil {
 		plan := planExtractionFailure(err, doc.ExtractionAttempts, doc.ExtractionLastStatus, p.now())
 		if plan.Retry {
-			if mErr := p.jobs.MarkRetry(id, plan); mErr != nil {
+			if mErr := p.jobs.MarkRetry(&doc, plan); mErr != nil {
 				p.logger.Printf("mark retry %d: %v", id, mErr)
 			}
 			return
@@ -137,7 +137,7 @@ func (p *DocumentProcessor) processOne(ctx context.Context, id uint) {
 
 // markExtractionFailed เป็นจุดเดียวที่ตั้งสถานะ FAILED (งานอีเมลแจ้งแอดมินจะต่อที่นี่)
 func (p *DocumentProcessor) markExtractionFailed(doc Document, failure ExtractError, started time.Time) {
-	if err := p.jobs.MarkFailed(doc.ID, failure, started); err != nil {
+	if err := p.jobs.MarkFailed(&doc, failure, started); err != nil {
 		p.logger.Printf("mark failed %d: %v", doc.ID, err)
 	}
 }

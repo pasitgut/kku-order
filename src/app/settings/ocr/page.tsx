@@ -6,6 +6,7 @@ import { ArrowRight, Eye, EyeSlash, FolderSimple, Info } from "@phosphor-icons/r
 import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { useToast } from "@/components/toast";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import { OCRAPIKeyState, OCRConnectionResult, OCRSettings, deleteOCRAPIKey, getAutoConfirm, getOCRSettings, getSystemSettings, saveOCRAPIKey, testOCRConnection, updateAutoConfirm, updateOCRSettings } from "@/lib/api";
 import { ocrAPIKeyPlaceholder } from "@/lib/ocr-api-key";
 import { can } from "@/lib/permissions";
@@ -60,6 +61,8 @@ export default function OCRSettingsPage() {
 
   const editable = can(me?.role ?? "", "settings");
   const dirty = Boolean(form && saved && JSON.stringify(form) !== JSON.stringify(saved));
+  // API key ที่พิมพ์ไว้แต่ยังไม่กดบันทึกก็นับเป็นข้อมูลค้าง
+  useUnsavedChanges(editable && (dirty || apiKeyInput.trim() !== ""));
   const patch = (value: Partial<OCRSettings>) => setForm((current) => current ? { ...current, ...value } : current);
 
   const save = async () => {

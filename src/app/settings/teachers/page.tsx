@@ -6,6 +6,7 @@ import { useMe } from "@/components/me-context";
 import { SettingsCard, SettingsFrame, StatusDot } from "@/components/settings-frame";
 import { TeacherProfileEditor } from "@/components/teacher-profile-editor";
 import { useToast } from "@/components/toast";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 import { ApiError, DirectoryUser, VacantPosition, createDirectoryUser, getDirectoryUsers, getDirectoryUsersPage, getVacantPositions, setPositionHolder } from "@/lib/api";
 import { can } from "@/lib/permissions";
 import { initials } from "@/lib/person";
@@ -39,6 +40,7 @@ export default function TeachersSettingsPage() {
   const [vacancyRevision, setVacancyRevision] = useState(0);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const canCreate = can(me?.role ?? "", "createPerson");
+  useUnsavedChanges(canCreate && (JSON.stringify(draft) !== JSON.stringify(emptyDraft) || managerPositions.length > 0));
 
   useEffect(() => {
     if (success && !saving) firstNameRef.current?.focus();

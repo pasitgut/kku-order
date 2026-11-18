@@ -71,7 +71,8 @@ export function AppShell({ children, title, breadcrumb, description, actions, me
               {description && <p className="mt-1.5 max-w-2xl text-sm font-light leading-6 text-[#e6f1fa] lg:text-[15px]">{description}</p>}
             </div>
           </div>
-          {(actions || meta) && <div className="flex shrink-0 flex-wrap items-center gap-2.5">{meta}{actions}</div>}
+          {/* ห้าม shrink-0 แถวปุ่มต้องหดตามจอได้ ปุ่มที่ล้นจึงขึ้นบรรทัดใหม่แทนที่จะดันหน้าให้กว้างเกินจอ */}
+          {(actions || meta) && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2.5">{meta}{actions}</div>}
         </div>
       </section>}
 

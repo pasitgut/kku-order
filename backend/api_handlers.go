@@ -62,6 +62,46 @@ type appointmentRequest struct {
 	Verified         bool    `json:"verified"`
 }
 
+// documentIDParam อ่านรหัสเอกสารจาก path ถ้าไม่ใช่ตัวเลขตอบ 400 ไปเลย
+// ห้ามส่ง c.Param("id") ให้ First ตรงๆ เพราะ GORM อ่านสตริงที่ไม่ใช่ตัวเลขเป็นเงื่อนไข SQL
+func documentIDParam(c *gin.Context) (uint, bool) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
+		return 0, false
+	}
+	return uint(id), true
+}
+
+const errPageNotInDocument = "ไม่พบหน้านี้ในเอกสาร"
+
+// rejectEmptyUpload ตอบ 400 ถ้าไฟล์ว่าง ไฟล์ 0 byte ไม่มีอะไรให้อ่าน
+func rejectEmptyUpload(c *gin.Context, size int64) bool {
+	if size > 0 {
+		return false
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": "ไฟล์ว่างเปล่า กรุณาเลือกไฟล์ที่มีเนื้อหา"})
+	return true
+}
+
+// awaitingConfirmationStatus คือกลุ่ม "รอยืนยัน" ที่ใช้กรองรายการเอกสาร ตรงกับตัวเลข review + needsReview ในภาพรวม
+const awaitingConfirmationStatus = "AWAITING_CONFIRMATION"
+
+// MarkFailed ตั้งสถานะเป็น NEEDS_REVIEW และ processing_stage = FAILED ไม่มีสถานะ FAILED จริง
+// เอกสารที่ OCR ล้มเหลวและยังไม่มีใครพิมพ์ข้อมูลเองนับเป็น "ประมวลผลไม่สำเร็จ" แยกจาก "รอยืนยัน"
+const failedScanCondition = "processing_stage = 'FAILED' AND content_state = 'UNSAVED'"
+
+// failedScan เลือกเฉพาะเอกสารที่ OCR ล้มเหลวและยังไม่มีใครพิมพ์ข้อมูลเอง
+func failedScan(db *gorm.DB) *gorm.DB {
+	return db.Where(failedScanCondition)
+}
+
+// notFailedScan ตัดเอกสารที่ OCR ล้มเหลวและยังไม่มีใครพิมพ์ข้อมูลเองออก
+// ภาพรวมและรายการ "รอยืนยัน" ในหน้าแรกใช้ตัวกรองเดียวกันนี้ ตัวเลขกับรายการจึงตรงกันเสมอ
+func notFailedScan(db *gorm.DB) *gorm.DB {
+	return db.Where("NOT (" + failedScanCondition + ")")
+}
+
 func dashboardHandler(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var total, processing, review, confirmed, needsReview, returned, failed, expiring int64
@@ -73,11 +113,12 @@ func dashboardHandler(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดภาพรวมระบบได้"})
 			return
 		}
-		_ = db.Model(&Document{}).Where("status = ?", "REVIEW").Count(&review).Error
+		// เอกสารที่ OCR ล้มเหลวไม่นับใน review/needsReview แต่นับใน failed ส่วนที่ส่งกลับไปตรวจสอบนับอยู่ใน returned อย่างเดียว
+		_ = db.Model(&Document{}).Where("status = ?", "REVIEW").Scopes(notFailedScan).Count(&review).Error
 		_ = db.Model(&Document{}).Where("status = ?", "CONFIRMED").Count(&confirmed).Error
-		_ = db.Model(&Document{}).Where("status = ?", "NEEDS_REVIEW").Count(&needsReview).Error
+		_ = db.Model(&Document{}).Where("status = ?", "NEEDS_REVIEW").Scopes(notFailedScan).Count(&needsReview).Error
 		_ = db.Model(&Document{}).Where("status = ?", documentReturned).Count(&returned).Error
-		_ = db.Model(&Document{}).Where("status = ?", "FAILED").Count(&failed).Error
+		_ = db.Model(&Document{}).Where("status IN ?", []string{"REVIEW", "NEEDS_REVIEW"}).Scopes(failedScan).Count(&failed).Error
 		_ = db.Model(&Document{}).Where("status NOT IN ?", []string{documentCancelled, documentReturned}).Where("expiry_date IS NOT NULL AND expiry_date BETWEEN CURRENT_TIMESTAMP AND DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)").Count(&expiring).Error
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"total": total, "processing": processing, "review": review, "confirmed": confirmed,
@@ -94,10 +135,7 @@ func searchDocuments(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถค้นหาข้อมูลได้"})
 			return
 		}
-		if err := hydrateUnsavedDocuments(documents); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
-			return
-		}
+		hydrateUnsavedDocuments(documents)
 		c.JSON(http.StatusOK, gin.H{"data": documents})
 	}
 }
@@ -168,8 +206,12 @@ func respondDirectoryUsers(c *gin.Context, users []DirectoryUser) {
 
 func documentFile(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var document Document
-		if err := db.Select("id", "storage_path", "original_filename", "mime_type").First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Select("id", "storage_path", "original_filename", "mime_type").First(&document, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -196,8 +238,12 @@ func documentPageImage(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "หมายเลขหน้าไม่ถูกต้อง"})
 			return
 		}
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var document Document
-		if err := db.Select("id", "storage_path", "source_type").First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Select("id", "storage_path", "source_type", "page_count").First(&document, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -207,6 +253,10 @@ func documentPageImage(db *gorm.DB) gin.HandlerFunc {
 		}
 		if !strings.EqualFold(document.SourceType, "pdf") {
 			c.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "เอกสารนี้ไม่มีหน้า PDF สำหรับแสดงผล"})
+			return
+		}
+		if document.PageCount > 0 && pageNo > document.PageCount {
+			c.JSON(http.StatusNotFound, gin.H{"error": errPageNotInDocument})
 			return
 		}
 		if _, err := os.Stat(document.StoragePath); err != nil {
@@ -223,6 +273,11 @@ func documentPageImage(db *gorm.DB) gin.HandlerFunc {
 		outputBase := filepath.Join(tempDir, "page")
 		args := []string{"-png", "-r", getenvInt("OCR_DPI", 200), "-f", strconv.Itoa(pageNo), "-l", strconv.Itoa(pageNo), "-singlefile", document.StoragePath, outputBase}
 		if output, err := exec.CommandContext(c.Request.Context(), getenv("PDFTOPPM_BIN", "pdftoppm"), args...).CombinedOutput(); err != nil {
+			// page_count ยังเป็น 0 ได้ถ้าเอกสารยังไม่เคยประมวลผล จึงดูข้อความของ pdftoppm ด้วย
+			if strings.Contains(string(output), "Wrong page range") {
+				c.JSON(http.StatusNotFound, gin.H{"error": errPageNotInDocument})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถ render หน้าเอกสารได้", "details": strings.TrimSpace(string(output))})
 			return
 		}
@@ -239,13 +294,17 @@ func documentPageImage(db *gorm.DB) gin.HandlerFunc {
 
 func updateDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var payload updateDocumentRequest
 		if err := c.ShouldBindJSON(&payload); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "รูปแบบข้อมูลไม่ถูกต้อง"})
 			return
 		}
 		var document Document
-		if err := db.First(&document, c.Param("id")).Error; err != nil {
+		if err := db.First(&document, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -259,7 +318,20 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 		}
 		var preview *extractionFile
 		previewPath := ""
-		if document.ContentState == "UNSAVED" || payload.ExtractionVersion != "" {
+		// OCR ล้มเหลวจึงไม่มีไฟล์ผลสกัดให้ตรวจ ผู้ตรวจพิมพ์ข้อมูลเองได้ บันทึกลงตารางตรงๆ แล้วกลายเป็นฉบับร่าง
+		// เฉพาะเอกสารที่ OCR ล้มเหลวเท่านั้น เอกสารที่ยังรอคิว OCR (IMPORTED/QUEUED/EXTRACTING) ห้ามพิมพ์ทับ ไม่งั้นจะไม่ถูก OCR อีก
+		handEntry := document.ContentState == "UNSAVED" && document.ProcessingStage == "FAILED" && document.ExtractionJSONPath == "" && payload.ExtractionVersion == ""
+		// การพิมพ์เองต้องส่งเวลาแก้ไขล่าสุดที่โหลดไว้มาด้วยเหมือนการบันทึกผลสกัด ไม่งั้นจะบันทึกทับงานของคนอื่นโดยไม่รู้ตัว
+		if handEntry && payload.ExpectedUpdatedAt == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "เอกสารเปลี่ยนแล้ว กรุณาโหลดเอกสารใหม่"})
+			return
+		}
+		// สแกนล้มเหลวและยังไม่มีข้อมูลที่พิมพ์เอง ยืนยันไม่ได้ ไม่งั้นจะได้คำสั่งที่ยืนยันแล้วแต่ว่างเปล่า
+		if handEntry && payload.Confirm && !carriesTypedContent(payload) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ยังไม่มีข้อมูลคำสั่ง กรุณากรอกข้อมูลก่อนยืนยัน"})
+			return
+		}
+		if (document.ContentState == "UNSAVED" && !handEntry) || payload.ExtractionVersion != "" {
 			previewPath = document.ExtractionJSONPath
 			if document.ContentState != "UNSAVED" {
 				previewPath = document.PendingExtractionJSONPath
@@ -316,6 +388,8 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 		}
 		dateUpdates := map[string]*string{"issued_date": payload.IssuedDate, "effective_date": payload.EffectiveDate, "expiry_date": payload.ExpiryDate}
 		dateOld := map[string]*time.Time{"issued_date": document.IssuedDate, "effective_date": document.EffectiveDate, "expiry_date": document.ExpiryDate}
+		// การยืนยันอ่านวันที่จากแถวฟิลด์ วันที่ที่ส่งมาตรงๆ จึงต้องเขียนลงแถวฟิลด์ด้วย ยกเว้นช่องที่ส่งมาในรายการฟิลด์แล้ว
+		dateFieldValues := map[string]string{}
 		for key, raw := range dateUpdates {
 			if raw == nil {
 				continue
@@ -327,6 +401,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				return
 			}
 			updates[key] = parsed
+			dateFieldValues[key] = formatDate(parsed)
 			if formatDate(dateOld[key]) != formatDate(parsed) {
 				revisions = append(revisions, DocumentRevision{DocumentID: document.ID, FieldKey: key, OldValue: formatDate(dateOld[key]), NewValue: formatDate(parsed), ChangedBy: changedBy, ChangedAt: time.Now()})
 			}
@@ -338,6 +413,7 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 		fromNow := false
 		if payload.Fields != nil {
 			for _, input := range *payload.Fields {
+				delete(dateFieldValues, input.FieldKey)
 				switch input.FieldKey {
 				case "order_type":
 					updates["order_type"] = trimToColumn("order_type", input.Value)
@@ -422,6 +498,25 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					return err
 				}
 			}
+			if handEntry {
+				// ผล OCR ที่มาถึงระหว่างที่ผู้ตรวจพิมพ์อยู่ต้องให้คนเห็นก่อน ไม่บันทึกทับ
+				if current.ContentState != "UNSAVED" || current.ExtractionJSONPath != "" {
+					return errExtractionChanged
+				}
+			}
+			// บันทึกแค่ชื่อเรื่องหรือหมายเหตุยังไม่ใช่การพิมพ์ข้อมูลคำสั่ง เอกสารยังเป็นการสแกนที่ล้มเหลวอยู่
+			if handEntry && carriesTypedContent(payload) {
+				typedRevisions, err := saveTypedFields(tx, document.ID, payload.Fields, changedBy)
+				if err != nil {
+					return err
+				}
+				revisions = append(revisions, typedRevisions...)
+				// มีคนพิมพ์ข้อมูลแล้ว จึงไม่ใช่การสแกนที่ล้มเหลวอีกต่อไป ให้อยู่ขั้นเดียวกับเอกสารที่สกัดเสร็จ
+				// หน้าเว็บจะเลิกขึ้น "ประมวลผลไม่สำเร็จ" และการสแกนใหม่ต้องกดยืนยันสองขั้นเหมือนเอกสารอื่น
+				if err := tx.Model(&Document{}).Where("id = ?", document.ID).Updates(map[string]any{"content_state": "DRAFT", "processing_stage": "EXTRACTED"}).Error; err != nil {
+					return err
+				}
+			}
 			if len(updates) > 0 {
 				if err := tx.Model(&Document{}).Where("id = ?", document.ID).Updates(updates).Error; err != nil {
 					return err
@@ -439,6 +534,11 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					if err := tx.Model(&ExtractedField{}).Where("id = ? AND document_id = ?", input.ID, document.ID).Updates(map[string]any{"value": input.Value, "verified": input.Verified, "verified_by": changedBy, "verified_at": time.Now()}).Error; err != nil {
 						return err
 					}
+				}
+			}
+			for key, value := range dateFieldValues {
+				if err := tx.Model(&ExtractedField{}).Where("document_id = ? AND field_key = ?", document.ID, key).Update("value", value).Error; err != nil {
+					return err
 				}
 			}
 			if payload.Appointments != nil {
@@ -462,7 +562,17 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 				for _, input := range *payload.Appointments {
 					appointment := Appointment{DocumentID: document.ID, FullName: truncateRunes(input.FullName, colLimitAppointmentFullName), Position: truncateRunes(input.Position, colLimitAppointmentPosition), Department: truncateRunes(input.Department, colLimitAppointmentDept), CommitteeRole: truncateRunes(input.CommitteeRole, colLimitAppointmentRole), Responsibilities: input.Responsibilities, ExtraDuties: input.ExtraDuties, Confidence: input.Confidence, PageNo: input.PageNo, BoundingBoxJSON: normalizeBoundingBox(input.BoundingBox), Verified: input.Verified, VerifiedBy: changedBy}
 					before := previous[input.ID]
+					// แถวที่ไม่มีชื่อตามเอกสารคือแถวโดยตำแหน่ง ไม่ว่าเคยผูกคนด้วยวิธีไหน
+					exOfficio := strings.TrimSpace(input.FullName) == ""
+					// ผู้ตรวจเอาคนออกจากแถวที่มีชื่อ (หรือเคยเอาออกไว้แล้ว) และไม่ได้แก้ชื่อ: ไม่ผูกกลับด้วยชื่อตรงหรือ alias ที่เคยเรียนไว้
+					// มีผลกับเอกสารนี้เท่านั้น alias ที่เรียนไว้ไม่ถูกลบ เอกสารอื่นที่มีชื่อเดียวกันยังผูกกับคนนั้นได้
+					removedByReviewer := !exOfficio && before.ID != 0 && !chosePerson(input) &&
+						(before.DirectoryUserID != nil || before.NameMatchMethod == matchMethodManual) &&
+						normalizePersonName(before.FullName) == normalizePersonName(input.FullName)
 					match := resolveAppointmentMatch(input, before.NameMatchMethod, directoryUsers, aliases)
+					if removedByReviewer {
+						match = directoryMatch{Method: matchMethodManual}
+					}
 					if !input.ManualMatch && before.NameMatchMethod != matchMethodManual && input.DirectoryUserID != nil {
 						if currentMatch := matchDirectoryUser(input.FullName, directoryUsers, aliases); currentMatch.Method == matchMethodAmbiguous {
 							match = currentMatch
@@ -473,8 +583,6 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					if keptSystemLink {
 						match.Method = before.NameMatchMethod
 					}
-					// แถวที่ไม่มีชื่อตามเอกสารคือแถวโดยตำแหน่ง ไม่ว่าเคยผูกคนด้วยวิธีไหน
-					exOfficio := strings.TrimSpace(input.FullName) == ""
 					applyMatchToAppointment(&appointment, match)
 					if exOfficio && match.Matched {
 						// แถวโดยตำแหน่งแสดงชื่อคนจากระบบ ไม่ต้องเขียนชื่อทับลงช่องชื่อตามเอกสาร
@@ -486,6 +594,9 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 					}
 					if err := tx.Create(&appointment).Error; err != nil {
 						return err
+					}
+					if removedByReviewer {
+						continue
 					}
 					if match.Method == matchMethodManual && exOfficio {
 						if err := assignPositionHolder(tx, input.Position, match.User.ID, document.IssuedDate, positionSourceLearned, changedBy); err != nil {
@@ -557,10 +668,81 @@ func updateDocument(db *gorm.DB) gin.HandlerFunc {
 	}
 }
 
+// carriesTypedContent บอกว่าการบันทึกนี้มีข้อมูลคำสั่งที่ผู้ตรวจพิมพ์เองจริง
+// คือมีช่องข้อมูลที่มีค่าอย่างน้อยหนึ่งช่อง หรือมีรายชื่อผู้ได้รับแต่งตั้งอย่างน้อยหนึ่งแถว
+func carriesTypedContent(payload updateDocumentRequest) bool {
+	if payload.Appointments != nil && len(*payload.Appointments) > 0 {
+		return true
+	}
+	if payload.Fields != nil {
+		for _, input := range *payload.Fields {
+			if strings.TrimSpace(input.Value) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// chosePerson บอกว่าผู้ตรวจเลือกคนให้แถวนี้เอง
+func chosePerson(input appointmentRequest) bool {
+	return input.DirectoryUserID != nil && *input.DirectoryUserID != 0
+}
+
+// saveTypedFields เก็บช่องที่ผู้ตรวจพิมพ์เองในเอกสารที่ OCR ไม่มีผลให้ ช่องที่ส่งมาโดยไม่มีแถว (id 0)
+// ถ้าเอกสารมีแถวของ key นั้นอยู่แล้วจะแก้แถวเดิม (และบันทึกประวัติ) ไม่สร้างแถวซ้ำ ถ้ายังไม่มีจึงสร้างแถวใหม่
+// การยืนยันและการตรวจวันที่อ่านจากแถวเหล่านี้ ค่าความมั่นใจเป็น 0 เอกสารจึงไม่ถูกยืนยันอัตโนมัติ
+func saveTypedFields(tx *gorm.DB, documentID uint, inputs *[]fieldUpdateRequest, changedBy string) ([]DocumentRevision, error) {
+	if inputs == nil {
+		return nil, nil
+	}
+	var revisions []DocumentRevision
+	seen := map[string]bool{}
+	now := time.Now()
+	for _, input := range *inputs {
+		key := truncateRunes(strings.TrimSpace(input.FieldKey), 100)
+		if input.ID != 0 || key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		var found []ExtractedField
+		if err := tx.Where("document_id = ? AND field_key = ?", documentID, key).Order("id").Limit(1).Find(&found).Error; err != nil {
+			return nil, err
+		}
+		if len(found) == 1 {
+			existing := found[0]
+			if existing.Value != input.Value {
+				revisions = append(revisions, DocumentRevision{DocumentID: documentID, FieldKey: key, OldValue: existing.Value, NewValue: input.Value, ChangedBy: changedBy, ChangedAt: now})
+			}
+			if err := tx.Model(&ExtractedField{}).Where("id = ?", existing.ID).Updates(map[string]any{"value": input.Value, "verified": input.Verified, "verified_by": changedBy, "verified_at": now}).Error; err != nil {
+				return nil, err
+			}
+			continue
+		}
+		label := truncateRunes(strings.TrimSpace(input.FieldLabel), 255)
+		if label == "" {
+			label = key
+		}
+		fieldType := "text"
+		if _, isDate := dateFieldLabels[key]; isDate {
+			fieldType = "date"
+		}
+		field := ExtractedField{DocumentID: documentID, FieldKey: key, FieldLabel: label, FieldType: fieldType, Value: input.Value, BoundingBoxJSON: "null", Verified: input.Verified, VerifiedBy: changedBy, VerifiedAt: &now}
+		if err := tx.Create(&field).Error; err != nil {
+			return nil, err
+		}
+	}
+	return revisions, nil
+}
+
 func deleteDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var document Document
-		if err := db.Select("id", "title", "storage_path", "original_filename").First(&document, c.Param("id")).Error; err != nil {
+		if err := db.Select("id", "title", "storage_path", "original_filename").First(&document, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
@@ -625,8 +807,11 @@ func documentQuery(db *gorm.DB, rawQuery, rawStatus string) *gorm.DB {
 		}
 		query = query.Where("title LIKE ? OR order_no LIKE ? OR order_type LIKE ? OR committee LIKE ? OR signer_name LIKE ? OR responsibilities LIKE ? OR additional_refs LIKE ? OR id IN ? OR id IN (?)", like, like, like, like, like, like, like, ids, db.Model(&Appointment{}).Select("document_id").Where("full_name LIKE ? OR position LIKE ? OR committee_role LIKE ? OR responsibilities LIKE ? OR extra_duties LIKE ?", like, like, like, like, like))
 	}
-	if status := strings.TrimSpace(rawStatus); status != "" && status != "ALL" {
-		// รับได้หลายสถานะคั่นด้วยจุลภาค เช่น "REVIEW,NEEDS_REVIEW" คือกลุ่ม "รอยืนยัน"
+	if status := strings.TrimSpace(rawStatus); status == awaitingConfirmationStatus {
+		// กลุ่ม "รอยืนยัน" แบบเดียวกับตัวเลขในภาพรวม ไม่รวมเอกสารที่ OCR ล้มเหลวและยังไม่มีใครพิมพ์ข้อมูล
+		query = query.Where("status IN ?", []string{"REVIEW", "NEEDS_REVIEW"}).Scopes(notFailedScan)
+	} else if status != "" && status != "ALL" {
+		// รับได้หลายสถานะคั่นด้วยจุลภาค เช่น "REVIEW,NEEDS_REVIEW"
 		query = query.Where("status IN ?", strings.Split(status, ","))
 	}
 	return query
@@ -640,10 +825,7 @@ func applyDocumentFilters(query *gorm.DB, c *gin.Context) *gorm.DB {
 			query.AddError(err)
 			return query
 		}
-		if err := hydrateUnsavedDocuments(unsaved); err != nil {
-			query.AddError(err)
-			return query
-		}
+		hydrateUnsavedDocuments(unsaved)
 	}
 	if orderType := strings.TrimSpace(c.Query("orderType")); orderType != "" {
 		ids := []uint{}
@@ -787,6 +969,10 @@ func createDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 		lastName := strings.TrimSpace(payload.LastName)
 		if firstName == "" || lastName == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "ต้องระบุชื่อและนามสกุล"})
+			return
+		}
+		if problem := directoryPersonLengthProblem(payload.Prefix, firstName, lastName, payload.PositionTitle, payload.Department, payload.Email, payload.Phone); problem != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 			return
 		}
 
@@ -957,13 +1143,17 @@ func removeReplacedUpload(previousPath, replacementPath string) {
 // corrected scan does not become a second record of the same order.
 func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var document Document
-		if err := db.First(&document, c.Param("id")).Error; err != nil {
+		if err := db.First(&document, id).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 				return
 			}
-			logUploadFailure("load document", document.ID, err)
+			logUploadFailure("load document", id, err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถโหลดเอกสารได้"})
 			return
 		}
@@ -989,6 +1179,9 @@ func replaceDocumentFile(db *gorm.DB, processor *DocumentProcessor) gin.HandlerF
 		}
 		if header.Size > 50<<20 {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "ไฟล์ต้องมีขนาดไม่เกิน 50 MB"})
+			return
+		}
+		if rejectEmptyUpload(c, header.Size) {
 			return
 		}
 		fileHash, err := hashUpload(file)

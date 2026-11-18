@@ -95,7 +95,11 @@ func (p *DocumentProcessor) runStructuredImport(ctx context.Context, documentPat
 	command := exec.CommandContext(ctx, pythonBin, args...)
 	command.Env = append(os.Environ(), "PYTHONUTF8=1")
 	if output, err := command.CombinedOutput(); err != nil {
-		return workerResult{}, fmt.Errorf("นำเข้าข้อมูลจาก %s: %w: %s", sourceType, err, strings.TrimSpace(string(output)))
+		// traceback มี path ของเซิร์ฟเวอร์ จึงเก็บไว้ใน log เท่านั้น ผู้ใช้เห็นแค่ข้อความที่ worker ตั้งใจส่งให้
+		if p.logger != nil {
+			p.logger.Printf("structured import %s failed: %v: %s", sourceType, err, strings.TrimSpace(string(output)))
+		}
+		return workerResult{}, fmt.Errorf("นำเข้าข้อมูลจาก %s: %s", sourceType, structuredImportUserError(string(output)))
 	}
 	contents, err := os.ReadFile(outputJSON)
 	if err != nil {
@@ -109,6 +113,20 @@ func (p *DocumentProcessor) runStructuredImport(ctx context.Context, documentPat
 		return workerResult{}, errors.New("ไม่พบข้อมูลในไฟล์นำเข้า")
 	}
 	return result, nil
+}
+
+const structuredImportErrorPrefix = "DOCFLOW_IMPORT_ERROR: "
+
+// structuredImportUserError ดึงข้อความสำหรับผู้ใช้จาก output ของ ocr_worker.py
+// ถ้าไม่มีข้อความนั้น (เช่น python ล้มก่อนเริ่ม) ใช้ข้อความกลางแทน ไม่ส่ง output ดิบออกไป
+func structuredImportUserError(output string) string {
+	lines := strings.Split(output, "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		if message, ok := strings.CutPrefix(strings.TrimSpace(lines[index]), structuredImportErrorPrefix); ok && strings.TrimSpace(message) != "" {
+			return strings.TrimSpace(message)
+		}
+	}
+	return "ตัวอ่านไฟล์ทำงานไม่สำเร็จ"
 }
 
 type commandMetadata struct {
@@ -140,6 +158,10 @@ func extractCommandMetadata(pages []workerPage, fullText string) commandMetadata
 	metadata.signer = extractSigner(fullText)
 	metadata.signerPosition = extractSignerPosition(fullText)
 	metadata.issuedDate = findDateAfterLabels(fullText, "วันที่ออกคำสั่ง", "ลงวันที่", "วันที่")
+	if metadata.issuedDate == nil {
+		// คำสั่งส่วนใหญ่มีวันที่เดียวคือวันที่ออกคำสั่ง จึงใช้วันที่แรกในข้อความได้เฉพาะช่องนี้
+		metadata.issuedDate = parseThaiDate(fullText)
+	}
 	metadata.effectiveDate = findDateAfterLabels(fullText, "วันที่เริ่มมีผล", "มีผลตั้งแต่")
 	metadata.expiryDate = findDateAfterLabels(fullText, "วันหมดอายุ", "วาระการดำรงตำแหน่ง", "หมดวาระ")
 	if metadata.effectiveDate == nil {
@@ -176,7 +198,7 @@ func extractCommandMetadata(pages []workerPage, fullText string) commandMetadata
 		departmentResponsibilities := ""
 		for _, row := range groupOCRRows(page) {
 			rowText := strings.Join(cellTexts(row), " ")
-			if name, ok := parseDepartmentHeader(rowText); ok {
+			if name, ok := parseRowDepartmentHeader(row, rowText); ok {
 				department = name
 				departmentResponsibilities = ""
 				continue
@@ -216,6 +238,8 @@ type ocrCell struct {
 	x, y       float64
 	width      float64
 	height     float64
+	// tabular คือเซลล์ที่มาจากแถว CSV/XLSX ซึ่ง ocr_worker.py คั่นคอลัมน์ด้วย tab
+	tabular bool
 }
 
 func groupOCRRows(page workerPage) [][]ocrCell {
@@ -232,6 +256,15 @@ func groupOCRRows(page workerPage) [][]ocrCell {
 			// Imported structured text may not have coordinates. Keep every line
 			// separate so unrelated lines are never merged into one appointment.
 			cell.x, cell.y, cell.width, cell.height = 0, float64(index)*1000, 0, 1
+			if strings.Contains(text, "\t") {
+				// แถวตารางจาก CSV/XLSX: แยกคอลัมน์เป็นเซลล์ในแถวเดียวกัน เรียงตามลำดับคอลัมน์
+				for column, value := range strings.Split(text, "\t") {
+					if value = strings.TrimSpace(value); value != "" {
+						cells = append(cells, ocrCell{text: value, confidence: line.Confidence, x: float64(column), y: cell.y, height: 1, tabular: true})
+					}
+				}
+				continue
+			}
 		}
 		cells = append(cells, cell)
 	}
@@ -270,6 +303,9 @@ func parseAppointmentRow(row []ocrCell) (Appointment, bool) {
 	if len(row) == 0 {
 		return Appointment{}, false
 	}
+	if row[0].tabular {
+		return parseTabularAppointmentRow(row)
+	}
 	joined := strings.Join(cellTexts(row), " ")
 	normalized := replaceThaiDigits(strings.TrimSpace(joined))
 	if !regexp.MustCompile(`^\s*\d+\.\d+(?:[.)])?\s*`).MatchString(normalized) {
@@ -298,6 +334,89 @@ func parseAppointmentRow(row []ocrCell) (Appointment, bool) {
 	}
 	box := combinedBoundingBox(row)
 	return Appointment{FullName: name, Position: choosePersonPosition(row, name), CommitteeRole: role, Confidence: confidence, BoundingBoxJSON: box, NameMatchMethod: "UNMATCHED"}, true
+}
+
+var tabularIndexPattern = regexp.MustCompile(`^\d+(?:\.\d+)*[.)]?$`)
+
+// parseTabularAppointmentRow อ่านแถว CSV/XLSX ที่มีคอลัมน์ ลำดับ | ชื่อ | ตำแหน่ง | บทบาท
+// ลำดับเป็นเลขจำนวนเต็มได้ (1, 2, 3) เพราะคอลัมน์แยกกันชัดเจน ไม่ปนกับย่อหน้าเนื้อความแบบ OCR
+func parseTabularAppointmentRow(row []ocrCell) (Appointment, bool) {
+	if len(row) < 2 || !tabularIndexPattern.MatchString(replaceThaiDigits(row[0].text)) {
+		return Appointment{}, false
+	}
+	role := ""
+	values := make([]string, 0, len(row)-1)
+	nextColumn := row[0].x + 1
+	for _, cell := range row[1:] {
+		// groupOCRRows ทิ้งเซลล์ว่างแต่เก็บเลขคอลัมน์ไว้ใน x จึงเติมช่องว่างกลับ
+		// ไม่ให้ตำแหน่งเลื่อนไปอยู่ในช่องชื่อเมื่อคอลัมน์ชื่อว่าง
+		for ; nextColumn < cell.x; nextColumn++ {
+			values = append(values, "")
+		}
+		nextColumn = cell.x + 1
+		if role == "" {
+			if bare := tabularRole(cell.text); bare != "" {
+				role = bare
+				continue
+			}
+		}
+		values = append(values, cell.text)
+	}
+	// คอลัมน์เรียงตามแบบฟอร์มนำเข้า: ชื่อมาก่อนตำแหน่ง ไม่เดาจากคำนำหน้า เพราะ "อาจารย์" เป็นได้ทั้งคำนำหน้าและตำแหน่ง
+	name, position := "", ""
+	if len(values) > 0 {
+		name = values[0]
+	}
+	if len(values) > 1 {
+		position = values[1]
+	}
+	if name == "" {
+		// คอลัมน์ชื่อว่างแต่มีตำแหน่ง คือแต่งตั้งโดยตำแหน่ง เก็บเป็นแถวบทบาทล้วนเหมือนแถวที่ผู้ตรวจเพิ่มเอง
+		if position == "" || onlyAppointmentNumber(position) {
+			return Appointment{}, false
+		}
+	} else if len([]rune(name)) < 3 || onlyAppointmentNumber(name) {
+		return Appointment{}, false
+	}
+	if role == "" {
+		// เหมือนแถวจาก OCR: ไม่มีคอลัมน์บทบาทก็เก็บไว้เป็นกรรมการ แล้วให้ผู้ตรวจยืนยัน
+		role = "กรรมการ"
+	}
+	confidence := float32(1)
+	for _, cell := range row {
+		confidence = minConfidence(confidence, cell.confidence)
+	}
+	return Appointment{FullName: name, Position: position, CommitteeRole: role, Confidence: confidence, BoundingBoxJSON: combinedBoundingBox(row), NameMatchMethod: "UNMATCHED"}, true
+}
+
+// tabularRole คืนบทบาทเมื่อทั้งเซลล์เป็นคำบทบาท จะมีคำว่า "เป็น" นำหน้าหรือไม่ก็ได้
+func tabularRole(text string) string {
+	text = strings.TrimPrefix(strings.TrimSpace(text), "เป็น")
+	for _, role := range appointmentRoles() {
+		if bare := strings.TrimPrefix(role, "เป็น"); text == bare {
+			return bare
+		}
+	}
+	return ""
+}
+
+// tabularSectionIndexPattern คือลำดับของหัวกลุ่มในตาราง ซึ่งเป็นเลขจำนวนเต็มล้วน
+var tabularSectionIndexPattern = regexp.MustCompile(`^\d+$`)
+
+// parseRowDepartmentHeader ใช้กฎของ parseDepartmentHeader กับทุกแถว และกับแถวตาราง CSV/XLSX/DOCX
+// ที่มีแค่ ลำดับ | หัวกลุ่ม (เช่น 1 | คณะกรรมการอำนวยการ) ซึ่งลำดับไม่มีจุด แถวนี้ต้องเป็นหัวฝ่าย ไม่ใช่รายชื่อคน
+func parseRowDepartmentHeader(row []ocrCell, rowText string) (string, bool) {
+	if name, ok := parseDepartmentHeader(rowText); ok {
+		return name, true
+	}
+	if len(row) != 2 || !row[0].tabular {
+		return "", false
+	}
+	index := strings.TrimRight(replaceThaiDigits(strings.TrimSpace(row[0].text)), ".)")
+	if !tabularSectionIndexPattern.MatchString(index) {
+		return "", false
+	}
+	return parseDepartmentHeader(index + ". " + row[1].text)
 }
 
 func parseDepartmentHeader(text string) (string, bool) {
@@ -493,11 +612,41 @@ func findOrderYear(orderNo string) int {
 func extractAfterLabel(text, label string) string {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
+		if strings.Contains(line, "\t") {
+			if value := tabularValueAfterLabel(line, label); value != "" {
+				return value
+			}
+			continue
+		}
 		if index := strings.Index(line, label); index >= 0 {
 			value := strings.TrimSpace(strings.Trim(line[index+len(label):], " :-"))
 			if value != "" {
 				return value
 			}
+		}
+	}
+	return ""
+}
+
+// tabularValueAfterLabel อ่านค่าจากแถวตาราง: ค่าในเซลล์เดียวกับ label หรือเซลล์ถัดไป
+// เมื่อแถวมีแค่สองเซลล์ (ป้ายกับค่า) แถวหัวตารางอย่าง ลำดับ | ชื่อ | ตำแหน่ง | บทบาท จึงไม่ถูกอ่านเป็นค่า
+func tabularValueAfterLabel(line, label string) string {
+	cells := make([]string, 0)
+	for _, cell := range strings.Split(line, "\t") {
+		if cell = strings.TrimSpace(cell); cell != "" {
+			cells = append(cells, cell)
+		}
+	}
+	for index, cell := range cells {
+		position := strings.Index(cell, label)
+		if position < 0 {
+			continue
+		}
+		if value := strings.TrimSpace(strings.Trim(cell[position+len(label):], " :-")); value != "" {
+			return value
+		}
+		if len(cells) == 2 && index == 0 {
+			return cells[1]
 		}
 	}
 	return ""
@@ -516,6 +665,14 @@ func extractCommandTitle(pages []workerPage, fallbackText string) string {
 		line := strings.TrimSpace(rawLine)
 		if line == "" {
 			continue
+		}
+		// แถวตารางจาก CSV/XLSX: บรรทัดเรื่องอาจอยู่ในเซลล์ แต่แถวตารางถัดไปไม่ใช่ส่วนของชื่อเรื่อง
+		tabular := strings.Contains(line, "\t")
+		if tabular {
+			if collecting {
+				break
+			}
+			line = strings.Join(strings.Fields(line), " ")
 		}
 		if !collecting {
 			if index := strings.Index(line, "เรื่อง"); index >= 0 {
@@ -580,7 +737,7 @@ func findDateAfterLabels(text string, labels ...string) *time.Time {
 			}
 		}
 	}
-	return parseThaiDate(text)
+	return nil
 }
 
 func parseThaiDate(text string) *time.Time {

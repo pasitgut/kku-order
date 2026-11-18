@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -86,7 +87,9 @@ func searchOCRFiles(db *gorm.DB, query string) ([]uint, error) {
 	for _, doc := range documents {
 		text, err := indexedOCRText(doc.ExtractionJSONPath, doc.ID, doc.ContentState == "UNSAVED")
 		if err != nil {
-			return nil, err
+			// ไฟล์ผลสกัดของเอกสารเดียวที่หายไม่ควรทำให้การค้นหาทั้งระบบล้ม
+			log.Printf("skip unreadable extraction in search: document_id=%d: %v", doc.ID, err)
+			continue
 		}
 		if (wildcard == nil && strings.Contains(text, query)) || (wildcard != nil && wildcard.MatchString(text)) {
 			ids = append(ids, doc.ID)

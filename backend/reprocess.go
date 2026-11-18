@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,7 +27,8 @@ type gormReprocessStore struct {
 }
 
 // RequestReprocess ประมวลผลไฟล์เดิมใหม่ได้ทุกสถานะ ยกเว้นยกเลิกแล้วและกำลังประมวลผลอยู่
-// เอกสารที่ยืนยันแล้วจะถูกถอนการยืนยัน เพราะผลสแกนใหม่ยังไม่มีคนตรวจ
+// เอกสารที่ยืนยันแล้วจะออกจากสถานะยืนยัน (PROCESSING แล้วกลับมารอตรวจ) จึงไม่อยู่ในรายงานจนกว่าจะยืนยันใหม่
+// แต่ confirmed_by/confirmed_at เดิมยังเก็บไว้ จะถูกล้างเมื่อผู้ใช้เลือกนำผลสแกนใหม่มาบันทึก (ต่างจากอัปโหลดทับที่ล้างทันที)
 func (s gormReprocessStore) RequestReprocess(id uint, actor string, now time.Time) error {
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		// The row lock also rejects cancelled documents without a race.
@@ -78,12 +78,11 @@ func rescanResetUpdates() map[string]any {
 
 func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
+		id, ok := documentIDParam(c)
+		if !ok {
 			return
 		}
-		if err := store.RequestReprocess(uint(id), currentUserID(c), time.Now()); err != nil {
+		if err := store.RequestReprocess(id, currentUserID(c), time.Now()); err != nil {
 			switch {
 			case errors.Is(err, errDocumentNotFound):
 				c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
@@ -96,7 +95,7 @@ func reprocessDocumentHandler(store reprocessStore, enqueue func(uint)) gin.Hand
 			}
 			return
 		}
-		enqueue(uint(id))
+		enqueue(id)
 		c.JSON(http.StatusAccepted, gin.H{"id": id, "processingStage": "QUEUED"})
 	}
 }

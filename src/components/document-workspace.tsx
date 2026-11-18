@@ -10,9 +10,11 @@ import { useToast } from "@/components/toast";
 import { DepartmentDutiesPanel } from "@/components/department-duties-panel";
 import { ApiDocument, ApiError, Appointment, DirectoryCandidate, ExtractedField, DirectoryUser, DocumentRevision, cancelDocument, returnDocument, createDirectoryUser, deleteDocument, formatFileSize, formatThaiDate, getDirectoryUsers, getDocument, getDocumentPageImageUrl, getDocumentRevisions, getOCRSettings, reprocessDocument, replaceDocumentFile, statusLabel, updateDocument } from "@/lib/api";
 import { formatAuditTime } from "@/lib/audit-log";
-import { MatchState, departmentOf, isExternalName, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
+import { MatchState, departmentOf, guessFor, isExternalName, isLinked, matchState, personLabel, rosterRows, summarizeDepartments } from "@/lib/member-review";
 import { can } from "@/lib/permissions";
 import { canRescan, processingNote, rescanNeedsConfirm } from "@/lib/processing-status";
+import { ReviewState, reviewChanged } from "@/lib/unsaved-changes";
+import { allowLeave, useUnsavedChanges } from "@/components/use-unsaved-changes";
 
 type PanelView = "original" | "roster" | "members" | "metadata" | "duties" | "history";
 
@@ -41,15 +43,16 @@ const panelTabs: { value: PanelView; label: string }[] = [
 // ป้ายบอกว่าใครเป็นคนผูกชื่อนี้ ผู้ตรวจจะเห็นทันทีว่าแถวไหนระบบผูกให้เอง
 const linkedBy: Record<string, string> = { EXACT: "ระบบผูกให้ · ชื่อตรง", ALIAS: "ระบบผูกให้ · เคยผูกไว้", POSITION: "ระบบผูกให้ · ตามตำแหน่ง", MANUAL: "เลือกเอง" };
 
-// ชื่อที่แค่ใกล้เคียง ระบบเลือกคนที่เดาไว้ให้ ถ้าถูกต้องก็ไม่ต้องกดอะไร บันทึกแล้วผูกให้เลย
-function guessFor(row: Appointment) {
-  return !isLinked(row) && row.nameMatchMethod === "FUZZY" && row.candidates?.length ? row.candidates[0] : undefined;
-}
 
 type RestorePoint = { fullName: string; position: string; nameMatchMethod: string; nameMatchScore: number };
 type DirectoryPicker = { appointmentId: number; query: string; results: DirectoryUser[]; loading: boolean };
 type PersonDraft = { appointmentId: number; firstName: string; lastName: string; positionTitle: string; email: string; saving: boolean; conflictUserId?: number };
 type CandidateCompare = { appointment: Appointment; users: DirectoryUser[] | null; selected: number };
+
+// ค่าที่บันทึกในระบบล่าสุด ใช้เทียบว่าผู้ตรวจแก้อะไรค้างไว้หรือไม่
+function reviewOf(document: ApiDocument, rejectedGuesses: ReadonlySet<number> = new Set()): ReviewState {
+  return { fields: document.fields ?? [], appointments: document.appointments ?? [], responsibilities: document.responsibilities, additionalReferences: document.additionalReferences, rejectedGuesses };
+}
 
 const inputClass = "focus-ring h-9 w-full rounded-md border border-[var(--line-strong)] bg-white px-2.5 text-[13px] outline-none focus:border-[var(--accent)]";
 const smallButton = "focus-ring inline-flex h-9 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-xs transition";
@@ -62,6 +65,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
   const [fields, setFields] = useState(initialDocument.fields ?? []);
   const [appointments, setAppointments] = useState(initialDocument.appointments ?? []);
   const [revisions, setRevisions] = useState<DocumentRevision[]>([]);
+  const [savedReview, setSavedReview] = useState(() => reviewOf(initialDocument));
   const [selectedPage, setSelectedPage] = useState(1);
   const [selectedAppointmentId, setSelectedAppointmentId] = useState<number | null>(null);
   const [panel, setPanel] = useState<PanelView>("original");
@@ -116,6 +120,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     return appointments.map((row, index) => ({ row, no: index + 1 })).filter(({ row }) => (!onlyUnlinked || unlinkedAppointments.includes(row)) && (!query || [row.fullName, row.position, row.committeeRole, row.department].join(" ").toLowerCase().includes(query)));
   }, [appointments, onlyUnlinked, unlinkedAppointments, memberQuery]);
   const roster = useMemo(() => rosterRows(appointments), [appointments]);
+  const dirty = useMemo(() => editable && reviewChanged(savedReview, { fields, appointments, responsibilities: document.responsibilities, additionalReferences: document.additionalReferences, rejectedGuesses }), [editable, savedReview, fields, appointments, document.responsibilities, document.additionalReferences, rejectedGuesses]);
+  useUnsavedChanges(dirty);
 
   const parseBox = (raw: string) => {
     try {
@@ -137,6 +143,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     getDocumentRevisions(document.id).then((response) => setRevisions(response.data)).catch(() => setRevisions([]));
   }, [document.id]);
 
+  // บันทึก ส่งกลับ หรือยกเลิก สร้างประวัติใหม่ที่ backend จึงโหลดแท็บประวัติใหม่ทุกครั้ง
+  const refreshRevisions = () => { getDocumentRevisions(document.id).then((response) => setRevisions(response.data)).catch(() => {}); };
+
   useEffect(() => {
     if (cancelled || !["QUEUED", "PREPARING", "EXTRACTING", "RETRY_WAIT"].includes(document.processingStage ?? "")) return;
     let active = true;
@@ -147,7 +156,10 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
         if (data.processingStage === "EXTRACTED" || data.processingStage === "FAILED") {
           setFields(data.fields ?? []);
           setAppointments(data.appointments ?? []);
-        }
+          // สกัดข้อมูลใหม่แล้ว แถวเป็นชุดใหม่ การปฏิเสธชื่อที่เดาไว้ของชุดเก่าจึงไม่ใช้ต่อ
+          setRejectedGuesses(new Set());
+          setSavedReview(reviewOf(data));
+        } else setSavedReview((current) => ({ ...current, responsibilities: data.responsibilities, additionalReferences: data.additionalReferences }));
       }).catch(() => {});
     }, 2000);
     return () => { active = false; window.clearInterval(timer); };
@@ -200,6 +212,8 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       setDocument(response.data);
       setFields(response.data.fields ?? []);
       setAppointments(response.data.appointments ?? []);
+      setSavedReview(reviewOf(response.data, rejectedGuesses));
+      refreshRevisions();
       toast("ส่งกลับไปตรวจสอบแล้ว · แก้ไขเสร็จกดยืนยันอีกครั้ง");
     } catch (reason) {
       showError(reason, "ส่งกลับไปตรวจสอบไม่สำเร็จ");
@@ -310,7 +324,11 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     setSaving(true);
     try {
       const response = await updateDocument(document.id, { ...buildPayload(), reviewNotes: document.reviewNotes, confirm });
-      setDocument(response.data); setFields(response.data.fields ?? fields); setAppointments(response.data.appointments ?? appointments); setRestorePoints({});
+      const savedFields = response.data.fields ?? fields;
+      const savedAppointments = response.data.appointments ?? appointments;
+      setDocument(response.data); setFields(savedFields); setAppointments(savedAppointments); setRestorePoints({});
+      setSavedReview({ fields: savedFields, appointments: savedAppointments, responsibilities: response.data.responsibilities, additionalReferences: response.data.additionalReferences, rejectedGuesses });
+      refreshRevisions();
       if (confirm) {
         toast("บันทึกและยืนยันข้อมูลเรียบร้อยแล้ว");
       } else toast("บันทึกฉบับร่างลงฐานข้อมูลแล้ว");
@@ -326,6 +344,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     try {
       const { data } = await getDocument(document.id, preview);
       setDocument(data); setFields(data.fields ?? []); setAppointments(data.appointments ?? []); setRestorePoints({});
+      setSavedReview(reviewOf(data, rejectedGuesses));
     } catch (reason) { showError(reason, "ไม่สามารถโหลดข้อมูลได้"); }
   };
 
@@ -337,6 +356,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     setReplacing(true);
     try {
       await replaceDocumentFile(document.id, file);
+      allowLeave();
       window.location.reload();
     } catch (reason) {
       showError(reason, "อัปโหลดไฟล์ทับไม่สำเร็จ");
@@ -353,6 +373,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
     setRescanning(true);
     try {
       await reprocessDocument(document.id);
+      allowLeave();
       window.location.reload();
     } catch (reason) {
       showError(reason, "สแกนไฟล์เดิมใหม่ไม่สำเร็จ");
@@ -397,10 +418,11 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       setDocument(data);
       setFields(data.fields ?? []);
       setAppointments(data.appointments ?? []);
+      setSavedReview(reviewOf(data, rejectedGuesses));
       setCancelOpen(false);
       setPicker(null); setDraft(null); setCompare(null); setReplaceArmed(false);
       toast("ยกเลิกเอกสารเรียบร้อยแล้ว");
-      getDocumentRevisions(document.id).then(({ data }) => setRevisions(data)).catch(() => {});
+      refreshRevisions();
       router.refresh();
     } catch (reason) {
       setCancelError(reason instanceof Error ? reason.message : "ไม่สามารถยกเลิกเอกสารได้");
@@ -459,7 +481,9 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
       {panel === "original" && (
       <section className="flex min-h-[420px] flex-col overflow-hidden rounded-[10px] bg-[#e9eef3] min-h-[560px] shadow-[var(--shadow-card)]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--line)] bg-white py-3 pl-5 pr-3"><div><p className="text-sm font-semibold text-[var(--navy)]">ต้นฉบับเอกสาร</p><p className="mt-0.5 text-xs font-light text-[var(--muted)]">{document.pageCount || "-"} หน้า · {formatFileSize(document.fileSizeBytes)} · {document.ocrProvider || "นำเข้าข้อมูลโดยตรง"}</p></div><div className="flex items-center gap-1"><button type="button" disabled={selectedPage <= 1} onClick={() => setSelectedPage((page) => Math.max(1, page - 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)] disabled:cursor-not-allowed disabled:opacity-40" aria-label="หน้าก่อนหน้า"><CaretLeft size={17} /></button><span className="px-1.5 text-[13px]">หน้า {selectedPage} / {document.pageCount || 1}</span><button type="button" disabled={selectedPage >= (document.pageCount || 1)} onClick={() => setSelectedPage((page) => Math.min(document.pageCount || 1, page + 1))} className="focus-ring rounded-md p-2 text-[var(--muted)] hover:bg-[var(--line-soft)] disabled:cursor-not-allowed disabled:opacity-40" aria-label="หน้าถัดไป"><CaretRight size={17} /></button></div></div>
-        <div className="shell-scrollbar flex flex-1 items-start justify-center overflow-auto p-6">{document.sourceType.toLowerCase() === "pdf" ? <div className="relative w-full max-w-[900px] overflow-hidden bg-white shadow-[0_8px_28px_rgba(17,40,62,0.14)]"><img src={getDocumentPageImageUrl(document.id, selectedPage)} alt={`หน้า ${selectedPage} ของ ${document.title}`} className="block h-auto w-full" /><div className="pointer-events-none absolute inset-0">{(selectedOCRPage?.lines ?? []).map((line) => { const box = parseBox(line.boundingBox); return box ? <span key={line.id} title={line.text} className="absolute border border-sky-400/50 bg-sky-300/5" style={box} /> : null; })}{appointments.filter((item) => item.pageNo === selectedPage).map((item) => { const box = parseBox(item.boundingBox); return box ? <span key={`appointment-${item.id}`} title={item.fullName} className={`absolute ${selectedAppointmentId === item.id ? "z-10 border-2 border-dashed border-[var(--highlight)] bg-[rgba(240,72,20,0.1)]" : "border-2 border-amber-500 bg-amber-300/20"}`} style={box} /> : null; })}{fields.filter((field) => field.pageNo === selectedPage).map((field) => { const box = parseBox(field.boundingBox); return box ? <span key={`field-${field.id}`} title={field.fieldLabel} className="absolute border-2 border-emerald-500 bg-emerald-300/20" style={box} /> : null; })}</div></div> : <div className="min-h-[660px] w-full max-w-[900px] whitespace-pre-wrap bg-white p-7 font-mono text-xs leading-6 shadow-[0_8px_28px_rgba(17,40,62,0.14)]">{document.ocrText || "กำลังเตรียมตัวอย่างข้อมูล..."}</div>}</div>
+        <div className="shell-scrollbar flex flex-1 items-start justify-center overflow-auto p-6">{document.sourceType.toLowerCase() === "pdf" ? <div className="relative w-full max-w-[900px] overflow-hidden bg-white shadow-[0_8px_28px_rgba(17,40,62,0.14)]">
+          {/* eslint-disable-next-line @next/next/no-img-element -- ภาพหน้าเอกสารมาจาก backend ที่ต้องใช้คุกกี้ของผู้ใช้ และกรอบ OCR วางทับตามสัดส่วนของภาพ ตัว optimizer ของ next/image ดึงภาพฝั่งเซิร์ฟเวอร์โดยไม่มีคุกกี้ */}
+          <img src={getDocumentPageImageUrl(document.id, selectedPage)} alt={`หน้า ${selectedPage} ของ ${document.title}`} className="block h-auto w-full" /><div className="pointer-events-none absolute inset-0">{(selectedOCRPage?.lines ?? []).map((line) => { const box = parseBox(line.boundingBox); return box ? <span key={line.id} title={line.text} className="absolute border border-sky-400/50 bg-sky-300/5" style={box} /> : null; })}{appointments.filter((item) => item.pageNo === selectedPage).map((item) => { const box = parseBox(item.boundingBox); return box ? <span key={`appointment-${item.id}`} title={item.fullName} className={`absolute ${selectedAppointmentId === item.id ? "z-10 border-2 border-dashed border-[var(--highlight)] bg-[rgba(240,72,20,0.1)]" : "border-2 border-amber-500 bg-amber-300/20"}`} style={box} /> : null; })}{fields.filter((field) => field.pageNo === selectedPage).map((field) => { const box = parseBox(field.boundingBox); return box ? <span key={`field-${field.id}`} title={field.fieldLabel} className="absolute border-2 border-emerald-500 bg-emerald-300/20" style={box} /> : null; })}</div></div> : <div className="min-h-[660px] w-full max-w-[900px] whitespace-pre-wrap bg-white p-7 font-mono text-xs leading-6 shadow-[0_8px_28px_rgba(17,40,62,0.14)]">{document.ocrText || "กำลังเตรียมตัวอย่างข้อมูล..."}</div>}</div>
         <div className="border-t border-[var(--line)] bg-white px-5 py-2.5 text-[11px] text-[var(--muted)]">กรอบฟ้า = OCR · กรอบเหลือง = รายชื่อ · กรอบเขียว = ฟิลด์สกัด · กรอบส้มเส้นประ = รายการที่เลือก</div>
       </section>
       )}
@@ -544,7 +568,7 @@ export function DocumentWorkspace({ document: initialDocument }: { document: Api
         {canChangeDocument && <div className="card flex flex-col gap-3 border-[var(--line)] bg-[var(--surface-muted)] px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between lg:px-6">
           <div className="flex min-w-0 items-center gap-2 text-[13px] leading-5 sm:flex-1">{replaceArmed ? <><WarningCircle size={18} weight="fill" className="shrink-0 text-[var(--danger)]" /><span className="text-[var(--danger)]">ไฟล์ใหม่จะแทนที่ไฟล์เดิม ข้อมูลที่ตรวจไว้จะถูกสกัดใหม่ทั้งหมด</span><button type="button" onClick={() => setReplaceArmed(false)} className="focus-ring shrink-0 text-[var(--muted)] underline hover:text-[var(--ink)]">ยกเลิก</button></> : ambiguousCount > 0 ? <><Info size={18} className="shrink-0 text-[#9a4a0c]" /><span>พบชื่อซ้ำ {ambiguousCount} แถว · เลือกบุคคลก่อนยืนยัน</span></> : blockingRows.length > 0 ? <><Info size={18} className="shrink-0 text-[#9a4a0c]" /><span className="text-[#9a4a0c]">ยังไม่ผูก {blockingRows.length} แถว · ยืนยันได้เลย แถวเหล่านี้เก็บตามเอกสารไว้ก่อน ผูกทีหลังได้</span></>
           : externalRows.length > 0 && document.status !== "CONFIRMED" ? <><Info size={18} className="shrink-0 text-[var(--muted)]" /><span className="text-[var(--muted)]">ไม่อยู่ในระบบ {externalRows.length} ชื่อ · เก็บตามเอกสารไว้ ระบบจะผูกให้เองเมื่อคนเหล่านี้เข้าระบบ</span></> : document.status === "CONFIRMED" ? <><CheckCircle size={18} weight="fill" className="shrink-0 text-[var(--success)]" /><span>ยืนยันข้อมูลแล้วโดย {document.confirmedBy || "เจ้าหน้าที่"}</span></> : <><Info size={18} className="shrink-0 text-[var(--accent)]" /><span className="text-[var(--muted)]">ระบบจะไม่ถือเป็นข้อมูลสมบูรณ์จนกว่าจะยืนยัน</span></>}</div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button>{editable && <><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || ambiguousCount > 0} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></>}</div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2"><input ref={replaceInputRef} id="replace-document-file" type="file" aria-label="เลือกไฟล์ที่จะอัปโหลดทับไฟล์เดิม" tabIndex={-1} accept=".pdf,.docx,.xlsx,.csv" className="sr-only" onChange={onReplaceFileChosen} /><button type="button" disabled={replacing || saving} onClick={() => { if (!replaceArmed) { setReplaceArmed(true); return; } replaceInputRef.current?.click(); }} className={`focus-ring inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-md px-4 text-sm transition disabled:opacity-50 ${replaceArmed ? "bg-[var(--danger)] font-medium text-white" : "text-[var(--muted)] hover:bg-[var(--line-soft)] hover:text-[var(--ink)]"}`}><UploadSimple size={17} />{replacing ? "กำลังอัปโหลด..." : replaceArmed ? "เลือกไฟล์ที่จะทับ" : "อัปโหลดไฟล์ใหม่ทับ"}</button>{editable && <><button type="button" disabled={saving} onClick={() => saveDraft(false)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md border border-[var(--accent)] bg-white px-4 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent-soft)] disabled:opacity-50">บันทึกฉบับร่าง</button><button type="button" disabled={saving || ambiguousCount > 0} onClick={() => saveDraft(true)} className="focus-ring inline-flex h-11 items-center whitespace-nowrap rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white hover:bg-[var(--accent-strong)] disabled:cursor-not-allowed disabled:bg-[var(--line-strong)] disabled:text-[var(--muted)]">{saving ? "กำลังบันทึก..." : "บันทึกและยืนยันข้อมูล"}</button></>}</div>
         </div>}
 
     {editable && compare && <CandidateCompareDialog compare={compare} onSelect={(userId) => setCompare({ ...compare, selected: userId })} onClose={() => setCompare(null)} onConfirm={(candidate) => linkAppointment(compare.appointment.id, candidate.userId, candidate.fullName, candidate.positionTitle)} onCreate={() => { const row = compare.appointment; setCompare(null); openDraft(row); }} />}

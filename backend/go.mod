@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/gin-gonic/gin v1.10.1
+	github.com/go-sql-driver/mysql v1.7.0
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/xuri/excelize/v2 v2.10.1
 	google.golang.org/api v0.299.0
@@ -28,7 +29,6 @@ require (
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/go-playground/validator/v10 v10.20.0 // indirect
-	github.com/go-sql-driver/mysql v1.7.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/s2a-go v0.1.10 // indirect
 	github.com/google/uuid v1.6.0 // indirect

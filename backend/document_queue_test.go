@@ -53,14 +53,14 @@ func (f *fakeJobs) SaveStructured(doc *Document, result workerResult, started ti
 	return f.saveErr
 }
 
-func (f *fakeJobs) MarkRetry(id uint, plan failurePlan) error {
+func (f *fakeJobs) MarkRetry(doc *Document, plan failurePlan) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.retries = append(f.retries, plan)
 	return nil
 }
 
-func (f *fakeJobs) MarkFailed(id uint, failure ExtractError, started time.Time) error {
+func (f *fakeJobs) MarkFailed(doc *Document, failure ExtractError, started time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failures = append(f.failures, failure)

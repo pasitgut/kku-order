@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -40,9 +39,8 @@ func writeCancelledConflict(c *gin.Context, err error) bool {
 
 func cancelDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		id, err := strconv.ParseUint(c.Param("id"), 10, 32)
-		if err != nil || id == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "รหัสเอกสารไม่ถูกต้อง"})
+		id, ok := documentIDParam(c)
+		if !ok {
 			return
 		}
 		var payload struct {
@@ -64,9 +62,9 @@ func cancelDocument(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		actor := currentUserID(c)
-		err = db.Transaction(func(tx *gorm.DB) error {
+		err := db.Transaction(func(tx *gorm.DB) error {
 			var document Document
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&document, uint(id)).Error; err != nil {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&document, id).Error; err != nil {
 				return err
 			}
 			// Retried requests preserve the first reason, actor and timestamp.

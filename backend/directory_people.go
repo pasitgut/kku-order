@@ -95,23 +95,9 @@ func updateDirectoryUser(db *gorm.DB) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "กรุณาระบุชื่อและนามสกุล"})
 			return
 		}
-		for _, field := range []struct {
-			name  string
-			value string
-			limit int
-		}{
-			{"คำนำหน้า", payload.Prefix, 50},
-			{"ชื่อ", payload.FirstName, 255},
-			{"นามสกุล", payload.LastName, 255},
-			{"ตำแหน่ง", payload.PositionTitle, 255},
-			{"หน่วยงาน", payload.Department, 255},
-			{"อีเมล", payload.Email, 255},
-			{"เบอร์โทรศัพท์", payload.Phone, 20},
-		} {
-			if len([]rune(field.value)) > field.limit {
-				c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("%sยาวเกิน %d ตัวอักษร", field.name, field.limit)})
-				return
-			}
+		if problem := directoryPersonLengthProblem(payload.Prefix, payload.FirstName, payload.LastName, payload.PositionTitle, payload.Department, payload.Email, payload.Phone); problem != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": problem})
+			return
 		}
 
 		changedBy := currentUserID(c)
@@ -266,4 +252,27 @@ func listDirectoryPersonRevisions(db *gorm.DB) gin.HandlerFunc {
 func parseDirectoryPersonID(raw string) (uint, bool) {
 	value, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
 	return uint(value), err == nil && value > 0
+}
+
+// directoryPersonLengthProblem ตรวจความยาวตามขนาดคอลัมน์ของ directory_people และโปรไฟล์
+// ข้อความยาวเกินจะได้ตอบ 400 พร้อมบอกช่อง แทนที่ MySQL จะปฏิเสธแล้วกลายเป็น 500
+func directoryPersonLengthProblem(prefix, firstName, lastName, positionTitle, department, email, phone string) string {
+	for _, field := range []struct {
+		name  string
+		value string
+		limit int
+	}{
+		{"คำนำหน้า", prefix, 50},
+		{"ชื่อ", firstName, 255},
+		{"นามสกุล", lastName, 255},
+		{"ตำแหน่ง", positionTitle, 255},
+		{"หน่วยงาน", department, 255},
+		{"อีเมล", email, 255},
+		{"เบอร์โทรศัพท์", phone, 20},
+	} {
+		if len([]rune(strings.TrimSpace(field.value))) > field.limit {
+			return fmt.Sprintf("%sยาวเกิน %d ตัวอักษร", field.name, field.limit)
+		}
+	}
+	return ""
 }
