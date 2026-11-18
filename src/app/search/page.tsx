@@ -177,17 +177,23 @@ function StartView({ recent, firstFiscalYear }: { recent: RecentSearch[]; firstF
 
   useEffect(() => {
     let active = true;
-    setTop(null);
-    setError("");
     getTopPeople({ from: fiscal.from, to: fiscal.to }).then((response) => { if (active) setTop(response.data); }).catch((reason: Error) => { if (active) { setTop([]); setError(reason.message); } });
     return () => { active = false; };
   }, [fiscal.from, fiscal.to]);
+
+  // ล้างผลเดิมตอนเปลี่ยนปี ตารางจะแสดงกำลังโหลดจนกว่าผลของปีใหม่จะมา
+  const changeFiscalYear = (year: number) => {
+    if (year === fiscalYear) return;
+    setFiscalYear(year);
+    setTop(null);
+    setError("");
+  };
 
   return <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
     <section className="card overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-[var(--line)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div><h2 className="text-lg font-semibold text-[var(--navy)]">ได้รับแต่งตั้งมากที่สุด</h2><p className="mt-0.5 text-[13px] font-light text-[var(--muted)]">นับจากคำสั่งที่ยืนยันแล้วใน{fiscal.label}</p></div>
-        <label className="flex items-center gap-2 text-sm text-[var(--muted)]">ปีงบประมาณ<select value={fiscalYear} onChange={(event) => setFiscalYear(Number(event.target.value))} className="focus-ring h-10 rounded-lg border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]">{fiscalYearsThroughCurrent(currentYear, firstFiscalYear).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
+        <label className="flex items-center gap-2 text-sm text-[var(--muted)]">ปีงบประมาณ<select value={fiscalYear} onChange={(event) => changeFiscalYear(Number(event.target.value))} className="focus-ring h-10 rounded-lg border border-[var(--line)] bg-white px-3 text-sm text-[var(--ink)]">{fiscalYearsThroughCurrent(currentYear, firstFiscalYear).map((year) => <option key={year} value={year}>{year}</option>)}</select></label>
         <ExportReportButton filters={{ from: fiscal.from, to: fiscal.to }} description={`ส่งออกรายงาน${fiscal.label}`} />
       </div>
       {error && <p role="alert" className="px-5 py-3 text-sm text-[var(--danger)]">{error}</p>}

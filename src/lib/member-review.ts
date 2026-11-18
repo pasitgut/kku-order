@@ -15,6 +15,11 @@ export function isLinked(row: Appointment) {
   return Boolean(row.directoryUserId);
 }
 
+// ชื่อที่แค่ใกล้เคียง ระบบเลือกคนที่เดาไว้ให้ ถ้าถูกต้องก็ไม่ต้องกดอะไร บันทึกแล้วผูกให้เลย
+export function guessFor(row: Appointment) {
+  return !isLinked(row) && row.nameMatchMethod === "FUZZY" && row.candidates?.length ? row.candidates[0] : undefined;
+}
+
 // isExternalName: แถวที่มีชื่อแต่ระบบผูกกับใครไม่ได้ ถือเป็นคนนอกคณะ ไม่นับเป็นงานค้าง และผูกเองเมื่อคนนั้นเข้าระบบ
 // ชื่อซ้ำและกรณียังไม่มีฐานบุคลากรต้องรอตรวจสอบ (ตรงกับ readyToAutoConfirm ใน backend/document_status.go)
 export function isExternalName(row: Appointment) {

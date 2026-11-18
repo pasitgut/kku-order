@@ -14,11 +14,18 @@ const timeFormat = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Bangkok",
 });
 
+function retryTime(value?: string | null): string {
+  const when = value ? new Date(value) : null;
+  return when && !Number.isNaN(when.getTime()) ? timeFormat.format(when) : "-";
+}
+
 // n คือครั้งที่จะลองถัดไป จึงบวก 1 จากจำนวนครั้งที่เริ่มไปแล้ว
+// เอกสารที่ยกเลิกแล้วไม่ถูกประมวลผลต่อ แม้ processing_stage จะค้างเป็น RETRY_WAIT หรือ QUEUED
 export function processingNote(doc: ProcessingDoc): string | null {
+  if (doc.status === "CANCELLED") return null;
   if (doc.processingStage === "RETRY_WAIT") {
     const upcoming = (doc.extractionAttempts ?? 0) + 1;
-    const when = doc.nextAttemptAt ? timeFormat.format(new Date(doc.nextAttemptAt)) : "-";
+    const when = retryTime(doc.nextAttemptAt);
     return `รอลองใหม่ ครั้งที่ ${upcoming} เวลา ${when}`;
   }
   if (doc.processingStage === "FAILED") {

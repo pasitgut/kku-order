@@ -63,3 +63,13 @@ test("http url is flagged as insecure", () => {
   assert.equal(isInsecureURL("https://ocr.example"), false);
   assert.equal(isInsecureURL(""), false);
 });
+
+test("cancelled documents have no processing note whatever the stage", () => {
+  assert.equal(processingNote({ status: "CANCELLED", processingStage: "RETRY_WAIT", extractionAttempts: 1, nextAttemptAt: "2026-10-11T02:30:00Z", confidence: 0 }), null);
+  assert.equal(processingNote({ status: "CANCELLED", processingStage: "QUEUED", confidence: 0 }), null);
+  assert.equal(processingNote({ status: "CANCELLED", processingStage: "FAILED", confidence: 0 }), null);
+});
+
+test("an unparseable retry time shows a dash instead of throwing", () => {
+  assert.equal(processingNote({ ...base, processingStage: "RETRY_WAIT", extractionAttempts: 2, nextAttemptAt: "not-a-date" }), "รอลองใหม่ ครั้งที่ 3 เวลา -");
+});

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -74,11 +75,15 @@ type returnDocumentRequest struct {
 // returnDocument ส่งเอกสารกลับไป "รอตรวจสอบ" เอกสารที่ยืนยันแล้วจะออกจากรายงานและการแจ้งเตือนจนกว่าจะยืนยันใหม่
 func returnDocument(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		id, ok := documentIDParam(c)
+		if !ok {
+			return
+		}
 		var payload returnDocumentRequest
 		_ = c.ShouldBindJSON(&payload)
 		note := truncateRunes(strings.TrimSpace(payload.Note), 500)
 		var document Document
-		if err := db.First(&document, c.Param("id")).Error; err != nil {
+		if err := db.First(&document, id).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "ไม่พบเอกสาร"})
 			return
 		}
@@ -141,6 +146,16 @@ func readyToAutoConfirm(db *gorm.DB, documentID uint, threshold float64) (bool, 
 		Where("TRIM(COALESCE(full_name, '')) = '' OR name_match_method IN ?", []string{matchMethodEmpty, matchMethodAmbiguous}).
 		Count(&unlinked).Error; err != nil || unlinked > 0 {
 		return false, err
+	}
+	// คำสั่งแต่งตั้งที่ไม่มีรายชื่อเลย หรือชื่อมีแท็บ/ขึ้นบรรทัดใหม่ (OCR ดึงคอลัมน์อื่นติดมา) ต้องให้คนตรวจ
+	var names []string
+	if err := db.Model(&Appointment{}).Where("document_id = ?", documentID).Pluck("full_name", &names).Error; err != nil || len(names) == 0 {
+		return false, err
+	}
+	for _, name := range names {
+		if strings.ContainsAny(name, "\t\r\n") {
+			return false, nil
+		}
 	}
 	var fields []ExtractedField
 	if err := db.Where("document_id = ? AND field_key IN ?", documentID, []string{"order_no", "issued_date", "effective_date", "expiry_date"}).Find(&fields).Error; err != nil {
@@ -286,7 +301,9 @@ var errAutoConfirmNotReady = errors.New("auto confirmation not ready")
 func autoConfirmSnapshot(db *gorm.DB, document Document, threshold float64) (bool, error) {
 	snapshot, err := readExtractionFile(document.ExtractionJSONPath, document.ID)
 	if err != nil {
-		return false, err
+		// ไฟล์ผลสกัดหายหรืออ่านไม่ได้: เอกสารนี้ยังไม่พร้อมยืนยัน แต่ฉบับอื่นในรอบเดียวกันต้องไปต่อได้
+		log.Printf("auto-confirm skipped unreadable extraction: document_id=%d: %v", document.ID, err)
+		return false, nil
 	}
 	err = db.Transaction(func(tx *gorm.DB) error {
 		if err := lockEditableDocument(tx, document.ID); err != nil {

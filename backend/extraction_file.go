@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -95,21 +96,22 @@ func applyExtractionPreview(doc *Document, snapshot extractionFile, path string)
 	return nil
 }
 
-func hydrateUnsavedDocuments(documents []Document) error {
+// hydrateUnsavedDocuments ใส่ผลสกัดที่ยังไม่บันทึกให้แต่ละแถว ไฟล์ผลสกัดที่หายหรืออ่านไม่ได้ทำให้เสียแค่แถวนั้น
+// แถวนั้นยังแสดงในรายการแต่ไม่มีตัวอย่างข้อมูล เอกสารอื่นทั้งหน้าจะได้ไม่พังตาม
+func hydrateUnsavedDocuments(documents []Document) {
 	for i := range documents {
 		doc := &documents[i]
 		if doc.ContentState != "UNSAVED" || doc.ExtractionJSONPath == "" {
 			continue
 		}
 		snapshot, err := readExtractionFile(doc.ExtractionJSONPath, doc.ID)
-		if err != nil {
-			return err
+		if err == nil {
+			err = applyExtractionPreview(doc, snapshot, doc.ExtractionJSONPath)
 		}
-		if err := applyExtractionPreview(doc, snapshot, doc.ExtractionJSONPath); err != nil {
-			return err
+		if err != nil {
+			log.Printf("skip unreadable extraction: document_id=%d: %v", doc.ID, err)
 		}
 	}
-	return nil
 }
 
 // extractionFile stores the provider-independent result and its review data.

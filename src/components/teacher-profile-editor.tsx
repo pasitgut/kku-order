@@ -7,6 +7,7 @@ import { addDirectoryPersonPosition, getDirectoryPersonPositions, getDirectoryPe
 import type { DirectoryPersonRevision, DirectoryUser, PositionHolder } from "@/lib/api";
 import { linkedRowsNote } from "@/lib/position-holder";
 import { useToast } from "@/components/toast";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 
 type Props = { user: DirectoryUser; onCancel: () => void; onSaved: () => void };
 type ProfileDraft = Pick<DirectoryUser, "prefix" | "firstName" | "lastName" | "positionTitle" | "department" | "email" | "phone">;
@@ -80,8 +81,6 @@ export function TeacherProfileEditor({ user, onCancel, onSaved }: Props) {
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setLoadError("");
     Promise.all([getDirectoryPersonPositions(user.id), getDirectoryPersonRevisions(user.id)])
       .then(([positionResponse, revisionResponse]) => {
         if (!active) return;
@@ -94,6 +93,9 @@ export function TeacherProfileEditor({ user, onCancel, onSaved }: Props) {
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [user.id, refreshKey]);
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initialDraft(user)) || Object.values(positionDraft).some((value) => value.trim() !== "");
+  useUnsavedChanges(dirty);
 
   const changeDraft = (key: keyof ProfileDraft, value: string) => setDraft((current) => ({ ...current, [key]: value }));
   const changePositionDraft = (key: keyof PositionDraft, value: string) => setPositionDraft((current) => ({ ...current, [key]: value }));
@@ -127,6 +129,8 @@ export function TeacherProfileEditor({ user, onCancel, onSaved }: Props) {
       });
       setPositionDraft({ positionTitle: "", startsOn: "", endsOn: "" });
       toast(`เพิ่มช่วงตำแหน่งแล้ว${linkedRowsNote(result.linked)}`);
+      setLoading(true);
+      setLoadError("");
       setRefreshKey((current) => current + 1);
     } catch (reason) {
       setPositionError(reason instanceof Error ? reason.message : "บันทึกช่วงตำแหน่งไม่สำเร็จ");

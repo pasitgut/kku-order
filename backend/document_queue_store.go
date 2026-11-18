@@ -41,30 +41,64 @@ func (g gormExtractionJobs) Claim(id uint, now time.Time) (Document, bool, error
 	return doc, true, nil
 }
 
+// errStaleJob หมายถึงไฟล์ของเอกสารถูกเปลี่ยนหลังงานนี้ถูก claim ผลของงานนี้เป็นของไฟล์เก่า
+var errStaleJob = errors.New("document file was replaced after the job was claimed")
+
+// lockClaimedDocument ล็อกแถวแล้วตรวจว่ายังเป็นไฟล์เดียวกับตอน claim (storage_path และ file_hash)
+// คืน errDocumentCancelled ถ้าเอกสารถูกยกเลิก และ errStaleJob ถ้าไฟล์ถูกอัปโหลดทับระหว่างทาง
+func (g gormExtractionJobs) lockClaimedDocument(tx *gorm.DB, claimed *Document, action string) (Document, error) {
+	var current Document
+	if err := lockEditableDocument(tx, claimed.ID); err != nil {
+		return current, err
+	}
+	if err := tx.First(&current, claimed.ID).Error; err != nil {
+		return current, err
+	}
+	if current.StoragePath != claimed.StoragePath || current.FileHash != claimed.FileHash {
+		if g.logger != nil {
+			g.logger.Printf("discard stale %s for document %d: file was replaced while it was processed", action, claimed.ID)
+		}
+		return current, errStaleJob
+	}
+	return current, nil
+}
+
+// ignoreDroppedJob: เอกสารที่ถูกยกเลิกหรือถูกเปลี่ยนไฟล์ไม่ใช่ความผิดพลาดของงาน ทิ้งผลไปเงียบๆ
+func ignoreDroppedJob(err error) error {
+	if errors.Is(err, errDocumentCancelled) || errors.Is(err, errStaleJob) {
+		return nil
+	}
+	return err
+}
+
 // MarkRetry ตาม spec: RETRY_WAIT, next_attempt_at, extraction_last_status, ocr_error
-func (g gormExtractionJobs) MarkRetry(id uint, plan failurePlan) error {
-	return g.db.Model(&Document{}).Where("id = ? AND status <> ?", id, documentCancelled).Updates(map[string]any{
-		"status":                 "PROCESSING",
-		"processing_stage":       "RETRY_WAIT",
-		"next_attempt_at":        plan.NextAttempt,
-		"extraction_last_status": plan.LastStatus,
-		"ocr_error":              plan.Failure.Message,
-	}).Error
+// ทำเฉพาะเมื่อเอกสารยังเป็นไฟล์เดียวกับตอน claim ไม่งั้นงานของไฟล์ใหม่จะถูกเลื่อนออกไป
+func (g gormExtractionJobs) MarkRetry(doc *Document, plan failurePlan) error {
+	return ignoreDroppedJob(g.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := g.lockClaimedDocument(tx, doc, "retry"); err != nil {
+			return err
+		}
+		return tx.Model(&Document{}).Where("id = ?", doc.ID).Updates(map[string]any{
+			"status":                 "PROCESSING",
+			"processing_stage":       "RETRY_WAIT",
+			"next_attempt_at":        plan.NextAttempt,
+			"extraction_last_status": plan.LastStatus,
+			"ocr_error":              plan.Failure.Message,
+		}).Error
+	}))
 }
 
 // MarkFailed ตั้ง NEEDS_REVIEW/FAILED และเขียน AuditLog ในทรานแซกชันเดียว
-func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started time.Time) error {
+// ทำเฉพาะเมื่อเอกสารยังเป็นไฟล์เดียวกับตอน claim ไม่งั้น Claim จะไม่หยิบงานของไฟล์ใหม่อีก
+func (g gormExtractionJobs) MarkFailed(doc *Document, failure ExtractError, started time.Time) error {
 	finished := time.Now()
-	docID := id
+	docID := doc.ID
 	detail, _ := json.Marshal(failure)
-	return g.db.Transaction(func(tx *gorm.DB) error {
-		if err := lockEditableDocument(tx, id); err != nil {
-			if errors.Is(err, errDocumentCancelled) {
-				return nil
-			}
+	return ignoreDroppedJob(g.db.Transaction(func(tx *gorm.DB) error {
+		if _, err := g.lockClaimedDocument(tx, doc, "failure"); err != nil {
 			return err
 		}
-		if err := tx.Model(&Document{}).Where("id = ?", id).Updates(map[string]any{
+		if err := tx.Model(&Document{}).Where("id = ?", docID).Updates(map[string]any{
 			"status":                 "NEEDS_REVIEW",
 			"processing_stage":       "FAILED",
 			"next_attempt_at":        nil,
@@ -76,7 +110,7 @@ func (g gormExtractionJobs) MarkFailed(id uint, failure ExtractError, started ti
 			return err
 		}
 		return tx.Create(&AuditLog{DocumentID: &docID, UserID: auditSystemUser("document-queue"), Action: "DOCUMENT_EXTRACTION_FAILED", Details: string(detail), CreatedAt: finished}).Error
-	})
+	}))
 }
 
 // SaveExtraction เขียนผลตาม extractionRecords ในทรานแซกชันเดียว แล้วล้าง retry state
@@ -96,10 +130,9 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 	docID := doc.ID
 
 	err := g.db.Transaction(func(tx *gorm.DB) error {
-		if err := lockEditableDocument(tx, docID); err != nil {
-			if errors.Is(err, errDocumentCancelled) {
-				return nil
-			}
+		// ไฟล์ถูกอัปโหลดทับหลังงานนี้เริ่ม ผลนี้เป็นของไฟล์เก่า ทิ้งไปแล้วปล่อยให้งานของไฟล์ใหม่บันทึกเอง
+		current, err := g.lockClaimedDocument(tx, doc, "extraction")
+		if err != nil {
 			return err
 		}
 		rec.Updates["status"] = status
@@ -126,10 +159,6 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 		if err != nil {
 			return err
 		}
-		var current Document
-		if err := tx.First(&current, docID).Error; err != nil {
-			return err
-		}
 		updates := map[string]any{
 			"status": status, "processing_stage": stage, "ocr_provider": result.Engine,
 			"ocr_error": "", "processing_finished_at": rec.Updates["processing_finished_at"],
@@ -151,7 +180,7 @@ func (g gormExtractionJobs) SaveExtraction(doc *Document, result ExtractionResul
 	if err == nil {
 		autoConfirmAfterExtraction(g.db, docID, threshold)
 	}
-	return err
+	return ignoreDroppedJob(err)
 }
 
 // SaveStructured บันทึกผล DOCX/XLSX/CSV ทางเดียวกับ PDF (engine = structured-import)

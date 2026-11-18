@@ -126,7 +126,7 @@ func TestReprocessRouteAllowsFinishedDocumentForAdminAndStaff(t *testing.T) {
 	}
 }
 
-func TestRescanResetUpdatesClearsConfirmationAndRetryState(t *testing.T) {
+func TestRescanResetUpdatesKeepsConfirmerAndClearsRetryState(t *testing.T) {
 	u := rescanResetUpdates()
 	if u["status"] != "PROCESSING" || u["processing_stage"] != "QUEUED" || u["ocr_error"] != "" {
 		t.Fatalf("status/stage/error not reset: %v", u)

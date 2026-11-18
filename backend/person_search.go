@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -397,9 +398,13 @@ func searchSuggestHandler(db *gorm.DB) gin.HandlerFunc {
 					continue
 				}
 				snapshot, err := readExtractionFile(document.ExtractionJSONPath, document.ID)
-				if err != nil || applyExtractionPreview(&document, snapshot, document.ExtractionJSONPath) != nil {
-					c.JSON(http.StatusInternalServerError, gin.H{"error": "ไม่สามารถอ่านผลสกัดได้"})
-					return
+				if err == nil {
+					err = applyExtractionPreview(&document, snapshot, document.ExtractionJSONPath)
+				}
+				if err != nil {
+					// ไฟล์หายระหว่างค้นหา ข้ามคำสั่งนั้นไป คำแนะนำอื่นยังใช้ได้
+					log.Printf("skip unreadable extraction in suggestions: document_id=%d: %v", document.ID, err)
+					continue
 				}
 				result.Orders = append(result.Orders, orderSuggestion{ID: document.ID, OrderNo: document.OrderNo, Title: document.Title, IssuedDate: document.IssuedDate, Status: document.Status})
 				if len(result.Orders) == suggestionLimit {

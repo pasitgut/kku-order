@@ -40,6 +40,10 @@ func createReviewDocument(t *testing.T, db *gorm.DB, fields map[string]string) (
 	if err := db.Create(&document).Error; err != nil {
 		t.Fatal(err)
 	}
+	// MySQL ปัด DATETIME(3) เป็นมิลลิวินาที ค่าที่ใช้ทำ optimistic lock ต้องเป็นค่าที่อ่านกลับจากฐาน ไม่ใช่ time.Now()
+	if err := db.First(&document, document.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	ids := map[string]uint{}
 	for key, value := range fields {
 		field := ExtractedField{DocumentID: document.ID, FieldKey: key, FieldLabel: key, FieldType: "date", Value: value, SourceText: value, BoundingBoxJSON: "null"}
@@ -160,5 +164,33 @@ func TestConfirmWithUnlinkedNamesMarksEveryNameChecked(t *testing.T) {
 	db.First(&row, row.ID)
 	if !row.Verified {
 		t.Fatal("confirming should mark every name in the order as checked")
+	}
+}
+
+// การยืนยันและการยืนยันอัตโนมัติอ่านวันที่จากแถวฟิลด์ issued_date วันที่ที่ส่งมาใน
+// issuedDate ระดับบนสุดจึงต้องลงแถวนั้นด้วย ไม่ใช่ลงแค่คอลัมน์
+func TestTopLevelDatesAlsoUpdateTheFieldRows(t *testing.T) {
+	db := testDatabase(t)
+	document, ids := createReviewDocument(t, db, map[string]string{"issued_date": "2025-03-15", "expiry_date": "2026-03-15"})
+	response := patchDocument(t, db, document.ID, map[string]any{"issuedDate": "2025-03-16", "expiryDate": ""})
+	if response.Code != http.StatusOK {
+		t.Fatalf("save status = %d body = %s", response.Code, response.Body.String())
+	}
+	for key, want := range map[string]string{"issued_date": "2025-03-16", "expiry_date": ""} {
+		var field ExtractedField
+		db.First(&field, ids[key])
+		if field.Value != want {
+			t.Errorf("%s field = %q, want %q", key, field.Value, want)
+		}
+	}
+	// วันที่ที่ส่งมาทั้งสองทางใช้ค่าจากรายการฟิลด์ ซึ่งเป็นค่าที่หน้าตรวจสอบแสดงอยู่
+	response = patchDocument(t, db, document.ID, map[string]any{"issuedDate": "2025-03-17", "fields": []map[string]any{{"id": ids["issued_date"], "fieldKey": "issued_date", "value": "2025-03-18"}}})
+	if response.Code != http.StatusOK {
+		t.Fatalf("save status = %d body = %s", response.Code, response.Body.String())
+	}
+	var field ExtractedField
+	db.First(&field, ids["issued_date"])
+	if field.Value != "2025-03-18" {
+		t.Errorf("issued_date field = %q, want the field list value", field.Value)
 	}
 }

@@ -89,6 +89,11 @@ func TestAutoConfirmTakesOnlyDocumentsWithNothingToFix(t *testing.T) {
 	setFieldConfidence(t, db, clean.ID, "order_no", "1/2569", 0.98)
 	setFieldConfidence(t, db, clean.ID, "issued_date", "2026-10-11", 0.97)
 	setFieldConfidence(t, db, clean.ID, "effective_date", "ตั้งแต่บัดนี้เป็นต้นไป", 0.95)
+	db.Create(&Appointment{DocumentID: clean.ID, FullName: "ดร.สมใจ ตรวจครบ", NameMatchMethod: matchMethodNotFound, BoundingBoxJSON: "null"})
+	// คำสั่งแต่งตั้งที่อ่านรายชื่อไม่ได้เลยต้องให้คนดู ไม่ใช่ยืนยันว่าไม่มีใครถูกแต่งตั้ง
+	nobody, _ := createReviewDocument(t, db, map[string]string{})
+	setFieldConfidence(t, db, nobody.ID, "order_no", "6/2569", 0.98)
+	setFieldConfidence(t, db, nobody.ID, "issued_date", "2026-10-11", 0.98)
 	shaky, _ := createReviewDocument(t, db, map[string]string{})
 	setFieldConfidence(t, db, shaky.ID, "order_no", "1/2569", 0.98)
 	setFieldConfidence(t, db, shaky.ID, "issued_date", "2026-10-11", 0.60)
@@ -109,12 +114,15 @@ func TestAutoConfirmTakesOnlyDocumentsWithNothingToFix(t *testing.T) {
 	// แถวโดยตำแหน่งที่ยังไม่มีผู้ดำรง และกรณียังไม่มีฐานบุคลากร ยังต้องรอคนตรวจ
 	vacant := readyDocument("4/2569", Appointment{Position: "คณบดี", NameMatchMethod: matchMethodExOfficio})
 	emptyDirectory := readyDocument("5/2569", Appointment{FullName: "ดร.วิไล ศรีสุข", NameMatchMethod: matchMethodEmpty})
+	// ชื่อที่มีแท็บหรือขึ้นบรรทัดใหม่คือ OCR ดึงคอลัมน์อื่นติดมาด้วย
+	tabbed := readyDocument("7/2569", Appointment{FullName: "ดร.วิไล ศรีสุข\tประธานกรรมการ", NameMatchMethod: matchMethodNotFound})
+	wrapped := readyDocument("8/2569", Appointment{FullName: "ดร.วิไล ศรีสุข\nกรรมการ", NameMatchMethod: matchMethodNotFound})
 
 	for _, tc := range []struct {
 		name     string
 		document Document
 		want     bool
-	}{{"clean", clean, true}, {"low confidence date", shaky, false}, {"unlinked name", unlinked, true}, {"external fuzzy", fuzzy, true}, {"vacant ex-officio", vacant, false}, {"empty directory", emptyDirectory, false}} {
+	}{{"clean", clean, true}, {"low confidence date", shaky, false}, {"unlinked name", unlinked, true}, {"external fuzzy", fuzzy, true}, {"vacant ex-officio", vacant, false}, {"empty directory", emptyDirectory, false}, {"no appointments", nobody, false}, {"name with a tab", tabbed, false}, {"name over two lines", wrapped, false}} {
 		got, err := readyToAutoConfirm(db, tc.document.ID, 0.9)
 		if err != nil || got != tc.want {
 			t.Errorf("%s: readyToAutoConfirm = %v, %v; want %v", tc.name, got, err, tc.want)
@@ -127,6 +135,7 @@ func TestTurningOnAutoConfirmConfirmsTheReadyBacklog(t *testing.T) {
 	ready, _ := createReviewDocument(t, db, map[string]string{})
 	setFieldConfidence(t, db, ready.ID, "order_no", "3/2569", 0.99)
 	setFieldConfidence(t, db, ready.ID, "issued_date", "2026-10-11", 0.99)
+	db.Create(&Appointment{DocumentID: ready.ID, FullName: "ดร.สมใจ ค้างยืนยัน", NameMatchMethod: matchMethodNotFound, BoundingBoxJSON: "null"})
 	confirmed, err := setAutoConfirm(db, true, "admin@kku.ac.th", 0.9)
 	if err != nil || confirmed < 1 {
 		t.Fatalf("setAutoConfirm = %d, %v", confirmed, err)

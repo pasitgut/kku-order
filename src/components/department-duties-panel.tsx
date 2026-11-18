@@ -4,6 +4,8 @@ import { useState } from "react";
 import { PencilSimple, Plus, X } from "@phosphor-icons/react";
 import { Appointment } from "@/lib/api";
 import { addDepartmentExtra, departmentDuties, removeDepartmentExtra, setDepartmentDuty } from "@/lib/department-duties";
+import { dutiesPending } from "@/lib/unsaved-changes";
+import { useUnsavedChanges } from "@/components/use-unsaved-changes";
 
 type Props = {
   appointments: Appointment[];
@@ -23,6 +25,8 @@ export function DepartmentDutiesPanel({ appointments, editable, onChange }: Prop
   const current = departments.find((item) => item.name === picked) ?? departments[0];
   // ข้อความที่แก้ค้างใช้ได้เฉพาะฝ่ายที่เลือกไว้จริงและเอกสารยังแก้ได้ ฝ่ายหายหรือเอกสารถูกยืนยันระหว่างนั้นจะไม่ไปลงฝ่ายอื่น
   const editingNow = editing && editable && current?.name === picked;
+  // ข้อความที่พิมพ์ค้างไว้ยังไม่ได้ใส่ลงรายชื่อ ถ้าออกจากหน้าจะหาย จึงถามก่อนเหมือนการแก้ที่ยังไม่บันทึก
+  useUnsavedChanges(editable && dutiesPending({ extra, editing: editingNow, draft, duty: current?.duty ?? "" }));
 
   if (!current) return <p className="p-6 text-sm text-[var(--muted)]">ยังไม่มีรายชื่อในเอกสารนี้</p>;
 
